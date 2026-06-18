@@ -1,7 +1,7 @@
 import logging
 import os
 from datetime import date
-from src.config import load_config, get_env
+from src.config import load_config
 from src.cache import init_db
 from src.universe import build_universe
 from src.prices import fetch_all_prices
@@ -38,7 +38,7 @@ def run(force_universe: bool = False):
         print(f"[universe] loaded {len(universe_df)} tickers from cache")
 
     # Stage 2: Prices + liquidity gate
-    price_store, survivors_df = fetch_all_prices(universe_df, cfg, DB_PATH)
+    _, survivors_df = fetch_all_prices(universe_df, cfg, DB_PATH)
     print(f"[stage2] {len(universe_df)} → {len(survivors_df)} after liquidity gate")
 
     # Attach CIK from universe
