@@ -1,0 +1,36 @@
+universe:
+  source: sec
+  exclude_etfs: true
+  min_price: 5.0
+
+liquidity_gate:
+  min_market_cap: 300000000
+  min_avg_dollar_vol_20d: 5000000
+
+quality_gate:
+  gross_profitability_min: median
+
+factors:
+  weights:
+    mom_12_1: 0.35
+    rev_breadth: 0.25
+    sue: 0.20
+    rs_6m: 0.20
+  winsorize_pct: 0.01
+  missing_factor_treatment: neutral
+
+confirmation:
+  require_above_sma200: true
+  max_pct_below_52w_high: 0.10
+
+output:
+  top_n: 30
+  include_squeeze_screen: true
+
+cache:
+  price_ttl_hours: 18
+  fundamentals_ttl_days: 7
+  edgar_ttl_days: 30
+
+finnhub:
+  calls_per_minute: 60
