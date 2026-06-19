@@ -85,3 +85,196 @@ def avg_dollar_vol(close: pd.Series, volume: pd.Series, window: int = 20) -> flo
 
 def squeeze_flag(short_float: float, days_to_cover: float, mom_1m_val: float) -> bool:
     return short_float > 0.15 and days_to_cover > 5.0 and mom_1m_val > 0.0
+
+
+def stochastic(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    k_period: int = 14,
+    smooth_k: int = 3,
+    d_period: int = 3,
+) -> tuple[float, float, bool]:
+    """Returns (smooth_%K, %D, bull_cross). bull_cross = %K just crossed above %D."""
+    if len(close) < k_period + smooth_k + d_period:
+        return float("nan"), float("nan"), False
+    lowest_low    = low.rolling(window=k_period).min()
+    highest_high  = high.rolling(window=k_period).max()
+    denom = (highest_high - lowest_low).replace(0, np.nan)
+    raw_k         = 100.0 * (close - lowest_low) / denom
+    sk_series     = raw_k.rolling(window=smooth_k).mean()
+    d_series      = sk_series.rolling(window=d_period).mean()
+    k_now, k_prev = float(sk_series.iloc[-1]), float(sk_series.iloc[-2])
+    d_now, d_prev = float(d_series.iloc[-1]),  float(d_series.iloc[-2])
+    bull_cross = (k_now > d_now) and (k_prev <= d_prev)
+    return k_now, d_now, bull_cross
+
+
+def bollinger_pct_b(
+    close: pd.Series, window: int = 20, num_std: float = 2.0
+) -> tuple[float, float]:
+    """Returns (%B, bandwidth). %B: 0=lower band, 1=upper band. BW = (upper-lower)/mid."""
+    if len(close) < window:
+        return float("nan"), float("nan")
+    sma   = close.rolling(window).mean()
+    std   = close.rolling(window).std()
+    upper = sma + num_std * std
+    lower = sma - num_std * std
+    band_range = (upper - lower).replace(0, np.nan)
+    pct_b  = float(((close - lower) / band_range).iloc[-1])
+    bw     = float(((upper - lower) / sma).iloc[-1])
+    return pct_b, bw
+
+
+def adx_14(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14
+) -> float:
+    """Wilder's ADX. < 20 = no trend, 20-25 = emerging, > 25 = trending."""
+    if len(close) < window * 2:
+        return float("nan")
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    up_move   = high - high.shift(1)
+    down_move = low.shift(1) - low
+    plus_dm  = np.where((up_move > down_move) & (up_move > 0),   up_move,   0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    plus_dm_s  = pd.Series(plus_dm,  index=high.index)
+    minus_dm_s = pd.Series(minus_dm, index=high.index)
+    atr_s    = tr.ewm(com=window - 1, min_periods=window).mean()
+    plus_di  = 100.0 * plus_dm_s.ewm(com=window - 1, min_periods=window).mean()  / atr_s
+    minus_di = 100.0 * minus_dm_s.ewm(com=window - 1, min_periods=window).mean() / atr_s
+    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-12)
+    adx_val = dx.ewm(com=window - 1, min_periods=window).mean()
+    return float(adx_val.iloc[-1])
+
+
+def mfi_14(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+    window: int = 14,
+) -> float:
+    """Money Flow Index: RSI weighted by volume. Overbought >80, oversold <20."""
+    if len(close) < window + 1:
+        return float("nan")
+    tp   = (high + low + close) / 3.0
+    rmf  = tp * volume
+    prev_tp = tp.shift(1)
+    pos_mf = rmf.where(tp > prev_tp, 0.0)
+    neg_mf = rmf.where(tp < prev_tp, 0.0)
+    pos_sum = pos_mf.rolling(window).sum()
+    neg_sum = neg_mf.rolling(window).sum()
+    mfr = pos_sum / (neg_sum + 1e-12)
+    return float((100.0 - 100.0 / (1.0 + mfr)).iloc[-1])
+
+
+def rsi_14(close: pd.Series, window: int = 14) -> float:
+    if len(close) < window + 1:
+        return float("nan")
+    delta = close.diff().iloc[1:]
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(com=window - 1, min_periods=window).mean().iloc[-1]
+    avg_loss = loss.ewm(com=window - 1, min_periods=window).mean().iloc[-1]
+    if avg_loss < 1e-12:
+        return 100.0
+    return float(100.0 - 100.0 / (1.0 + avg_gain / avg_loss))
+
+
+def macd_state(close: pd.Series) -> str:
+    if len(close) < 35:
+        return "unknown"
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    above_now  = bool(macd_line.iloc[-1] > signal_line.iloc[-1])
+    above_prev = bool(macd_line.iloc[-2] > signal_line.iloc[-2])
+    if above_now and not above_prev:
+        return "bullish_cross"
+    if above_now:
+        return "bullish"
+    if not above_now and above_prev:
+        return "bearish_cross"
+    return "bearish"
+
+
+def vol_surge_ratio(volume: pd.Series) -> float:
+    if len(volume) < 20:
+        return float("nan")
+    avg5  = float(volume.iloc[-5:].mean())
+    avg20 = float(volume.iloc[-20:].mean())
+    if avg20 < 1:
+        return float("nan")
+    return avg5 / avg20
+
+
+def entry_grade(
+    rsi_val: float,
+    macd: str,
+    vol_ratio: float,
+    above_sma20: bool,
+    adx_val: float = float("nan"),
+    stoch_k: float = float("nan"),
+    stoch_d: float = float("nan"),
+    stoch_cross: bool = False,
+    bb_pct_b: float = float("nan"),
+    mfi_val: float = float("nan"),
+) -> str:
+    def _ok(v: float) -> bool:
+        return not np.isnan(v)
+
+    # Hard vetoes
+    if macd in ("bearish", "bearish_cross"):
+        return "WAIT"
+    if not above_sma20:
+        return "WAIT"
+    if rsi_val > 75:
+        return "WAIT"
+    if _ok(mfi_val) and mfi_val > 80:
+        return "WAIT"
+    if _ok(bb_pct_b) and bb_pct_b > 0.92:  # price far above upper Bollinger band
+        return "WAIT"
+
+    score = 0
+
+    # MACD (spine of the signal)
+    if macd == "bullish_cross":
+        score += 2
+    elif macd == "bullish":
+        score += 1
+
+    # RSI sweet spot 40-65
+    if 40.0 <= rsi_val <= 65.0:
+        score += 1
+
+    # MFI confirms with volume 40-65
+    if _ok(mfi_val) and 40.0 <= mfi_val <= 65.0:
+        score += 1
+
+    # Volume expansion
+    if _ok(vol_ratio) and vol_ratio > 1.15:
+        score += 1
+
+    # ADX confirms a real trend
+    if _ok(adx_val) and adx_val > 20.0:
+        score += 1
+
+    # Stochastic: %K above %D and not overbought, extra for fresh cross
+    if _ok(stoch_k) and _ok(stoch_d) and stoch_k > stoch_d and stoch_k < 70.0:
+        score += 2 if stoch_cross else 1
+
+    # Bollinger %B: healthy momentum zone (0.5-0.85 = trending, not overextended)
+    if _ok(bb_pct_b) and 0.5 <= bb_pct_b <= 0.85:
+        score += 1
+
+    if score >= 6:
+        return "STRONG"
+    if score >= 4:
+        return "OK"
+    return "WAIT"

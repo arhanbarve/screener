@@ -24,6 +24,11 @@ def init_db(db_path: str):
             cogs REAL, assets REAL, fetched_at TEXT
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS market_cap (
+            ticker TEXT PRIMARY KEY, value REAL, fetched_at TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -93,6 +98,28 @@ def get_fundamentals(db_path: str, ticker: str, ttl_days: int) -> dict | None:
     if row is None:
         return None
     return json.loads(row[0])
+
+def put_market_cap(db_path: str, ticker: str, value: float):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO market_cap VALUES (?,?,?)",
+        (ticker, value, _now_iso()),
+    )
+    conn.commit()
+    conn.close()
+
+def get_market_cap(db_path: str, ticker: str, ttl_hours: int) -> float | None:
+    cutoff = (datetime.utcnow() - timedelta(hours=ttl_hours)).isoformat()
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute(
+        "SELECT value FROM market_cap WHERE ticker=? AND fetched_at > ?",
+        (ticker, cutoff),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
 
 def put_edgar(db_path: str, cik: str, gp_assets: float, revenue: float, cogs: float, assets: float):
     conn = sqlite3.connect(db_path)

@@ -86,20 +86,28 @@ def parse_finnhub_surprise(earnings: list) -> tuple[list, list]:
     return actuals[-min_len:], estimates[-min_len:]
 
 
-def parse_finnhub_revisions(trend_data: dict) -> tuple[float, float]:
-    """Returns (rev_breadth, rev_magnitude) from Finnhub EPS trend."""
+def parse_finnhub_revisions(trends: list) -> tuple[float, float]:
+    """Returns (rev_breadth, rev_magnitude) from Finnhub recommendation_trends."""
     try:
-        trend = trend_data.get("trend", [])
-        if not trend:
+        if not trends:
             return 0.0, 0.0
-        latest = sorted(trend, key=lambda t: t.get("period", ""), reverse=True)[0]
-        eps_up   = latest.get("epsTrendUp", 0) or 0
-        eps_down = latest.get("epsTrendDown", 0) or 0
-        total    = eps_up + eps_down
-        breadth  = (eps_up - eps_down) / total if total > 0 else 0.0
-        cur = latest.get("epsTrend", {}).get("current", 0)
-        ago = latest.get("epsTrend", {}).get("3month", cur)
-        mag = (cur - ago) / abs(ago) if abs(ago) > 1e-12 else 0.0
+        ranked = sorted(trends, key=lambda t: t.get("period", ""), reverse=True)
+        latest = ranked[0]
+        sb  = latest.get("strongBuy", 0) or 0
+        b   = latest.get("buy", 0) or 0
+        s   = latest.get("sell", 0) or 0
+        ss  = latest.get("strongSell", 0) or 0
+        h   = latest.get("hold", 0) or 0
+        tot = sb + b + h + s + ss
+        breadth = (sb + b - s - ss) / tot if tot > 0 else 0.0
+        if len(ranked) >= 2:
+            prior = ranked[1]
+            pt = sum(prior.get(k, 0) or 0 for k in ["strongBuy", "buy", "hold", "sell", "strongSell"])
+            prior_bull = (prior.get("strongBuy", 0) + prior.get("buy", 0)) / pt if pt > 0 else 0.0
+            cur_bull   = (sb + b) / tot if tot > 0 else 0.0
+            mag = cur_bull - prior_bull
+        else:
+            mag = 0.0
         return float(breadth), float(mag)
     except Exception:
         return 0.0, 0.0
@@ -140,6 +148,16 @@ class _TokenBucket:
             self._tokens -= 1
 
 
+def _finnhub_key_valid(fh: finnhub.Client) -> bool:
+    try:
+        fh.company_profile2(symbol="AAPL")
+        return True
+    except Exception as e:
+        if "401" in str(e):
+            return False
+        return True  # other errors (rate limit etc.) — assume key valid
+
+
 def fetch_all_fundamentals(
     survivors_df: pd.DataFrame,
     cfg: dict,
@@ -148,6 +166,10 @@ def fetch_all_fundamentals(
     fh_key = get_env("FINNHUB_API_KEY")
     fh     = finnhub.Client(api_key=fh_key)
     bucket = _TokenBucket(cfg["finnhub"]["calls_per_minute"])
+
+    use_finnhub = _finnhub_key_valid(fh)
+    if not use_finnhub:
+        logger.warning("[fundamentals] Finnhub API key invalid — skipping all Finnhub calls")
 
     ttl_fund  = cfg["cache"]["fundamentals_ttl_days"]
     ttl_edgar = cfg["cache"]["edgar_ttl_days"]
@@ -172,35 +194,42 @@ def fetch_all_fundamentals(
             row.update(cached_fund)
         else:
             fund = {}
-            try:
-                bucket.consume()
-                earnings = fh.company_earnings(ticker, limit=8)
-                actuals, estimates = parse_finnhub_surprise(earnings)
-                from src.factors import compute_sue
-                fund["sue"] = compute_sue(actuals, estimates) if actuals else 0.0
-            except Exception as e:
-                logger.warning(f"[fundamentals] earnings for {ticker}: {e}")
-                fund["sue"] = float("nan")
+            if use_finnhub:
+                try:
+                    bucket.consume()
+                    earnings = fh.company_earnings(ticker, limit=8)
+                    actuals, estimates = parse_finnhub_surprise(earnings)
+                    from src.factors import compute_sue
+                    fund["sue"] = compute_sue(actuals, estimates) if actuals else 0.0
+                except Exception as e:
+                    logger.warning(f"[fundamentals] earnings for {ticker}: {e}")
+                    fund["sue"] = float("nan")
 
-            try:
-                bucket.consume()
-                trend = fh.eps_estimate(ticker, freq="quarterly")
-                breadth, mag = parse_finnhub_revisions({"trend": trend.get("data", [])})
-                fund["rev_breadth"] = breadth
-                fund["rev_magnitude"] = mag
-            except Exception as e:
-                logger.warning(f"[fundamentals] revisions for {ticker}: {e}")
+                try:
+                    bucket.consume()
+                    trends = fh.recommendation_trends(ticker)
+                    breadth, mag = parse_finnhub_revisions(trends)
+                    fund["rev_breadth"] = breadth
+                    fund["rev_magnitude"] = mag
+                except Exception as e:
+                    logger.warning(f"[fundamentals] revisions for {ticker}: {e}")
+                    fund["rev_breadth"] = float("nan")
+                    fund["rev_magnitude"] = float("nan")
+
+                try:
+                    bucket.consume()
+                    insider_tx = fh.stock_insider_transactions(ticker, _from="", to="")
+                    buys = parse_insider_buys(insider_tx.get("data", []))
+                    fund["insider_buys_90d"] = buys
+                    fund["insider_flag"] = buys >= 2
+                except Exception as e:
+                    logger.warning(f"[fundamentals] insider for {ticker}: {e}")
+                    fund["insider_buys_90d"] = 0
+                    fund["insider_flag"] = False
+            else:
+                fund["sue"] = float("nan")
                 fund["rev_breadth"] = float("nan")
                 fund["rev_magnitude"] = float("nan")
-
-            try:
-                bucket.consume()
-                insider_tx = fh.stock_insider_transactions(ticker, _from="", to="")
-                buys = parse_insider_buys(insider_tx.get("data", []))
-                fund["insider_buys_90d"] = buys
-                fund["insider_flag"] = buys >= 2
-            except Exception as e:
-                logger.warning(f"[fundamentals] insider for {ticker}: {e}")
                 fund["insider_buys_90d"] = 0
                 fund["insider_flag"] = False
 

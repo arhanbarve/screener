@@ -69,7 +69,8 @@ def build_composite(factors_df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
             continue
         s = df[factor].copy()
         if missing_treatment == "neutral":
-            s = s.fillna(s.mean())
+            fill_val = s.mean()
+            s = s.fillna(0.0 if pd.isna(fill_val) else fill_val)
         else:
             df = df[s.notna()].reset_index(drop=True)
             s = df[factor]
