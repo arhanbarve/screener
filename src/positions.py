@@ -33,7 +33,7 @@ def add_position(ticker: str, entry_date: str, entry_price: float) -> None:
     """Append a new position. Raises ValueError if ticker already open."""
     positions = load_positions()
     if any(p["ticker"] == ticker.upper() for p in positions):
-        raise ValueError(f"{ticker} already in open positions")
+        raise ValueError(f"{ticker.upper()} already in open positions")
     positions.append({
         "ticker": ticker.upper(),
         "entry_date": entry_date,
@@ -46,6 +46,26 @@ def remove_position(ticker: str) -> None:
     """Remove a position by ticker. No-op if not found."""
     positions = [p for p in load_positions() if p["ticker"] != ticker.upper()]
     save_positions(positions)
+
+
+def _stoch_bear_cross(
+    high: pd.Series, low: pd.Series, close: pd.Series,
+    k_period: int = 14, smooth_k: int = 3, d_period: int = 3,
+) -> tuple[float | None, float | None, bool]:
+    """K_now, D_now, bear_cross. bear_cross = K_prev>80 AND K just crossed below D."""
+    if len(close) < k_period + smooth_k + d_period:
+        return None, None, False
+    lowest_low = low.rolling(k_period).min()
+    highest_high = high.rolling(k_period).max()
+    denom = (highest_high - lowest_low).replace(0, np.nan)
+    raw_k = 100.0 * (close - lowest_low) / denom
+    sk = raw_k.rolling(smooth_k).mean()
+    d_ser = sk.rolling(d_period).mean()
+    k_now = float(sk.iloc[-1])
+    k_prev = float(sk.iloc[-2])
+    d_now = float(d_ser.iloc[-1])
+    bear_cross = (k_now < d_now) and (k_prev >= d_now) and (k_prev > 80)
+    return k_now, d_now, bear_cross
 
 
 def fetch_ohlcv(ticker: str, days: int = 60) -> pd.DataFrame:
@@ -115,7 +135,7 @@ def compute_exit_signals(df: pd.DataFrame) -> dict:
     }
 
     required_cols = {"close", "high", "low", "volume"}
-    if df.empty or not required_cols.issubset(df.columns) or len(df) < 30:
+    if df.empty or not required_cols.issubset(df.columns) or len(df) < 40:
         return base
 
     close = df["close"]
@@ -142,23 +162,13 @@ def compute_exit_signals(df: pd.DataFrame) -> dict:
     except Exception:
         pass
 
-    # --- Stochastic: was overbought (K_prev > 80) AND bear cross (K crossed below D) ---
+    # --- Stochastic: was overbought (K_prev > 80) AND bear cross ---
     try:
-        k_period, smooth_k, d_period = 14, 3, 3
-        lowest_low = low.rolling(k_period).min()
-        highest_high = high.rolling(k_period).max()
-        denom = (highest_high - lowest_low).replace(0, np.nan)
-        raw_k = 100.0 * (close - lowest_low) / denom
-        sk = raw_k.rolling(smooth_k).mean()
-        d_ser = sk.rolling(d_period).mean()
-        k_now = float(sk.iloc[-1])
-        k_prev = float(sk.iloc[-2])
-        d_now = float(d_ser.iloc[-1])
-        d_prev = float(d_ser.iloc[-2])
-        base["stoch_k"] = k_now
-        base["stoch_d"] = d_now
-        bear_cross = (k_now < d_now) and (k_prev >= d_prev)
-        base["stoch"] = bool(k_prev > 80 and bear_cross)
+        k_now, d_now, bear_cross = _stoch_bear_cross(high, low, close)
+        if k_now is not None:
+            base["stoch_k"] = k_now
+            base["stoch_d"] = d_now
+            base["stoch"] = bear_cross
     except Exception:
         pass
 

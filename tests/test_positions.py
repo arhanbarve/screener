@@ -45,6 +45,13 @@ def test_save_and_load_roundtrip(tmp_path, monkeypatch):
     assert load_positions() == positions
 
 
+def test_save_positions_no_tmp_file_left(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    positions = [{"ticker": "AAPL", "entry_date": "2026-06-01", "entry_price": 150.0}]
+    save_positions(positions)
+    assert not (tmp_path / "positions.tmp").exists()
+
+
 def test_add_position(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     add_position("TSLA", "2026-06-01", 200.0)
@@ -57,7 +64,7 @@ def test_add_position(tmp_path, monkeypatch):
 def test_add_position_duplicate_raises(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     add_position("AAPL", "2026-06-01", 150.0)
-    with pytest.raises(ValueError, match="aapl already in open positions"):
+    with pytest.raises(ValueError, match="AAPL already in open positions"):
         add_position("aapl", "2026-06-02", 155.0)
 
 
@@ -88,7 +95,7 @@ def test_exit_signals_empty_df():
 
 
 def test_exit_signals_too_short():
-    df = _make_ohlcv(n=10)
+    df = _make_ohlcv(n=35)
     result = compute_exit_signals(df)
     assert result["score"] == 0
 
