@@ -56,7 +56,8 @@ def _fmt_pct(x: float) -> str:
 def _top3_card(medal: str, row: pd.Series) -> str:
     mom = row.get("mom_12_1", float("nan"))
     rs = row.get("rs_6m", float("nan"))
-    sector = str(row.get("sector", "") or "—")
+    _s = row.get("sector", "")
+    sector = "—" if pd.isna(_s) or str(_s).strip() == "" else str(_s)
     name = str(row.get("name", "") or "")[:32]
     ticker = str(row.get("ticker", ""))
     score = row.get("composite", 0)
