@@ -1,6 +1,12 @@
 # Secrets
 .env
 
+# Application data
+positions.json
+
+# Development
+.superpowers/
+
 # Cache and generated data (too large / regenerated each run)
 data/
 logs/
