@@ -5,7 +5,7 @@ import tempfile
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from src.factors import rsi_14, macd_state, adx_14, mfi_14
@@ -29,17 +29,50 @@ def save_positions(positions: list[dict]) -> None:
     os.replace(tmp, POSITIONS_FILE)
 
 
-def add_position(ticker: str, entry_date: str, entry_price: float) -> None:
-    """Append a new position. Raises ValueError if ticker already open."""
+def fetch_price_on_date(ticker: str, entry_date: str) -> float | None:
+    """Fetch closing price for ticker on or before entry_date. Returns None on failure."""
+    try:
+        dt = datetime.strptime(entry_date, "%Y-%m-%d")
+        start = (dt - timedelta(days=7)).strftime("%Y-%m-%d")
+        end = (dt + timedelta(days=2)).strftime("%Y-%m-%d")
+        raw = yf.download(ticker, start=start, end=end, interval="1d",
+                          auto_adjust=True, progress=False)
+        if raw.empty:
+            return None
+        df = raw.copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower() for c in df.columns]
+        else:
+            df.columns = [c.lower() for c in df.columns]
+        df = df.dropna(how="all")
+        if df.empty:
+            return None
+        target = pd.Timestamp(entry_date)
+        available = df.index[df.index <= target]
+        if available.empty:
+            return float(df["close"].iloc[0])
+        return float(df.loc[available[-1], "close"])
+    except Exception:
+        return None
+
+
+def add_position(ticker: str, entry_date: str, entry_price: float | None = None) -> float:
+    """Append a new position. Auto-fetches close price on entry_date if not provided.
+    Returns the entry price used. Raises ValueError if ticker already open or price unavailable."""
     positions = load_positions()
     if any(p["ticker"] == ticker.upper() for p in positions):
         raise ValueError(f"{ticker.upper()} already in open positions")
+    if entry_price is None:
+        entry_price = fetch_price_on_date(ticker, entry_date)
+        if entry_price is None:
+            raise ValueError(f"Could not fetch price for {ticker.upper()} on {entry_date}")
     positions.append({
         "ticker": ticker.upper(),
         "entry_date": entry_date,
         "entry_price": float(entry_price),
     })
     save_positions(positions)
+    return float(entry_price)
 
 
 def remove_position(ticker: str) -> None:

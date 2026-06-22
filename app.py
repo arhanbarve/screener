@@ -45,6 +45,42 @@ with st.sidebar:
     st.markdown("*Momentum factor strategy*")
 
 
+# ── Screener Results ──────────────────────────────────────────────────────────
+
+def _fmt_pct(x: float) -> str:
+    if pd.isna(x):
+        return "—"
+    return f"+{x:.0%}" if x >= 0 else f"{x:.0%}"
+
+
+def _top3_card(medal: str, row: pd.Series) -> str:
+    mom = row.get("mom_12_1", float("nan"))
+    rs = row.get("rs_6m", float("nan"))
+    sector = str(row.get("sector", "") or "—")
+    name = str(row.get("name", "") or "")[:32]
+    ticker = str(row.get("ticker", ""))
+    score = row.get("composite", 0)
+    return f"""
+    <div style="border:1px solid #e2e8f0;border-radius:12px;padding:18px;background:#f8fafc;height:100%">
+      <div style="font-size:28px;margin-bottom:4px">{medal}</div>
+      <div style="font-weight:800;font-size:20px;color:#1e293b;letter-spacing:-0.5px">{_html.escape(ticker)}</div>
+      <div style="color:#64748b;font-size:12px;margin-bottom:10px">{_html.escape(name)}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+        <span style="background:#dcfce7;color:#166534;padding:3px 9px;border-radius:8px;font-size:12px;font-weight:600">
+          📈 Mom: {_fmt_pct(mom)}
+        </span>
+        <span style="background:#dbeafe;color:#1e40af;padding:3px 9px;border-radius:8px;font-size:12px;font-weight:600">
+          ⚡ RS: {_fmt_pct(rs)}
+        </span>
+      </div>
+      <div style="display:flex;gap:6px">
+        <span style="background:#f1f5f9;color:#475569;padding:3px 9px;border-radius:8px;font-size:11px">{_html.escape(sector)}</span>
+        <span style="background:#ede9fe;color:#6d28d9;padding:3px 9px;border-radius:8px;font-size:11px;font-weight:600">Score {score:.2f}</span>
+      </div>
+    </div>
+    """
+
+
 def _render_screener() -> None:
     st.title("📈 Screener Results")
 
@@ -63,40 +99,125 @@ def _render_screener() -> None:
     except Exception as e:
         st.error(f"Could not read {selected_date}: {e}")
         return
-    df.insert(0, "Rank", range(1, len(df) + 1))
 
-    col_map = {
-        "ticker": "Ticker", "name": "Name", "sector": "Sector",
-        "composite": "Score", "mom_12_1": "Mom 12-1",
-        "rs_6m": "RS 6M", "price": "Price", "market_cap": "Mkt Cap",
-    }
-    display_cols = ["Rank"] + [c for c in col_map if c in df.columns]
-    display_df = df[display_cols].rename(columns=col_map)
+    # ── Summary metrics ───────────────────────────────────────────────────────
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        top_ticker = df.iloc[0]["ticker"] if len(df) > 0 else "—"
+        top_score = df.iloc[0]["composite"] if len(df) > 0 and "composite" in df.columns else 0
+        st.metric("🥇 Top Pick", top_ticker, f"Score {top_score:.2f}")
+    with m2:
+        st.metric("📊 Stocks Ranked", len(df))
+    with m3:
+        avg = df["composite"].mean() if "composite" in df.columns else 0
+        st.metric("📈 Avg Score", f"{avg:.2f}")
 
-    if "Score" in display_df.columns:
-        display_df["Score"] = display_df["Score"].map(
-            lambda x: f"{x:.2f}" if pd.notna(x) else "—"
-        )
-    if "Mom 12-1" in display_df.columns:
-        display_df["Mom 12-1"] = display_df["Mom 12-1"].map(
-            lambda x: f"{x:.1%}" if pd.notna(x) else "—"
-        )
-    if "RS 6M" in display_df.columns:
-        display_df["RS 6M"] = display_df["RS 6M"].map(
-            lambda x: f"{x:.1%}" if pd.notna(x) else "—"
-        )
-    if "Price" in display_df.columns:
-        display_df["Price"] = display_df["Price"].map(
-            lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
-        )
-    if "Mkt Cap" in display_df.columns:
-        display_df["Mkt Cap"] = display_df["Mkt Cap"].map(
-            lambda x: f"${x / 1e9:.1f}B" if pd.notna(x) else "—"
-        )
+    st.markdown("")
 
-    st.metric("Stocks in results", len(df))
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    # ── Top 3 medal cards ─────────────────────────────────────────────────────
+    medals = ["🥇", "🥈", "🥉"]
+    cols = st.columns(3)
+    for i, (col, medal) in enumerate(zip(cols, medals)):
+        if i < len(df):
+            with col:
+                st.markdown(_top3_card(medal, df.iloc[i]), unsafe_allow_html=True)
 
+    st.markdown("---")
+
+    # ── Full ranked table ─────────────────────────────────────────────────────
+    df2 = df.copy()
+    df2.insert(0, "Rank", range(1, len(df2) + 1))
+
+    display_df = pd.DataFrame()
+    display_df["Rank"] = df2["Rank"]
+    display_df["Ticker"] = df2["ticker"]
+    display_df["Name"] = df2["name"].str[:35] if "name" in df2.columns else "—"
+    display_df["Sector"] = df2["sector"].fillna("—") if "sector" in df2.columns else "—"
+    display_df["Score"] = df2["composite"] if "composite" in df2.columns else None
+    display_df["Mom 12-1"] = df2["mom_12_1"].map(_fmt_pct) if "mom_12_1" in df2.columns else "—"
+    display_df["RS vs SPY 6M"] = df2["rs_6m"].map(_fmt_pct) if "rs_6m" in df2.columns else "—"
+    display_df["Price"] = (
+        df2["price"].map(lambda x: f"${x:,.2f}" if pd.notna(x) else "—")
+        if "price" in df2.columns else "—"
+    )
+    display_df["Mkt Cap"] = (
+        df2["market_cap"].map(lambda x: f"${x / 1e9:.1f}B" if pd.notna(x) else "—")
+        if "market_cap" in df2.columns else "—"
+    )
+
+    max_score = float(df["composite"].max()) if "composite" in df.columns else 5.0
+
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Rank": st.column_config.NumberColumn(width="small"),
+            "Score": st.column_config.ProgressColumn(
+                "Score",
+                help=(
+                    "Composite factor score (weighted z-score):\n"
+                    "35% 12-month momentum · 25% analyst revision breadth · "
+                    "20% earnings surprise · 20% 6-month RS vs SPY"
+                ),
+                min_value=0,
+                max_value=max_score,
+                format="%.2f",
+            ),
+            "Mom 12-1": st.column_config.TextColumn(
+                "Mom 12-1",
+                help=(
+                    "12-month price return, skipping the most recent month.\n"
+                    "Why skip last month? 1-month returns tend to reverse.\n"
+                    "The 12-1 window captures durable institutional momentum."
+                ),
+            ),
+            "RS vs SPY 6M": st.column_config.TextColumn(
+                "RS vs SPY 6M",
+                help=(
+                    "Outperformance vs S&P 500 over 6 months.\n"
+                    "+300% = the stock beat the index by 300 percentage points.\n"
+                    "Filters stocks that rose only because the market rose."
+                ),
+            ),
+        },
+    )
+
+    # ── Glossary ──────────────────────────────────────────────────────────────
+    with st.expander("📖 What do these indicators mean?"):
+        st.markdown("""
+**Composite Score** — Weighted rank of all 4 factors, expressed as z-scores so results are comparable
+across different screen dates. Higher = stronger setup.
+
+**Mom 12-1 (12-month momentum)** — Price return over the past year, *excluding* the most recent month.
+Skipping last month removes short-term mean reversion noise. What remains is the slow-moving
+institutional momentum that academic research shows persists for 3–12 months.
+
+**RS vs SPY 6M (Relative Strength)** — How much the stock beat the S&P 500 over 6 months.
++300% = outperformed by 300 percentage points — not just a rising tide lift.
+
+**Rev Breadth (Analyst Revision Breadth)** — Net % of sell-side analysts raising EPS estimates
+vs cutting. Rising estimates → institutions are likely accumulating.
+
+**SUE (Standardized Unexpected Earnings)** — How much the last earnings beat surprised vs
+the stock's own historical surprise volatility. Consistently beating = durable edge.
+
+---
+**Entry / exit timing indicators** (used in Open Positions — also guide when to enter after screening):
+
+| Indicator | What it measures | Good entry zone | Exit trigger |
+|---|---|---|---|
+| **RSI (14)** | Momentum — overbought/oversold on 0–100 scale | 40–65 (not stretched) | >70 + declining |
+| **MACD** | Trend direction via 12/26 EMA crossover | Bullish cross | Bearish cross |
+| **Stochastic %K/%D** | Short-term price position in recent range | %K < 70, above %D | %K > 80 then crosses below %D |
+| **ADX (14)** | Trend *strength* (not direction) — >25 = real trend | >20 | Peaked, then drops >5 pts |
+| **MFI (14)** | Volume-weighted RSI — tracks smart money flow | 40–65 | <50 (money leaving) |
+
+Exit rule: **3 or more of 5 signals triggered = exit**.
+        """)
+
+
+# ── Open Positions ────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=900)
 def _cached_position_data(ticker: str) -> tuple[dict, float | None]:
@@ -177,8 +298,8 @@ def _render_position_card(pos: dict) -> None:
           <span style="font-weight:700;font-size:18px;color:#1e293b">{ticker_safe}</span>
           <span style="color:#64748b;font-size:13px;margin-left:8px">
             · entered {entry_date_safe} @ ${entry_price:,.2f}
-            · {held_days}d
-            · {price_str} ·
+            · {held_days}d held
+            · now {price_str} ·
           </span>
           <span style="color:{pnl_color};font-weight:600;font-size:14px">{pnl_str}</span>
         </div>
@@ -201,30 +322,35 @@ def _render_position_card(pos: dict) -> None:
 def _render_positions() -> None:
     st.title("📋 Open Positions")
 
+    st.caption(
+        "Enter a ticker and the date you bought it — the closing price on that date "
+        "is fetched automatically and used as your entry price for P&L tracking."
+    )
+
     with st.form("add_position_form", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+        c1, c2, c3 = st.columns([3, 3, 1])
         with c1:
             ticker_input = st.text_input("Ticker", placeholder="AAPL").strip().upper()
         with c2:
-            entry_date = st.date_input("Entry date", value=date.today())
+            entry_date_input = st.date_input("Entry date", value=date.today())
         with c3:
-            entry_price = st.number_input("Entry price ($)", min_value=0.01, step=0.01, format="%.2f")
-        with c4:
             st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
             submitted = st.form_submit_button("＋ Add", use_container_width=True)
 
     if submitted:
         if not ticker_input:
             st.error("Ticker required")
-        elif entry_price <= 0:
-            st.error("Entry price must be > 0")
         else:
-            try:
-                add_position(ticker_input, str(entry_date), entry_price)
-                st.success(f"Added {ticker_input}")
-                st.rerun()
-            except ValueError as e:
-                st.error(str(e))
+            with st.spinner(f"Fetching {ticker_input} close price on {entry_date_input}…"):
+                try:
+                    price_used = add_position(ticker_input, str(entry_date_input))
+                    st.success(
+                        f"Added {ticker_input} — entry price ${price_used:,.2f} "
+                        f"(close on {entry_date_input})"
+                    )
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
 
     positions = load_positions()
     if not positions:
@@ -234,7 +360,6 @@ def _render_positions() -> None:
     st.markdown(f"**{len(positions)} open position{'s' if len(positions) != 1 else ''}**")
     st.markdown("---")
 
-    # Sort: most signals first (most urgent at top)
     enriched = []
     for p in positions:
         signals, _ = _cached_position_data(p["ticker"])
@@ -244,6 +369,8 @@ def _render_positions() -> None:
     for pos in enriched:
         _render_position_card(pos)
 
+
+# ── Router ────────────────────────────────────────────────────────────────────
 
 if page == "📈 Screener Results":
     _render_screener()
