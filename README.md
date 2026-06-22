@@ -134,7 +134,3 @@ src/
 config.yaml       — weights, gates, cache TTLs, output settings
 run_screener.sh   — cron wrapper script
 ```
-
----
-
-*Research tool only. Not investment advice.*
