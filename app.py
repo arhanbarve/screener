@@ -1,3 +1,4 @@
+import html as _html
 import math
 import sys
 from datetime import date, datetime
@@ -57,7 +58,11 @@ def _render_screener() -> None:
     dates = [f.stem.replace("screen_", "") for f in csv_files]
     selected_date = st.selectbox("Screen date", dates)
 
-    df = pd.read_csv(output_dir / f"screen_{selected_date}.csv")
+    try:
+        df = pd.read_csv(output_dir / f"screen_{selected_date}.csv")
+    except Exception as e:
+        st.error(f"Could not read {selected_date}: {e}")
+        return
     df.insert(0, "Rank", range(1, len(df) + 1))
 
     col_map = {
@@ -125,6 +130,9 @@ def _render_position_card(pos: dict) -> None:
     signals, current_price = _cached_position_data(ticker)
     score = signals.get("score", 0)
 
+    ticker_safe = _html.escape(ticker)
+    entry_date_safe = _html.escape(str(entry_date))
+
     try:
         held_days = (date.today() - datetime.strptime(entry_date, "%Y-%m-%d").date()).days
     except Exception:
@@ -166,9 +174,9 @@ def _render_position_card(pos: dict) -> None:
                 margin-bottom:4px;background:{bg}">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <div>
-          <span style="font-weight:700;font-size:18px;color:#1e293b">{ticker}</span>
+          <span style="font-weight:700;font-size:18px;color:#1e293b">{ticker_safe}</span>
           <span style="color:#64748b;font-size:13px;margin-left:8px">
-            · entered {entry_date} @ ${entry_price:,.2f}
+            · entered {entry_date_safe} @ ${entry_price:,.2f}
             · {held_days}d
             · {price_str} ·
           </span>

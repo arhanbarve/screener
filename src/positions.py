@@ -64,7 +64,8 @@ def _stoch_bear_cross(
     k_now = float(sk.iloc[-1])
     k_prev = float(sk.iloc[-2])
     d_now = float(d_ser.iloc[-1])
-    bear_cross = (k_now < d_now) and (k_prev >= d_now) and (k_prev > 80)
+    d_prev = float(d_ser.iloc[-2])
+    bear_cross = (k_now < d_now) and (k_prev >= d_prev) and (k_prev > 80)
     return k_now, d_now, bear_cross
 
 
