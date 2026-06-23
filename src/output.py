@@ -2,14 +2,15 @@ import os
 import pandas as pd
 
 CSV_COLUMNS = [
-    "ticker", "name", "sector", "composite",
-    "z_mom_12_1", "z_rev_breadth", "z_sue", "z_rs_6m",
-    "mom_12_1", "rev_breadth", "sue", "rs_6m",
+    "ticker", "name", "sector", "composite", "conviction",
+    "z_mom_12_1", "z_rev_breadth", "z_sue", "z_rs_6m", "z_rs_slope", "z_tech_score",
+    "mom_12_1", "rev_breadth", "sue", "rs_6m", "rs_slope",
     "gp_assets", "pct_from_high", "short_float", "insider_buys_90d",
     "price", "market_cap",
     "rsi_14", "macd", "vol_surge", "above_sma20", "above_sma50",
-    "stoch_k", "stoch_d", "stoch_cross", "bb_pct_b", "bb_width", "adx", "mfi",
+    "stoch_k", "stoch_d", "stoch_cross", "bb_pct_b", "bb_width", "adx", "mfi", "tech_score",
     "entry",
+    "streak_count", "streak_consecutive",
 ]
 
 
@@ -26,6 +27,12 @@ def _rationale(row: pd.Series) -> str:
         parts.append(f"Strong 6m RS vs SPY ({row['rs_6m']:.1%})")
     if row.get("insider_buys_90d", 0) >= 2:
         parts.append(f"{int(row['insider_buys_90d'])} insiders bought last 90d")
+    streak_cons = int(row.get("streak_consecutive", 0) or 0)
+    if streak_cons >= 3:
+        parts.append(f"Sustained {streak_cons}-day streak")
+    conviction = int(row.get("conviction", 0) or 0)
+    if conviction >= 7:
+        parts.append(f"High conviction ({conviction}/10)")
     return "; ".join(parts) if parts else "Composite score"
 
 
@@ -54,16 +61,19 @@ def write_markdown(
         "",
         "## Top Ranked Names",
         "",
-        "| Rank | Ticker | Name | Sector | Composite | Entry | Rationale |",
-        "|------|--------|------|--------|-----------|-------|-----------|",
+        "| Rank | Ticker | Name | Sector | Composite | Conv | Streak | Entry | Rationale |",
+        "|------|--------|------|--------|-----------|------|--------|-------|-----------|",
     ]
     for i, (_, row) in enumerate(df.iterrows(), 1):
         name      = str(row.get("name", ""))[:30]
         sector    = str(row.get("sector", ""))[:20]
         comp      = f"{row.get('composite', 0):.3f}"
+        conv      = int(row.get("conviction", 0) or 0)
+        cons      = int(row.get("streak_consecutive", 0) or 0)
+        streak_str = f"🔥{cons}d" if cons >= 2 else "—"
         entry     = str(row.get("entry", ""))
         rationale = _rationale(row)
-        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {entry} | {rationale} |")
+        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {conv}/10 | {streak_str} | {entry} | {rationale} |")
 
     lines += [
         "",
@@ -134,8 +144,12 @@ def print_top10(df: pd.DataFrame):
         mfi_s   = f"MFI={mfi:.0f}"         if mfi == mfi else "MFI=—"
         adx_s   = f"ADX={adx:.0f}"         if adx == adx else "ADX=—"
         stoch_s = f"Stoch={sk:.0f}/{sd:.0f}" if sk == sk and sd == sd else "Stoch=—"
+        conv  = int(row.get("conviction", 0) or 0)
+        cons  = int(row.get("streak_consecutive", 0) or 0)
+        streak_s = f"streak={cons}d" if cons >= 2 else ""
         print(
             f"  {i:2d}. {row['ticker']:<8} composite={comp:+.3f}  ${price:.2f}"
-            f"  entry={entry:<6}  {rsi_s}  {mfi_s}  {stoch_s}  {adx_s}  macd={macd}"
+            f"  conv={conv}/10  entry={entry:<6}  {rsi_s}  {mfi_s}  {stoch_s}  {adx_s}  macd={macd}"
+            + (f"  {streak_s}" if streak_s else "")
         )
     print()

@@ -12,12 +12,18 @@ quality_gate:
 
 factors:
   weights:
-    mom_12_1: 0.35
-    rev_breadth: 0.25
-    sue: 0.20
-    rs_6m: 0.20
+    mom_12_1: 0.28
+    rev_breadth: 0.20
+    sue: 0.17
+    rs_6m: 0.15
+    rs_slope: 0.05
+    tech_score: 0.10
+    streak_bonus: 0.05
   winsorize_pct: 0.01
   missing_factor_treatment: neutral
+
+streak:
+  lookback_days: 14
 
 confirmation:
   require_above_sma200: true

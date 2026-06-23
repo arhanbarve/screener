@@ -8,6 +8,7 @@ from src.prices import fetch_all_prices
 from src.fundamentals import fetch_all_fundamentals
 from src.factors import squeeze_flag
 from src.compose import build_composite
+from src.streak import load_streak_history
 from src.output import write_csv, write_markdown, print_top10
 import pandas as pd
 
@@ -58,7 +59,8 @@ def run(force_universe: bool = False):
     print(f"[stage3] fundamentals fetched for {len(fund_df)} tickers")
 
     # Stage 4: Composite score
-    ranked_df = build_composite(merged, cfg)
+    streak_data = load_streak_history(OUTPUT_DIR, lookback_days=cfg.get("streak", {}).get("lookback_days", 14))
+    ranked_df = build_composite(merged, cfg, streak_data=streak_data)
 
     # Squeeze screen
     if cfg["output"].get("include_squeeze_screen", False):

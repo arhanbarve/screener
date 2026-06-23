@@ -214,6 +214,46 @@ def vol_surge_ratio(volume: pd.Series) -> float:
     return avg5 / avg20
 
 
+def tech_signal_score(row: pd.Series) -> int:
+    """Count of 8 technical thresholds passing. Higher = more aligned for entry."""
+    score = 0
+
+    rsi = row.get("rsi_14")
+    if pd.notna(rsi) and 40.0 <= float(rsi) <= 70.0:
+        score += 1
+
+    macd = row.get("macd")
+    if pd.notna(macd) and str(macd) in ("bullish", "bullish_cross"):
+        score += 1
+
+    sk = row.get("stoch_k")
+    cross = row.get("stoch_cross")
+    if pd.notna(sk) and float(sk) > 20.0 and (bool(cross) or float(sk) > 50.0):
+        score += 1
+
+    adx = row.get("adx")
+    if pd.notna(adx) and float(adx) > 20.0:
+        score += 1
+
+    vol = row.get("vol_surge")
+    if pd.notna(vol) and float(vol) > 1.1:
+        score += 1
+
+    sma50 = row.get("above_sma50")
+    if pd.notna(sma50) and bool(sma50):
+        score += 1
+
+    bb = row.get("bb_pct_b")
+    if pd.notna(bb) and 0.2 <= float(bb) <= 0.9:
+        score += 1
+
+    mfi = row.get("mfi")
+    if pd.notna(mfi) and float(mfi) > 40.0:
+        score += 1
+
+    return score
+
+
 def entry_grade(
     rsi_val: float,
     macd: str,

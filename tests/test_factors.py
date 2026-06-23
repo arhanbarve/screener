@@ -5,7 +5,7 @@ import pytest
 from src.factors import (
     mom_12_1, mom_1m, compute_sue, rev_breadth_score,
     gp_assets_score, rs_vs_spy, pct_from_52w_high,
-    breakout_flag, avg_dollar_vol, squeeze_flag,
+    breakout_flag, avg_dollar_vol, squeeze_flag, tech_signal_score,
 )
 
 def make_price_series(n: int = 252) -> pd.Series:
@@ -88,3 +88,69 @@ def test_squeeze_flag_triggers():
 def test_squeeze_flag_no_trigger_low_short():
     result = squeeze_flag(short_float=0.05, days_to_cover=6.0, mom_1m_val=0.05)
     assert result is False
+
+
+def _make_tech_row(**kwargs) -> pd.Series:
+    defaults = {
+        "rsi_14": 55.0,
+        "macd": "bullish",
+        "stoch_k": 55.0,
+        "stoch_cross": False,
+        "adx": 25.0,
+        "vol_surge": 1.2,
+        "above_sma50": True,
+        "bb_pct_b": 0.6,
+        "mfi": 55.0,
+    }
+    defaults.update(kwargs)
+    return pd.Series(defaults)
+
+
+def test_tech_signal_score_all_pass():
+    row = _make_tech_row()
+    assert tech_signal_score(row) == 8
+
+
+def test_tech_signal_score_all_fail():
+    row = _make_tech_row(
+        rsi_14=80.0,
+        macd="bearish",
+        stoch_k=15.0,
+        stoch_cross=False,
+        adx=10.0,
+        vol_surge=0.9,
+        above_sma50=False,
+        bb_pct_b=0.95,
+        mfi=30.0,
+    )
+    assert tech_signal_score(row) == 0
+
+
+def test_tech_signal_score_nan_safe():
+    row = pd.Series({
+        "rsi_14": float("nan"),
+        "macd": float("nan"),
+        "stoch_k": float("nan"),
+        "stoch_cross": float("nan"),
+        "adx": float("nan"),
+        "vol_surge": float("nan"),
+        "above_sma50": float("nan"),
+        "bb_pct_b": float("nan"),
+        "mfi": float("nan"),
+    })
+    assert tech_signal_score(row) == 0
+
+
+def test_tech_signal_score_partial():
+    row = _make_tech_row(
+        rsi_14=80.0,       # fail: overbought
+        macd="bearish",    # fail
+        stoch_k=15.0,      # fail: below 20
+        stoch_cross=False,
+        adx=25.0,          # pass
+        vol_surge=1.2,     # pass
+        above_sma50=True,  # pass
+        bb_pct_b=0.6,      # pass
+        mfi=30.0,          # fail: below 40
+    )
+    assert tech_signal_score(row) == 4
