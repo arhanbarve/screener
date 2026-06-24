@@ -12,37 +12,49 @@ quality_gate:
 
 factors:
   weights:
-    # Price momentum block (0.52)
-    mom_12_1: 0.22
+    # Price momentum block (0.50)
+    # residual_mom replaces raw mom_12_1 as primary signal; mom_12_1 kept as secondary
+    mom_12_1: 0.12
+    residual_mom: 0.14
     rs_6m: 0.10
     rs_accel: 0.06
     rs_slope: 0.04
-    streak_z: 0.08
-    st_reversal: 0.02
-    # Earnings/revision block (0.30)
-    sue: 0.13
-    rev_breadth: 0.09
-    rev_magnitude: 0.08
-    # Quality + insider block (0.08)
-    gp_assets: 0.05
+    pct_from_high: 0.04
+    # Earnings/revision block (0.33)
+    sue: 0.14
+    rev_breadth: 0.10
+    rev_magnitude: 0.09
+    # Quality + insider block (0.09)
+    gp_assets: 0.06
     insider_z: 0.03
-    # Technical confirmation block (0.10)
+    # Technical confirmation block (0.08) — rank-normalized, not z-scored
     trend_score: 0.05
-    momo_osc_score: 0.03
-    volume_score: 0.02
+    momo_osc_score: 0.02
+    volume_score: 0.01
   winsorize_pct: 0.01
   missing_factor_treatment: neutral
+  # Factors requiring rank-normalization instead of z-score (bounded integers)
+  rank_normalize_factors:
+    - insider_z
+    - trend_score
+    - momo_osc_score
+    - volume_score
+  # Minimum fraction of factor weight a stock must have data for to be scored
+  min_factor_coverage: 0.40
 
 streak:
   lookback_days: 14
 
 confirmation:
   require_above_sma200: true
-  max_pct_below_52w_high: 0.20
+  max_pct_below_52w_high: 0.35
 
 output:
   top_n: 20
   include_squeeze_screen: true
+  # Rebalance band: hold until rank drops below exit_band
+  entry_band: 20
+  exit_band: 35
 
 cache:
   price_ttl_hours: 18

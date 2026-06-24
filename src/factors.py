@@ -56,6 +56,30 @@ def rs_vs_spy(stock_close: pd.Series, spy_close: pd.Series, window: int = DAYS_6
     spy_ret   = float(spy_close.iloc[-1] / spy_close.iloc[-window]) - 1.0
     return stock_ret - spy_ret
 
+def residual_momentum(close: pd.Series, market_close: pd.Series) -> float:
+    """
+    Risk-adjusted momentum (Blitz, Huij, Martens 2011).
+    Regress monthly stock returns on monthly market returns,
+    sum residuals over 12 months (skip last), scale by residual vol.
+    Lower crash risk than raw 12-1 momentum.
+    """
+    monthly_stock = close.resample("ME").last().pct_change().dropna()
+    monthly_mkt   = market_close.resample("ME").last().pct_change().dropna()
+    df = pd.DataFrame({"r": monthly_stock, "m": monthly_mkt}).dropna()
+    if len(df) < 13:
+        return float("nan")
+    df = df.iloc[-13:-1]  # 12 months, skip most recent
+    m_var = float(df["m"].var())
+    if m_var < 1e-12:
+        return float("nan")
+    beta = float(df["r"].cov(df["m"])) / m_var
+    residuals = df["r"] - beta * df["m"]
+    std = float(residuals.std())
+    if std < 1e-12:
+        return float("nan")
+    return float(residuals.sum() / std)
+
+
 def rs_slope(stock_close: pd.Series, spy_close: pd.Series, window: int = DAYS_3M) -> float:
     """Slope of stock/spy ratio over last `window` days."""
     if len(stock_close) < window or len(spy_close) < window:
@@ -315,10 +339,16 @@ def entry_grade(
     bb_pct_b: float = float("nan"),
     mfi_val: float = float("nan"),
 ) -> str:
+    """
+    Short-term entry timing grade. Only uses signals NOT already captured
+    in the composite technical scores (trend_score, momo_osc_score, volume_score).
+    ADX, BB %B, vol_surge are in the composite — removed from here to avoid
+    double-counting. Hard vetoes remain unchanged.
+    """
     def _ok(v: float) -> bool:
         return not np.isnan(v)
 
-    # Hard vetoes
+    # Hard vetoes — unconditional blockers
     if macd in ("bearish", "bearish_cross"):
         return "WAIT"
     if not above_sma20:
@@ -327,43 +357,30 @@ def entry_grade(
         return "WAIT"
     if _ok(mfi_val) and mfi_val > 80:
         return "WAIT"
-    if _ok(bb_pct_b) and bb_pct_b > 0.92:  # price far above upper Bollinger band
-        return "WAIT"
 
     score = 0
 
-    # MACD (spine of the signal)
+    # MACD direction (primary timing spine)
     if macd == "bullish_cross":
         score += 2
     elif macd == "bullish":
         score += 1
 
-    # RSI sweet spot 40-65
+    # RSI in healthy momentum zone (40-65 consistent with composite)
     if 40.0 <= rsi_val <= 65.0:
         score += 1
 
-    # MFI confirms with volume 40-65
+    # MFI confirms money-flow alignment (40-65)
     if _ok(mfi_val) and 40.0 <= mfi_val <= 65.0:
         score += 1
 
-    # Volume expansion
-    if _ok(vol_ratio) and vol_ratio > 1.15:
-        score += 1
-
-    # ADX confirms a real trend
-    if _ok(adx_val) and adx_val > 20.0:
-        score += 1
-
-    # Stochastic: %K above %D and not overbought, extra for fresh cross
+    # Stochastic: momentum not overbought, extra for fresh cross
     if _ok(stoch_k) and _ok(stoch_d) and stoch_k > stoch_d and stoch_k < 70.0:
         score += 2 if stoch_cross else 1
 
-    # Bollinger %B: healthy momentum zone (0.5-0.85 = trending, not overextended)
-    if _ok(bb_pct_b) and 0.5 <= bb_pct_b <= 0.85:
-        score += 1
-
-    if score >= 6:
+    # Max score = 6 (MACD_cross=2 + RSI=1 + MFI=1 + Stoch_cross=2)
+    if score >= 5:
         return "STRONG"
-    if score >= 4:
+    if score >= 3:
         return "OK"
     return "WAIT"

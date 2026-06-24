@@ -45,8 +45,51 @@ def init_db(db_path: str):
             PRIMARY KEY(ticker, as_of_date)
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS fundamentals_history (
+            ticker TEXT,
+            snapshot_date TEXT,
+            payload TEXT,
+            fetched_at TEXT,
+            PRIMARY KEY(ticker, snapshot_date)
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS universe_snapshots (
+            snapshot_date TEXT,
+            ticker TEXT,
+            cik TEXT,
+            PRIMARY KEY(snapshot_date, ticker)
+        )
+    """)
     conn.commit()
     conn.close()
+
+
+def archive_fundamentals_snapshot(db_path: str, date_str: str):
+    """Copy today's fundamentals into point-in-time history table.
+    After 6 months of daily archiving, enables backtesting fundamental factors.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        INSERT OR IGNORE INTO fundamentals_history (ticker, snapshot_date, payload, fetched_at)
+        SELECT ticker, ?, payload, fetched_at FROM fundamentals
+    """, (date_str,))
+    conn.commit()
+    conn.close()
+
+
+def archive_universe_snapshot(db_path: str, date_str: str, tickers_df):
+    """Save today's liquidity-gate-surviving universe for survivorship-bias-aware backtesting."""
+    conn = sqlite3.connect(db_path)
+    rows = [(date_str, str(row.get("ticker", "")), str(row.get("cik", "")))
+            for _, row in tickers_df.iterrows()]
+    conn.executemany(
+        "INSERT OR IGNORE INTO universe_snapshots VALUES (?,?,?)", rows
+    )
+    conn.commit()
+    conn.close()
+
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat()

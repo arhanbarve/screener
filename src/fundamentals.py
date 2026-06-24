@@ -118,17 +118,43 @@ def parse_short_interest(info: dict) -> tuple[float, float]:
     float_shares = float(info.get("floatShares") or 1)
     avg_vol      = float(info.get("averageVolume") or 1)
     short_float  = shares_short / float_shares if float_shares > 0 else 0.0
+    short_float  = min(short_float, 1.0)  # cap at 100% — yfinance sometimes returns bad units
     dtc          = shares_short / avg_vol if avg_vol > 0 else 0.0
+    dtc          = min(dtc, 365.0)  # cap at 1 year
     return short_float, dtc
 
 
-def parse_insider_buys(transactions: list, days: int = 90) -> int:
+_EXEC_ROLES = {"ceo", "cfo", "coo", "president", "chief", "director", "chairman", "general counsel"}
+
+
+def parse_insider_buys(transactions: list, days: int = 90) -> dict:
+    """
+    Parse insider purchases. Returns total count AND executive-only count.
+    Cohen-Malloy-Pomorski (2012): opportunistic/exec buys have predictive power;
+    routine programmatic buys do not. Weight toward executive-level purchasers.
+    """
     cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
-    buyers = set()
+    all_buyers: set[str] = set()
+    exec_buyers: set[str] = set()
+    total_value = 0.0
     for tx in transactions:
-        if tx.get("transactionCode") == "P" and tx.get("transactionDate", "") >= cutoff:
-            buyers.add(tx.get("name", ""))
-    return len(buyers)
+        if tx.get("transactionCode") != "P":
+            continue
+        if tx.get("transactionDate", "") < cutoff:
+            continue
+        name  = tx.get("name", "")
+        role  = (tx.get("officerTitle", "") or "").lower()
+        shares = float(tx.get("share", 0) or 0)
+        price  = float(tx.get("transactionPrice", 0) or 0)
+        all_buyers.add(name)
+        total_value += shares * price
+        if any(r in role for r in _EXEC_ROLES):
+            exec_buyers.add(name)
+    return {
+        "insider_buys_90d": len(all_buyers),
+        "exec_buys_90d":    len(exec_buyers),
+        "insider_buy_value": total_value,
+    }
 
 
 class _TokenBucket:
@@ -219,31 +245,46 @@ def fetch_all_fundamentals(
                 try:
                     bucket.consume()
                     insider_tx = fh.stock_insider_transactions(ticker, _from="", to="")
-                    buys = parse_insider_buys(insider_tx.get("data", []))
-                    fund["insider_buys_90d"] = buys
-                    fund["insider_flag"] = buys >= 2
+                    insider_data = parse_insider_buys(insider_tx.get("data", []))
+                    fund["insider_buys_90d"]  = insider_data["insider_buys_90d"]
+                    fund["exec_buys_90d"]     = insider_data["exec_buys_90d"]
+                    fund["insider_buy_value"] = insider_data["insider_buy_value"]
+                    fund["insider_flag"]      = insider_data["exec_buys_90d"] >= 2
                 except Exception as e:
                     logger.warning(f"[fundamentals] insider for {ticker}: {e}")
-                    fund["insider_buys_90d"] = 0
-                    fund["insider_flag"] = False
+                    fund["insider_buys_90d"]  = 0
+                    fund["exec_buys_90d"]     = 0
+                    fund["insider_buy_value"] = 0.0
+                    fund["insider_flag"]      = False
             else:
                 fund["sue"] = float("nan")
                 fund["rev_breadth"] = float("nan")
                 fund["rev_magnitude"] = float("nan")
-                fund["insider_buys_90d"] = 0
-                fund["insider_flag"] = False
+                fund["insider_buys_90d"]  = 0
+                fund["exec_buys_90d"]     = 0
+                fund["insider_buy_value"] = 0.0
+                fund["insider_flag"]      = False
 
             import yfinance as yf
             try:
-                info = yf.Ticker(ticker).info
+                tk = yf.Ticker(ticker)
+                info = tk.info
                 sf, dtc = parse_short_interest(info)
-                fund["short_float"] = sf
+                fund["short_float"]   = sf
                 fund["days_to_cover"] = dtc
-                fund["sector"] = info.get("sector", "")
+                # Robust sector fetch with fallbacks
+                sector = (info.get("sector") or info.get("industry") or "").strip()
+                if not sector:
+                    try:
+                        fast = tk.fast_info
+                        sector = getattr(fast, "sector", "") or ""
+                    except Exception:
+                        sector = ""
+                fund["sector"] = sector
             except Exception:
-                fund["short_float"] = float("nan")
+                fund["short_float"]   = float("nan")
                 fund["days_to_cover"] = float("nan")
-                fund["sector"] = ""
+                fund["sector"]        = ""
 
             put_fundamentals(db_path, ticker, fund)
             row.update(fund)

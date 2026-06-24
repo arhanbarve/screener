@@ -233,7 +233,7 @@ Return ONLY JSON:
         text = _claude("claude-sonnet-4-6", prompt, max_tokens=600)
         parsed = _parse_json(text)
         if parsed:
-            parsed["conviction_delta"] = max(-2, min(2, int(parsed.get("conviction_delta", 0))))
+            parsed["conviction_delta"] = max(-1, min(1, int(parsed.get("conviction_delta", 0))))
             return parsed
     except Exception:
         pass
@@ -364,7 +364,7 @@ def attach_news_overlay(ranked_df: pd.DataFrame, cfg: dict, db_path: str) -> pd.
             df.at[idx, col] = r.get(col)
         df.at[idx, "news_reasoning"] = r.get("reasoning", "")
 
-        delta = max(-2, min(2, int(r.get("conviction_delta", 0))))
+        delta = max(-1, min(1, int(r.get("conviction_delta", 0))))
         sig = sector_signals.get(str(row.get("sector", "")), {})
         if sig.get("direction") == "headwind" and sig.get("strength") == "strong":
             delta = min(delta, 0)

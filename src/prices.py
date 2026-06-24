@@ -4,7 +4,7 @@ import pandas as pd
 import yfinance as yf
 from typing import Optional
 from src.factors import (
-    mom_12_1, mom_1m, rs_vs_spy, rs_slope,
+    mom_12_1, mom_1m, rs_vs_spy, rs_slope, residual_momentum,
     pct_from_52w_high, breakout_flag, avg_dollar_vol,
     rsi_14, macd_state, vol_surge_ratio, entry_grade,
     stochastic, bollinger_pct_b, adx_14, mfi_14,
@@ -126,6 +126,7 @@ def compute_price_factors(
             "market_cap": market_cap,
             "mom_12_1": mom_12_1(close),
             "mom_1m": mom_1m(close),
+            "residual_mom": residual_momentum(close, spy_close),
             "rs_6m": rs_vs_spy(close, spy_close, window=126),
             "rs_3m": rs_vs_spy(close, spy_close, window=63),
             "rs_slope": rs_slope(close, spy_close),

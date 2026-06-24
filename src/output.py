@@ -2,24 +2,27 @@ import os
 import pandas as pd
 
 CSV_COLUMNS = [
-    "ticker", "name", "sector", "composite", "conviction",
-    # z-scores for all 14 composite factors
-    "z_mom_12_1", "z_rs_6m", "z_rs_accel", "z_rs_slope", "z_streak_z", "z_st_reversal",
+    "ticker", "name", "sector", "composite", "conviction", "factor_coverage",
+    # z-scores for all composite factors
+    "z_mom_12_1", "z_residual_mom", "z_rs_6m", "z_rs_accel", "z_rs_slope", "z_pct_from_high",
     "z_sue", "z_rev_breadth", "z_rev_magnitude",
     "z_gp_assets", "z_insider_z",
     "z_trend_score", "z_momo_osc_score", "z_volume_score",
+    # diagnostic z-scores (not in composite)
+    "z_streak_z",
     # raw factors
-    "mom_12_1", "mom_1m", "rs_6m", "rs_3m", "rs_accel", "rs_slope",
+    "mom_12_1", "mom_1m", "residual_mom", "rs_6m", "rs_3m", "rs_accel", "rs_slope",
     "rev_breadth", "sue", "rev_magnitude",
     "gp_assets", "pct_from_high", "short_float", "insider_buys_90d",
+    "exec_buys_90d", "insider_buy_value",
     "price", "market_cap",
     # technicals
     "rsi_14", "macd", "vol_surge", "above_sma20", "above_sma50",
     "stoch_k", "stoch_d", "stoch_cross", "bb_pct_b", "bb_width", "adx", "mfi",
     "tech_score", "trend_score", "momo_osc_score", "volume_score",
     "entry",
-    # streak
-    "streak_count", "streak_consecutive",
+    # streak (diagnostic)
+    "streak_count", "streak_consecutive", "streak_z", "st_reversal",
     # news overlay
     "entry_signal", "catalyst", "thesis_consistency", "conviction_delta", "conviction_news",
     "news_reasoning",

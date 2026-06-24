@@ -2,7 +2,7 @@ import logging
 import os
 from datetime import date
 from src.config import load_config
-from src.cache import init_db
+from src.cache import init_db, archive_fundamentals_snapshot, archive_universe_snapshot
 from src.universe import build_universe
 from src.prices import fetch_all_prices
 from src.fundamentals import fetch_all_fundamentals
@@ -10,6 +10,7 @@ from src.factors import squeeze_flag
 from src.compose import build_composite
 from src.streak import load_streak_history
 from src.news import attach_news_overlay
+from src.spy_analysis import compute_market_stress_overlay
 from src.output import write_csv, write_markdown, print_top10
 import pandas as pd
 
@@ -43,6 +44,9 @@ def run(force_universe: bool = False):
     _, survivors_df = fetch_all_prices(universe_df, cfg, DB_PATH)
     print(f"[stage2] {len(universe_df)} → {len(survivors_df)} after liquidity gate")
 
+    # Archive today's surviving universe for future point-in-time backtesting
+    archive_universe_snapshot(DB_PATH, today, survivors_df)
+
     # Attach CIK from universe
     survivors_df = survivors_df.merge(
         universe_df[["ticker", "cik", "name"]],
@@ -58,6 +62,30 @@ def run(force_universe: bool = False):
     fund_df = fetch_all_fundamentals(survivors_df, cfg, DB_PATH)
     merged = survivors_df.merge(fund_df, on="ticker", how="left")
     print(f"[stage3] fundamentals fetched for {len(fund_df)} tickers")
+
+    # Archive fundamentals snapshot for point-in-time backtesting
+    archive_fundamentals_snapshot(DB_PATH, today)
+
+    # Stage 3.5: Market stress overlay — scale top_n down in momentum-crash regimes
+    stress = compute_market_stress_overlay()
+    scale  = stress["scale_factor"]
+    if scale < 1.0:
+        original_top_n = cfg["output"]["top_n"]
+        new_top_n = max(1, int(original_top_n * scale))
+        cfg = dict(cfg)
+        cfg["output"] = dict(cfg["output"])
+        cfg["output"]["top_n"] = new_top_n
+        print(f"[stress] regime={stress['regime']} scale={scale:.1f} "
+              f"reason='{stress['reason']}' → top_n {original_top_n}→{new_top_n}")
+    else:
+        print(f"[stress] regime={stress['regime']} — full screen")
+
+    if scale == 0.0:
+        print("[stress] STRESS regime: skipping ranking, outputting empty screen")
+        ranked_df = pd.DataFrame(columns=["ticker"])
+        csv_path = write_csv(ranked_df, OUTPUT_DIR, today)
+        print(f"\n[output] {csv_path} (empty — market stress)")
+        return
 
     # Stage 4: Composite score
     streak_data = load_streak_history(OUTPUT_DIR, lookback_days=cfg.get("streak", {}).get("lookback_days", 14))

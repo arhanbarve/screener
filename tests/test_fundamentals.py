@@ -67,9 +67,11 @@ def test_parse_insider_buys():
     from datetime import datetime, timedelta
     recent = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
     transactions = [
-        {"transactionCode": "P", "name": "Tim Cook", "transactionDate": recent},
-        {"transactionCode": "P", "name": "Luca Maestri", "transactionDate": recent},
-        {"transactionCode": "S", "name": "Tim Cook", "transactionDate": recent},
+        {"transactionCode": "P", "name": "Tim Cook", "officerTitle": "CEO", "transactionDate": recent, "share": 100, "transactionPrice": 150.0},
+        {"transactionCode": "P", "name": "Luca Maestri", "officerTitle": "CFO", "transactionDate": recent, "share": 50, "transactionPrice": 150.0},
+        {"transactionCode": "S", "name": "Tim Cook", "officerTitle": "CEO", "transactionDate": recent},
     ]
-    count = parse_insider_buys(transactions, days=90)
-    assert count == 2  # 2 distinct insiders with purchases
+    result = parse_insider_buys(transactions, days=90)
+    assert result["insider_buys_90d"] == 2   # 2 distinct insiders with purchases
+    assert result["exec_buys_90d"] == 2      # both are executives (CEO + CFO)
+    assert result["insider_buy_value"] > 0   # dollar value captured
