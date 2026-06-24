@@ -3,14 +3,24 @@ import pandas as pd
 
 CSV_COLUMNS = [
     "ticker", "name", "sector", "composite", "conviction",
-    "z_mom_12_1", "z_rev_breadth", "z_sue", "z_rs_6m", "z_rs_slope", "z_tech_score",
-    "mom_12_1", "rev_breadth", "sue", "rs_6m", "rs_slope",
+    # z-scores for all 14 composite factors
+    "z_mom_12_1", "z_rs_6m", "z_rs_accel", "z_rs_slope", "z_streak_z", "z_st_reversal",
+    "z_sue", "z_rev_breadth", "z_rev_magnitude",
+    "z_gp_assets", "z_insider_z",
+    "z_trend_score", "z_momo_osc_score", "z_volume_score",
+    # raw factors
+    "mom_12_1", "mom_1m", "rs_6m", "rs_3m", "rs_accel", "rs_slope",
+    "rev_breadth", "sue", "rev_magnitude",
     "gp_assets", "pct_from_high", "short_float", "insider_buys_90d",
     "price", "market_cap",
+    # technicals
     "rsi_14", "macd", "vol_surge", "above_sma20", "above_sma50",
-    "stoch_k", "stoch_d", "stoch_cross", "bb_pct_b", "bb_width", "adx", "mfi", "tech_score",
+    "stoch_k", "stoch_d", "stoch_cross", "bb_pct_b", "bb_width", "adx", "mfi",
+    "tech_score", "trend_score", "momo_osc_score", "volume_score",
     "entry",
+    # streak
     "streak_count", "streak_consecutive",
+    # news overlay
     "entry_signal", "catalyst", "thesis_consistency", "conviction_delta", "conviction_news",
     "news_reasoning",
 ]
@@ -20,18 +30,24 @@ def _rationale(row: pd.Series) -> str:
     parts = []
     if row.get("z_mom_12_1", 0) > 1.0:
         parts.append(f"Top-decile 12-1 momentum ({row['mom_12_1']:.1%})")
+    if row.get("z_rs_accel", 0) > 1.0:
+        parts.append("Accelerating RS vs SPY")
+    if row.get("z_rev_magnitude", 0) > 1.0:
+        parts.append("Analysts raising targets aggressively")
     if row.get("z_rev_breadth", 0) > 1.0:
         rev = row.get("rev_breadth", 0)
-        parts.append(f"Analysts revised up (breadth={rev:.2f})")
+        parts.append(f"Broad analyst upgrades (breadth={rev:.2f})")
     if row.get("z_sue", 0) > 1.0:
-        parts.append(f"Beat estimate ({row['sue']:.1f} SUE)")
+        parts.append(f"Strong earnings surprise ({row['sue']:.1f} SUE)")
     if row.get("z_rs_6m", 0) > 1.0:
-        parts.append(f"Strong 6m RS vs SPY ({row['rs_6m']:.1%})")
+        parts.append(f"Outperforming SPY 6m ({row['rs_6m']:.1%})")
+    if row.get("z_streak_z", 0) > 1.0:
+        cons = int(row.get("streak_consecutive", 0) or 0)
+        parts.append(f"Sustained {cons}-day streak in top picks")
     if row.get("insider_buys_90d", 0) >= 2:
-        parts.append(f"{int(row['insider_buys_90d'])} insiders bought last 90d")
-    streak_cons = int(row.get("streak_consecutive", 0) or 0)
-    if streak_cons >= 3:
-        parts.append(f"Sustained {streak_cons}-day streak")
+        parts.append(f"{int(row['insider_buys_90d'])} insider cluster buy")
+    if row.get("z_trend_score", 0) > 1.0:
+        parts.append("Strong trend (ADX + MACD)")
     conviction = int(row.get("conviction", 0) or 0)
     if conviction >= 7:
         parts.append(f"High conviction ({conviction}/10)")

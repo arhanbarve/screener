@@ -14,12 +14,18 @@ from src.cache import get_news_sentiment, put_news_sentiment
 
 # z-score column → human label for context injection
 _FACTOR_LABELS = {
-    "z_mom_12_1":    "12-month momentum",
-    "z_rev_breadth": "analyst revision breadth (upgrades vs downgrades)",
-    "z_sue":         "earnings surprise (SUE)",
-    "z_rs_6m":       "6-month relative strength vs SPY",
-    "z_rs_slope":    "RS momentum slope",
-    "z_tech_score":  "technical alignment",
+    "z_mom_12_1":       "12-month momentum",
+    "z_rs_6m":          "6-month relative strength vs SPY",
+    "z_rs_accel":       "RS acceleration (3m vs 6m pace)",
+    "z_rs_slope":       "RS momentum slope",
+    "z_streak_z":       "sustained appearance streak",
+    "z_sue":            "earnings surprise (SUE)",
+    "z_rev_breadth":    "analyst revision breadth (upgrades vs downgrades)",
+    "z_rev_magnitude":  "analyst estimate revision magnitude",
+    "z_gp_assets":      "gross profitability quality",
+    "z_insider_z":      "insider cluster buying",
+    "z_trend_score":    "trend strength (ADX + MACD + SMA50)",
+    "z_momo_osc_score": "momentum oscillator alignment",
 }
 
 _ENTRY_FALLBACK: dict = {

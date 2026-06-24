@@ -214,6 +214,55 @@ def vol_surge_ratio(volume: pd.Series) -> float:
     return avg5 / avg20
 
 
+def trend_signal_score(row: pd.Series) -> int:
+    """Trend persistence cluster (0-5): ADX + MACD + SMA50. Trend signals persist."""
+    score = 0
+    adx = row.get("adx")
+    if pd.notna(adx):
+        if float(adx) > 25.0:
+            score += 2   # strong trend
+        elif float(adx) > 20.0:
+            score += 1   # emerging trend
+    macd = row.get("macd")
+    if pd.notna(macd):
+        s = str(macd)
+        if s == "bullish_cross":
+            score += 2   # fresh cross outscores steady bullish
+        elif s == "bullish":
+            score += 1
+    sma50 = row.get("above_sma50")
+    if pd.notna(sma50) and bool(sma50):
+        score += 1
+    return score
+
+
+def oscillator_signal_score(row: pd.Series) -> int:
+    """Momentum oscillator cluster (0-4): RSI + Stoch + MFI + BB in healthy zones."""
+    score = 0
+    rsi = row.get("rsi_14")
+    if pd.notna(rsi) and 40.0 <= float(rsi) <= 70.0:
+        score += 1
+    sk = row.get("stoch_k")
+    cross = row.get("stoch_cross")
+    if pd.notna(sk) and float(sk) > 20.0 and (bool(cross) or float(sk) > 50.0):
+        score += 1
+    mfi = row.get("mfi")
+    if pd.notna(mfi) and 40.0 <= float(mfi) <= 80.0:   # wider upper zone than entry_grade
+        score += 1
+    bb = row.get("bb_pct_b")
+    if pd.notna(bb) and 0.2 <= float(bb) <= 0.9:
+        score += 1
+    return score
+
+
+def volume_signal_score(row: pd.Series) -> int:
+    """Volume confirmation cluster (0-1)."""
+    vol = row.get("vol_surge")
+    if pd.notna(vol) and float(vol) > 1.1:
+        return 1
+    return 0
+
+
 def tech_signal_score(row: pd.Series) -> int:
     """Count of 8 technical thresholds passing. Higher = more aligned for entry."""
     score = 0

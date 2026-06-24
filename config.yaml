@@ -8,17 +8,28 @@ liquidity_gate:
   min_avg_dollar_vol_20d: 5000000
 
 quality_gate:
-  gross_profitability_min: median
+  gross_profitability_min: q25
 
 factors:
   weights:
-    mom_12_1: 0.28
-    rev_breadth: 0.20
-    sue: 0.17
-    rs_6m: 0.15
-    rs_slope: 0.05
-    tech_score: 0.10
-    streak_bonus: 0.05
+    # Price momentum block (0.52)
+    mom_12_1: 0.22
+    rs_6m: 0.10
+    rs_accel: 0.06
+    rs_slope: 0.04
+    streak_z: 0.08
+    st_reversal: 0.02
+    # Earnings/revision block (0.30)
+    sue: 0.13
+    rev_breadth: 0.09
+    rev_magnitude: 0.08
+    # Quality + insider block (0.08)
+    gp_assets: 0.05
+    insider_z: 0.03
+    # Technical confirmation block (0.10)
+    trend_score: 0.05
+    momo_osc_score: 0.03
+    volume_score: 0.02
   winsorize_pct: 0.01
   missing_factor_treatment: neutral
 
@@ -27,7 +38,7 @@ streak:
 
 confirmation:
   require_above_sma200: true
-  max_pct_below_52w_high: 0.10
+  max_pct_below_52w_high: 0.20
 
 output:
   top_n: 20
@@ -37,6 +48,7 @@ cache:
   price_ttl_hours: 18
   fundamentals_ttl_days: 7
   edgar_ttl_days: 30
+  news_ttl_hours: 4
 
 finnhub:
   calls_per_minute: 60
@@ -44,6 +56,3 @@ finnhub:
 news:
   enabled: true
   analyze_top_n: 10
-
-cache:
-  news_ttl_hours: 4
