@@ -9,6 +9,7 @@ from src.fundamentals import fetch_all_fundamentals
 from src.factors import squeeze_flag
 from src.compose import build_composite
 from src.streak import load_streak_history
+from src.news import attach_news_overlay
 from src.output import write_csv, write_markdown, print_top10
 import pandas as pd
 
@@ -61,6 +62,10 @@ def run(force_universe: bool = False):
     # Stage 4: Composite score
     streak_data = load_streak_history(OUTPUT_DIR, lookback_days=cfg.get("streak", {}).get("lookback_days", 14))
     ranked_df = build_composite(merged, cfg, streak_data=streak_data)
+
+    # Stage 4.5: News overlay (entry signal + conviction adjustment)
+    if cfg.get("news", {}).get("enabled", True):
+        ranked_df = attach_news_overlay(ranked_df, cfg, DB_PATH)
 
     # Squeeze screen
     if cfg["output"].get("include_squeeze_screen", False):

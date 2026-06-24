@@ -11,6 +11,8 @@ CSV_COLUMNS = [
     "stoch_k", "stoch_d", "stoch_cross", "bb_pct_b", "bb_width", "adx", "mfi", "tech_score",
     "entry",
     "streak_count", "streak_consecutive",
+    "entry_signal", "catalyst", "thesis_consistency", "conviction_delta", "conviction_news",
+    "news_reasoning",
 ]
 
 
@@ -61,8 +63,8 @@ def write_markdown(
         "",
         "## Top Ranked Names",
         "",
-        "| Rank | Ticker | Name | Sector | Composite | Conv | Streak | Entry | Rationale |",
-        "|------|--------|------|--------|-----------|------|--------|-------|-----------|",
+        "| Rank | Ticker | Name | Sector | Composite | Conv | Streak | Signal | Entry | Rationale |",
+        "|------|--------|------|--------|-----------|------|--------|--------|-------|-----------|",
     ]
     for i, (_, row) in enumerate(df.iterrows(), 1):
         name      = str(row.get("name", ""))[:30]
@@ -73,7 +75,10 @@ def write_markdown(
         streak_str = f"🔥{cons}d" if cons >= 2 else "—"
         entry     = str(row.get("entry", ""))
         rationale = _rationale(row)
-        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {conv}/10 | {streak_str} | {entry} | {rationale} |")
+        es = str(row.get("entry_signal", "") or "")
+        es_badge = {"confirm_entry": "✅", "wait": "⏳", "avoid": "🚫"}.get(es, "")
+        es_str = f"{es_badge} {es}" if es_badge else "—"
+        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {conv}/10 | {streak_str} | {es_str} | {entry} | {rationale} |")
 
     lines += [
         "",
@@ -144,12 +149,16 @@ def print_top10(df: pd.DataFrame):
         mfi_s   = f"MFI={mfi:.0f}"         if mfi == mfi else "MFI=—"
         adx_s   = f"ADX={adx:.0f}"         if adx == adx else "ADX=—"
         stoch_s = f"Stoch={sk:.0f}/{sd:.0f}" if sk == sk and sd == sd else "Stoch=—"
-        conv  = int(row.get("conviction", 0) or 0)
-        cons  = int(row.get("streak_consecutive", 0) or 0)
+        conv    = int(row.get("conviction", 0) or 0)
+        conv_raw = row.get("conviction_news")
+        conv_s   = f"{conv}/10" + (f" (was {int(conv_raw)})" if conv_raw is not None and int(conv_raw) != conv else "")
+        cons    = int(row.get("streak_consecutive", 0) or 0)
         streak_s = f"streak={cons}d" if cons >= 2 else ""
+        es      = str(row.get("entry_signal", "") or "")
+        es_s    = f"  signal={es}" if es and es != "wait" else ""
         print(
             f"  {i:2d}. {row['ticker']:<8} composite={comp:+.3f}  ${price:.2f}"
-            f"  conv={conv}/10  entry={entry:<6}  {rsi_s}  {mfi_s}  {stoch_s}  {adx_s}  macd={macd}"
-            + (f"  {streak_s}" if streak_s else "")
+            f"  conv={conv_s}  entry={entry:<6}  {rsi_s}  {mfi_s}  {stoch_s}  {adx_s}  macd={macd}"
+            + (f"  {streak_s}" if streak_s else "") + es_s
         )
     print()

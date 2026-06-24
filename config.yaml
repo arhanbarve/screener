@@ -40,3 +40,10 @@ cache:
 
 finnhub:
   calls_per_minute: 60
+
+news:
+  enabled: true
+  analyze_top_n: 10
+
+cache:
+  news_ttl_hours: 4

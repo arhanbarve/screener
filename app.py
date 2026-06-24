@@ -157,10 +157,26 @@ def _top3_card(medal: str, row: pd.Series) -> str:
         conv_bg, conv_fg = "#fef3c7", "#92400e"
     else:
         conv_bg, conv_fg = "#fee2e2", "#991b1b"
+    conv_raw = row.get("conviction_news")
+    conv_label = f"Conv {conviction}/10" + (f" (was {int(conv_raw)})" if conv_raw is not None and int(conv_raw or conviction) != conviction else "")
     conv_badge = (
         f'<span style="background:{conv_bg};color:{conv_fg};padding:3px 9px;'
-        f'border-radius:8px;font-size:12px;font-weight:600">Conv {conviction}/10</span>'
+        f'border-radius:8px;font-size:12px;font-weight:600">{conv_label}</span>'
     )
+    es = str(row.get("entry_signal", "") or "")
+    _es_styles = {
+        "confirm_entry": ("#166534", "#dcfce7", "✅ Confirm"),
+        "wait":          ("#92400e", "#fef3c7", "⏳ Wait"),
+        "avoid":         ("#991b1b", "#fee2e2", "🚫 Avoid"),
+    }
+    if es in _es_styles:
+        es_fg, es_bg, es_label = _es_styles[es]
+        signal_badge = (
+            f'<span style="background:{es_bg};color:{es_fg};padding:3px 9px;'
+            f'border-radius:8px;font-size:12px;font-weight:600">{es_label}</span>'
+        )
+    else:
+        signal_badge = ""
 
     return f"""
     <div style="border:1px solid #e2e8f0;border-radius:12px;padding:18px;background:#f8fafc;height:100%">
@@ -178,6 +194,7 @@ def _top3_card(medal: str, row: pd.Series) -> str:
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         {conv_badge}
         {streak_badge}
+        {signal_badge}
       </div>
       <div style="display:flex;gap:6px">
         <span style="background:#f1f5f9;color:#475569;padding:3px 9px;border-radius:8px;font-size:11px">{_html.escape(sector)}</span>
@@ -240,10 +257,30 @@ def _render_screener() -> None:
     display_df["Name"] = df2["name"].str[:35] if "name" in df2.columns else "—"
     display_df["Sector"] = df2["sector"].fillna("—") if "sector" in df2.columns else "—"
     display_df["Score"] = df2["composite"] if "composite" in df2.columns else None
-    display_df["Conviction"] = df2["conviction"].fillna(0).astype(int) if "conviction" in df2.columns else 0
+    if "conviction" in df2.columns and "conviction_news" in df2.columns:
+        def _conv_label(row):
+            c = int(row.get("conviction", 0) or 0)
+            raw = row.get("conviction_news")
+            if raw is not None and int(raw) != c:
+                delta = c - int(raw)
+                return f"{c} ({'+' if delta > 0 else ''}{delta})"
+            return str(c)
+        display_df["Conviction"] = df2.apply(_conv_label, axis=1)
+    else:
+        display_df["Conviction"] = df2["conviction"].fillna(0).astype(int) if "conviction" in df2.columns else 0
     display_df["Streak"] = (
         df2["streak_consecutive"].map(lambda x: f"🔥{int(x)}d" if pd.notna(x) and int(x) >= 2 else "—")
         if "streak_consecutive" in df2.columns else "—"
+    )
+    _es_map = {"confirm_entry": "✅ Confirm", "wait": "⏳ Wait", "avoid": "🚫 Avoid"}
+    display_df["Signal"] = (
+        df2["entry_signal"].map(lambda x: _es_map.get(str(x), "—") if pd.notna(x) else "—")
+        if "entry_signal" in df2.columns else "—"
+    )
+    _cat_map = {"estimate_up": "📈 Est ↑", "estimate_down": "📉 Est ↓", "none": "—"}
+    display_df["Catalyst"] = (
+        df2["catalyst"].map(lambda x: _cat_map.get(str(x), "—") if pd.notna(x) else "—")
+        if "catalyst" in df2.columns else "—"
     )
     display_df["Mom 12-1"] = df2["mom_12_1"].map(_fmt_pct) if "mom_12_1" in df2.columns else "—"
     display_df["RS vs SPY 6M"] = df2["rs_6m"].map(_fmt_pct) if "rs_6m" in df2.columns else "—"
@@ -290,6 +327,19 @@ def _render_screener() -> None:
             "Streak": st.column_config.TextColumn(
                 "Streak",
                 help="Consecutive trading days this stock appeared in the top results. 🔥 = sustained momentum.",
+            ),
+            "Signal": st.column_config.TextColumn(
+                "Signal",
+                help=(
+                    "News entry signal overlay:\n"
+                    "✅ Confirm = news supports the momentum thesis\n"
+                    "⏳ Wait = mixed or uncertain — no edge from news\n"
+                    "🚫 Avoid = news contradicts or undermines the thesis"
+                ),
+            ),
+            "Catalyst": st.column_config.TextColumn(
+                "Catalyst",
+                help="📈 = news likely to drive analyst estimate upgrades  📉 = likely downgrades",
             ),
             "Mom 12-1": st.column_config.TextColumn(
                 "Mom 12-1",
@@ -356,28 +406,44 @@ the stock's own historical surprise volatility. Consistently beating = durable e
 Exit rule: **3 or more of 5 signals triggered = exit**.
         """)
 
-    # ── AI News Sentiment — top picks ─────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("📰 AI News Sentiment — Top Picks")
-    st.caption("Finnhub headlines + Claude analysis. Loaded on demand, cached 4h.")
-
-    if "news_cache" not in st.session_state:
-        st.session_state["news_cache"] = {}
-
-    top_tickers = list(df["ticker"].head(5).astype(str))
-    for ticker in top_tickers:
-        with st.expander(f"📊 {ticker}"):
-            if ticker in st.session_state["news_cache"]:
-                articles, analysis = st.session_state["news_cache"][ticker]
-                _news_card(analysis, articles)
-            else:
-                if st.button(f"Load AI analysis for {ticker}", key=f"news_btn_{ticker}"):
-                    with st.spinner(f"Fetching {ticker} news…"):
-                        articles, analysis = _cached_stock_news(ticker)
-                    st.session_state["news_cache"][ticker] = (articles, analysis)
-                    st.rerun()
-                else:
-                    st.caption("Click above to fetch and analyze recent news.")
+    # ── News Entry Signals — top picks ────────────────────────────────────────
+    if "entry_signal" in df.columns and df["entry_signal"].notna().any():
+        st.markdown("---")
+        st.subheader("📰 News Entry Signals — Top Picks")
+        st.caption("Context-aware analysis: does today's news confirm or contradict the momentum thesis?")
+        _es_colors = {
+            "confirm_entry": ("#166534", "#dcfce7"),
+            "wait":          ("#92400e", "#fef3c7"),
+            "avoid":         ("#991b1b", "#fee2e2"),
+        }
+        _cat_icons = {"estimate_up": "📈 Estimate revision UP", "estimate_down": "📉 Estimate revision DOWN"}
+        for _, row in df.head(10).iterrows():
+            es = str(row.get("entry_signal", "") or "")
+            if not es or es == "wait" and not row.get("news_reasoning"):
+                continue
+            ticker = str(row.get("ticker", ""))
+            fg, bg = _es_colors.get(es, ("#374151", "#f3f4f6"))
+            es_label = {"confirm_entry": "✅ CONFIRM ENTRY", "wait": "⏳ WAIT", "avoid": "🚫 AVOID"}.get(es, es)
+            cat = str(row.get("catalyst", "") or "")
+            cat_str = _cat_icons.get(cat, "")
+            tc = str(row.get("thesis_consistency", "") or "")
+            tc_badge = {"confirms": "📐 Confirms thesis", "contradicts": "⚠️ Contradicts thesis"}.get(tc, "")
+            reasoning = str(row.get("news_reasoning", "") or "")
+            with st.expander(f"{ticker}  —  {es_label}"):
+                cols = st.columns([1, 1, 1])
+                if cat_str:
+                    cols[0].markdown(f"**Catalyst:** {cat_str}")
+                if tc_badge:
+                    cols[1].markdown(f"**Thesis:** {tc_badge}")
+                dur = str(row.get("duration", "") or "")
+                if dur and dur != "noise":
+                    cols[2].markdown(f"**Impact:** {dur}")
+                if reasoning:
+                    st.markdown(
+                        f'<div style="background:{bg};color:{fg};padding:10px 14px;'
+                        f'border-radius:8px;font-size:13px;margin-top:6px">{_html.escape(reasoning)}</div>',
+                        unsafe_allow_html=True,
+                    )
 
 
 # ── Market Regime ─────────────────────────────────────────────────────────────
@@ -486,6 +552,41 @@ def _render_regime() -> None:
     """, unsafe_allow_html=True)
 
     st.markdown("")
+
+    # Sector signals from news overlay (if available)
+    try:
+        import sqlite3, json as _json
+        _db = "data/cache.db"
+        _conn = sqlite3.connect(_db)
+        _row = _conn.execute(
+            "SELECT payload FROM news_sentiment WHERE ticker='__MARKET__' ORDER BY fetched_at DESC LIMIT 1"
+        ).fetchone()
+        _conn.close()
+        if _row:
+            _market_payload = _json.loads(_row[0])
+            _sector_sigs = _market_payload.get("sector_signals") or {}
+            _regime_note = _market_payload.get("regime_note", "")
+            if _sector_sigs:
+                st.subheader("📡 Sector Signals")
+                if _regime_note:
+                    st.caption(_regime_note)
+                chips_html = ""
+                for _sec, _sig in _sector_sigs.items():
+                    _dir = _sig.get("direction", "")
+                    _str = _sig.get("strength", "")
+                    _rsn = _sig.get("reason", "")
+                    _chip_bg = "#fee2e2" if _dir == "headwind" else "#dcfce7"
+                    _chip_fg = "#991b1b" if _dir == "headwind" else "#166534"
+                    _icon = "⬇" if _dir == "headwind" else "⬆"
+                    chips_html += (
+                        f'<span title="{_html.escape(_rsn)}" style="display:inline-block;'
+                        f'background:{_chip_bg};color:{_chip_fg};padding:4px 12px;'
+                        f'border-radius:20px;font-size:13px;font-weight:600;margin:3px">'
+                        f'{_icon} {_html.escape(_sec)} ({_str})</span>'
+                    )
+                st.markdown(f'<div style="margin-bottom:12px">{chips_html}</div>', unsafe_allow_html=True)
+    except Exception:
+        pass
 
     # Market news analysis
     st.subheader("📰 Market News Analysis")
