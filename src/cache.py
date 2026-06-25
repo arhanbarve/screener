@@ -4,7 +4,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 def init_db(db_path: str):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS prices (
@@ -111,7 +112,7 @@ def archive_fundamentals_snapshot(db_path: str, date_str: str):
     """Copy today's fundamentals into point-in-time history table.
     After 6 months of daily archiving, enables backtesting fundamental factors.
     """
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("""
         INSERT OR IGNORE INTO fundamentals_history (ticker, snapshot_date, payload, fetched_at)
         SELECT ticker, ?, payload, fetched_at FROM fundamentals
@@ -122,7 +123,7 @@ def archive_fundamentals_snapshot(db_path: str, date_str: str):
 
 def archive_universe_snapshot(db_path: str, date_str: str, tickers_df):
     """Save today's liquidity-gate-surviving universe for survivorship-bias-aware backtesting."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     rows = [(date_str, str(row.get("ticker", "")), str(row.get("cik", "")))
             for _, row in tickers_df.iterrows()]
     conn.executemany(
@@ -136,7 +137,7 @@ def _now_iso() -> str:
     return datetime.utcnow().isoformat()
 
 def put_prices(db_path: str, ticker: str, df: pd.DataFrame):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     now = _now_iso()
     rows = []
@@ -159,7 +160,7 @@ def put_prices(db_path: str, ticker: str, df: pd.DataFrame):
 
 def get_prices(db_path: str, ticker: str, ttl_hours: int) -> pd.DataFrame | None:
     cutoff = (datetime.utcnow() - timedelta(hours=ttl_hours)).isoformat()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "SELECT date, open, high, low, close, volume FROM prices "
@@ -176,7 +177,7 @@ def get_prices(db_path: str, ticker: str, ttl_hours: int) -> pd.DataFrame | None
     return df
 
 def put_fundamentals(db_path: str, ticker: str, payload: dict):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "INSERT OR REPLACE INTO fundamentals VALUES (?,?,?)",
@@ -187,7 +188,7 @@ def put_fundamentals(db_path: str, ticker: str, payload: dict):
 
 def get_fundamentals(db_path: str, ticker: str, ttl_days: int) -> dict | None:
     cutoff = (datetime.utcnow() - timedelta(days=ttl_days)).isoformat()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "SELECT payload FROM fundamentals WHERE ticker=? AND fetched_at > ?",
@@ -200,7 +201,7 @@ def get_fundamentals(db_path: str, ticker: str, ttl_days: int) -> dict | None:
     return json.loads(row[0])
 
 def put_market_cap(db_path: str, ticker: str, value: float):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "INSERT OR REPLACE INTO market_cap VALUES (?,?,?)",
@@ -211,7 +212,7 @@ def put_market_cap(db_path: str, ticker: str, value: float):
 
 def get_market_cap(db_path: str, ticker: str, ttl_hours: int) -> float | None:
     cutoff = (datetime.utcnow() - timedelta(hours=ttl_hours)).isoformat()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "SELECT value FROM market_cap WHERE ticker=? AND fetched_at > ?",
@@ -223,7 +224,7 @@ def get_market_cap(db_path: str, ticker: str, ttl_hours: int) -> float | None:
 
 def put_news_sentiment(db_path: str, ticker: str, payload: dict):
     as_of = datetime.utcnow().strftime("%Y-%m-%d")
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "INSERT OR REPLACE INTO news_sentiment VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -246,7 +247,7 @@ def put_news_sentiment(db_path: str, ticker: str, payload: dict):
 
 def get_news_sentiment(db_path: str, ticker: str, ttl_hours: int) -> dict | None:
     cutoff = (datetime.utcnow() - timedelta(hours=ttl_hours)).isoformat()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "SELECT payload FROM news_sentiment WHERE ticker=? AND fetched_at > ? ORDER BY fetched_at DESC LIMIT 1",
@@ -271,7 +272,7 @@ def archive_filing_edge_snapshot(
     watch_df,
 ):
     """Persist today's filing-edge ranked output for future forward-return validation."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     rows = []
     now = _now_iso()
     for rank, (_, row) in enumerate(longs_df.iterrows(), 1):
@@ -304,7 +305,7 @@ def archive_filing_edge_snapshot(
 
 
 def put_submissions(db_path: str, cik: str, payload: dict):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.execute(
         "INSERT OR REPLACE INTO submissions VALUES (?,?,?)",
         (cik, json.dumps(payload), _now_iso()),
@@ -315,7 +316,7 @@ def put_submissions(db_path: str, cik: str, payload: dict):
 
 def get_submissions(db_path: str, cik: str, ttl_hours: int) -> dict | None:
     cutoff = (datetime.utcnow() - timedelta(hours=ttl_hours)).isoformat()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "SELECT payload FROM submissions WHERE cik=? AND fetched_at > ?",
@@ -328,7 +329,7 @@ def get_submissions(db_path: str, cik: str, ttl_hours: int) -> dict | None:
 
 def put_filing_doc(db_path: str, accession: str, cik: str, form: str, html: str):
     """Filings are immutable once filed — stored permanently (no TTL)."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.execute(
         "INSERT OR REPLACE INTO filings VALUES (?,?,?,?,?)",
         (accession, cik, form, html, _now_iso()),
@@ -338,7 +339,7 @@ def put_filing_doc(db_path: str, accession: str, cik: str, form: str, html: str)
 
 
 def get_filing_doc(db_path: str, accession: str) -> str | None:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute("SELECT html FROM filings WHERE accession=?", (accession,))
     row = c.fetchone()
@@ -348,7 +349,7 @@ def get_filing_doc(db_path: str, accession: str) -> str | None:
 
 def put_filing_similarity(db_path: str, cik: str, result: dict):
     """Memoized by the current filing's accession (an immutable pair)."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.execute(
         "INSERT OR REPLACE INTO filing_similarity VALUES (?,?,?,?,?,?)",
         (
@@ -362,7 +363,7 @@ def put_filing_similarity(db_path: str, cik: str, result: dict):
 
 
 def get_filing_similarity(db_path: str, accession: str) -> dict | None:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute("SELECT payload FROM filing_similarity WHERE accession=?", (accession,))
     row = c.fetchone()
@@ -376,7 +377,7 @@ def get_filing_similarity(db_path: str, accession: str) -> dict | None:
 
 
 def put_filing_analysis(db_path: str, accession: str, payload: dict):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.execute(
         "INSERT OR REPLACE INTO filing_analysis VALUES (?,?,?)",
         (accession, json.dumps(payload), _now_iso()),
@@ -386,7 +387,7 @@ def put_filing_analysis(db_path: str, accession: str, payload: dict):
 
 
 def get_filing_analysis(db_path: str, accession: str) -> dict | None:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute("SELECT payload FROM filing_analysis WHERE accession=?", (accession,))
     row = c.fetchone()
@@ -400,7 +401,7 @@ def get_filing_analysis(db_path: str, accession: str) -> dict | None:
 
 
 def put_edgar(db_path: str, cik: str, gp_assets: float, revenue: float, cogs: float, assets: float):
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "INSERT OR REPLACE INTO edgar VALUES (?,?,?,?,?,?)",
@@ -411,7 +412,7 @@ def put_edgar(db_path: str, cik: str, gp_assets: float, revenue: float, cogs: fl
 
 def get_edgar(db_path: str, cik: str, ttl_days: int) -> dict | None:
     cutoff = (datetime.utcnow() - timedelta(days=ttl_days)).isoformat()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     c = conn.cursor()
     c.execute(
         "SELECT gp_assets, revenue, cogs, assets FROM edgar WHERE cik=? AND fetched_at > ?",
