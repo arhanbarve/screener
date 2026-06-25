@@ -261,7 +261,7 @@ def _render_screener() -> None:
         def _conv_label(row):
             c = int(row.get("conviction", 0) or 0)
             raw = row.get("conviction_news")
-            if raw is not None and int(raw) != c:
+            if raw is not None and pd.notna(raw) and int(raw) != c:
                 delta = c - int(raw)
                 return f"{c} ({'+' if delta > 0 else ''}{delta})"
             return str(c)
