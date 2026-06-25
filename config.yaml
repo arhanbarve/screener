@@ -68,3 +68,24 @@ finnhub:
 news:
   enabled: true
   analyze_top_n: 10
+
+lazy_prices:
+  # Neglect universe: capacity-constrained small/micro caps where arbitrage can't reach.
+  # Market cap band deliberately avoids mega-caps already arbitraged by institutions.
+  min_market_cap: 50000000      # $50M floor (exitable)
+  max_market_cap: 2000000000    # $2B ceiling (below institutional capacity threshold)
+  min_avg_dollar_vol_20d: 200000 # $200K tradeable floor (risk control)
+  # Filing similarity
+  similarity_threshold: 0.85   # below this → trigger Claude change-characterization (Phase 3)
+  filing_form: "10-K"
+  filing_ttl_hours: 24
+  # Standalone composite weights (must sum to 1.0)
+  weights:
+    text_stability: 0.55   # primary "Lazy Prices" signal
+    gp_assets: 0.25        # quality gate (avoid value traps)
+    neglect_score: 0.20    # tilt toward less-covered names
+  winsorize_pct: 0.02
+  min_factor_coverage: 0.30
+  # Output
+  top_n: 30
+  watch_list_n: 20  # deteriorating-language names to flag as avoid/watch

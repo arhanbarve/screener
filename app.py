@@ -54,7 +54,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Navigate",
-        ["📈 Screener Results", "🌍 Market Regime", "📋 Open Positions"],
+        ["📈 Screener Results", "🌍 Market Regime", "📋 Open Positions", "🧾 Filing Edge"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -748,12 +748,206 @@ def _render_positions() -> None:
         _render_position_card(pos)
 
 
+# ── Filing Edge page ─────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)  # 1h — filings don't change intraday
+def _cached_filing_edge() -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    """Load latest filing_edge_*.csv from output/. Returns (longs, watch, date_str)."""
+    output_dir = Path("output")
+    files = sorted(output_dir.glob("filing_edge_*.csv"), reverse=True)
+    if not files:
+        return pd.DataFrame(), pd.DataFrame(), ""
+    path = files[0]
+    date_str = path.stem.replace("filing_edge_", "")
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame(), date_str
+    longs = df[df.get("__list__", pd.Series("long", index=df.index)) == "long"].drop(
+        columns=["__list__"], errors="ignore"
+    ).reset_index(drop=True)
+    watch = df[df.get("__list__", pd.Series("long", index=df.index)) == "watch"].drop(
+        columns=["__list__"], errors="ignore"
+    ).reset_index(drop=True)
+    return longs, watch, date_str
+
+
+def _stab_badge(val: float) -> str:
+    if pd.isna(val):
+        return "—"
+    if val >= 0.97:
+        return f"🟢 {val:.4f}"
+    if val >= 0.90:
+        return f"🟡 {val:.4f}"
+    return f"🔴 {val:.4f}"
+
+
+def _render_filing_edge():
+    longs, watch, date_str = _cached_filing_edge()
+
+    st.markdown("## 🧾 Filing Edge Screen")
+    st.markdown(
+        "> **Strategy:** stable 10-K/10-Q language vs prior year "
+        "([Cohen, Malloy & Nguyen 2020 *Lazy Prices*](https://doi.org/10.1111/jofi.12885)) "
+        "in neglected small/micro caps ($50M–$2B) where institutional arbitrage can't reach. "
+        "High `text_stability` = language unchanged = bullish signal."
+    )
+
+    if longs.empty:
+        st.info("No filing-edge screen found. Run `python -m src.lazy_run` to generate one.")
+        with st.expander("How to run"):
+            st.code("python -m src.lazy_run --limit 200  # quick test\npython -m src.lazy_run         # full run")
+        return
+
+    st.caption(f"Screen date: **{date_str}** · {len(longs)} longs · {len(watch)} on watch list")
+
+    # ── Top-3 cards ──────────────────────────────────────────────────────────
+    top3 = longs.head(3)
+    cols = st.columns(min(3, len(top3)))
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (_, row) in enumerate(top3.iterrows()):
+        with cols[i]:
+            stab = row.get("text_stability")
+            stab_s = f"{stab:.4f}" if pd.notna(stab) else "—"
+            mcap = row.get("market_cap")
+            mcap_s = f"${mcap/1e6:.0f}M" if pd.notna(mcap) and mcap else "—"
+            conv = int(row.get("conviction", 0) or 0)
+            cd = row.get("change_direction")
+            cd_badge = {1: "🔼 improving", 0: "", -1: "🔽 deteriorating"}.get(
+                int(cd) if pd.notna(cd) else 0, ""
+            )
+            st.markdown(
+                f"""<div style='background:#1e293b;border-radius:10px;padding:14px;text-align:center;'>
+                <div style='font-size:28px'>{medals[i]}</div>
+                <div style='font-size:22px;font-weight:700;color:#f1f5f9'>{row['ticker']}</div>
+                <div style='font-size:12px;color:#94a3b8'>{str(row.get('sector',''))}</div>
+                <div style='margin:8px 0;font-size:14px;color:#38bdf8'>Stability: {stab_s}</div>
+                <div style='font-size:12px;color:#94a3b8'>Conv {conv}/5 · {mcap_s}</div>
+                {f'<div style="font-size:11px;color:#94a3b8">{cd_badge}</div>' if cd_badge else ''}
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("---")
+
+    # ── Stable-filing longs table ────────────────────────────────────────────
+    st.markdown("### Stable-Filing Longs")
+    st.caption("Ranked by composite score (text_stability × 0.55 + gp_assets × 0.25 + neglect × 0.20)")
+
+    display = pd.DataFrame()
+    display["#"] = range(1, len(longs) + 1)
+    display["Ticker"] = longs["ticker"]
+    display["Name"] = longs.get("name", "").str[:25]
+    display["Sector"] = longs.get("sector", "").fillna("—").str[:18]
+    display["Score"] = longs.get("composite", pd.Series(dtype=float))
+    display["Conv"] = longs.get("conviction", pd.Series(dtype=float)).fillna(0).astype(int).astype(str) + "/5"
+    display["Stability"] = longs.get("text_stability", pd.Series(dtype=float)).apply(
+        lambda v: _stab_badge(v) if pd.notna(v) else "—"
+    )
+    display["Doc Sim"] = longs.get("doc_sim", pd.Series(dtype=float)).apply(
+        lambda v: f"{v:.4f}" if pd.notna(v) else "—"
+    )
+    display["Mkt Cap"] = longs.get("market_cap", pd.Series(dtype=float)).apply(
+        lambda v: f"${v/1e6:.0f}M" if pd.notna(v) and v else "—"
+    )
+    display["ADV"] = longs.get("avg_dollar_vol_20d", pd.Series(dtype=float)).apply(
+        lambda v: f"${v/1e3:.0f}K" if pd.notna(v) and v else "—"
+    )
+    if "change_direction" in longs.columns:
+        display["Change"] = longs["change_direction"].apply(
+            lambda v: {1: "🔼", 0: "—", -1: "🔽"}.get(int(v) if pd.notna(v) else 0, "—")
+        )
+
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
+    # ── Change-direction detail (Claude layer, if populated) ─────────────────
+    if "change_reason" in longs.columns and longs["change_reason"].notna().any():
+        with st.expander("Claude change-characterization details"):
+            for _, row in longs[longs["change_reason"].notna()].iterrows():
+                cd = int(row.get("change_direction", 0) or 0)
+                icon = {1: "🔼", 0: "➡️", -1: "🔽"}.get(cd, "—")
+                ct = str(row.get("change_type", ""))
+                cr = str(row.get("change_reason", ""))
+                st.markdown(f"**{row['ticker']}** {icon} `{ct}` — {cr}")
+
+    st.markdown("---")
+
+    # ── Deteriorating-language watch list ────────────────────────────────────
+    st.markdown("### ⚠️ Deteriorating-Language Watch List")
+    st.caption(
+        "Lowest text_stability — language changed most vs prior year. "
+        "Per the paper: changes are *on average* bearish. Use as avoid/short-watch, "
+        "or inspect `change_reason` to confirm direction."
+    )
+    if watch.empty:
+        st.info("No watch-list data.")
+    else:
+        wdisplay = pd.DataFrame()
+        wdisplay["#"] = range(1, len(watch) + 1)
+        wdisplay["Ticker"] = watch["ticker"]
+        wdisplay["Name"] = watch.get("name", "").str[:25]
+        wdisplay["Sector"] = watch.get("sector", "").fillna("—").str[:18]
+        wdisplay["Stability"] = watch.get("text_stability", pd.Series(dtype=float)).apply(
+            lambda v: _stab_badge(v) if pd.notna(v) else "—"
+        )
+        wdisplay["Doc Sim"] = watch.get("doc_sim", pd.Series(dtype=float)).apply(
+            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
+        )
+        wdisplay["Risk Sim"] = watch.get("risk_sim", pd.Series(dtype=float)).apply(
+            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
+        )
+        wdisplay["MDA Sim"] = watch.get("mda_sim", pd.Series(dtype=float)).apply(
+            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
+        )
+        if "change_direction" in watch.columns:
+            wdisplay["Change"] = watch["change_direction"].apply(
+                lambda v: {1: "🔼", 0: "—", -1: "🔽"}.get(int(v) if pd.notna(v) else 0, "—")
+            )
+        st.dataframe(wdisplay, use_container_width=True, hide_index=True)
+
+    # ── Methodology expander ─────────────────────────────────────────────────
+    with st.expander("📖 Methodology & edge rationale"):
+        st.markdown("""
+**Why this is different from the momentum screen:**
+
+The momentum screen fishes the most-arbitraged pond with published factors every quant desk
+already computes. This screen exploits two structural moats large funds *cannot* copy:
+
+1. **Smallness** — you can hold $50M–$2B names; a fund running billions cannot build a position
+   without moving the stock. Capacity-constrained anomalies survive *because* arbitrage can't reach.
+2. **Document-reading at scale** — no retail investor reads 200-page 10-K filings annually.
+   Claude can, and uses that to flag *primary-source* changes vs press headlines.
+
+**The anomaly (Cohen, Malloy & Nguyen 2020):**
+Firms that materially *change* the language of their 10-K/10-Q (Risk Factors + MD&A) vs the
+prior comparable filing subsequently **underperform**; stable-language "non-changers"
+**outperform**. The effect is strongest in small caps with low analyst coverage — exactly this universe.
+
+**Score components:**
+- `text_stability` (55%) — cosine similarity of current vs prior comparable filing sections
+- `gp_assets` (25%) — gross profitability quality gate (avoid value traps)
+- `neglect_score` (20%) — inverse dollar-volume rank (more neglected = more potential edge)
+
+**Claude precision layer** (when `ANTHROPIC_API_KEY` is set):
+Runs only on names *below* the similarity threshold — the small subset that actually changed.
+Classifies whether the change is positive (+1), neutral (0), or negative (-1) to lift precision
+over the raw deterministic signal.
+
+**Risk controls:**
+- Tradeable floor: ≥$200K ADV (must be exitable)
+- Quality gate: gp_assets ≥ Q25 of universe (avoid structurally unprofitable names)
+- No leverage, no shorts recommended — use watch list as *avoid* signal only
+        """)
+
+
 # ── Router ────────────────────────────────────────────────────────────────────
 
 if page == "📈 Screener Results":
     _render_screener()
 elif page == "🌍 Market Regime":
     _render_regime()
+elif page == "🧾 Filing Edge":
+    _render_filing_edge()
 else:
     _render_positions()
 

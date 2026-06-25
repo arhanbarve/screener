@@ -151,6 +151,103 @@ def write_markdown(
     return path
 
 
+FILING_EDGE_CSV_COLUMNS = [
+    "ticker", "name", "sector", "composite", "conviction", "factor_coverage",
+    "text_stability", "doc_sim", "risk_sim", "mda_sim", "sections_used",
+    "z_text_stability", "z_gp_assets", "z_neglect_score",
+    "gp_assets", "neglect_score", "avg_dollar_vol_20d", "market_cap",
+    "accession", "prior_accession", "report_date", "form",
+    "change_direction",  # Claude precision layer (Phase 3); NaN until then
+]
+
+
+def write_filing_edge_csv(
+    longs_df: pd.DataFrame,
+    watch_df: pd.DataFrame,
+    out_dir: str,
+    date_str: str,
+) -> str:
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"filing_edge_{date_str}.csv")
+    longs = longs_df.copy()
+    longs["__list__"] = "long"
+    watch = watch_df.copy()
+    watch["__list__"] = "watch"
+    combined = pd.concat([longs, watch], ignore_index=True)
+    cols = [c for c in FILING_EDGE_CSV_COLUMNS + ["__list__"] if c in combined.columns]
+    combined[cols].to_csv(path, index=False, float_format="%.6f")
+    return path
+
+
+def write_filing_edge_markdown(
+    longs_df: pd.DataFrame,
+    watch_df: pd.DataFrame,
+    out_dir: str,
+    date_str: str,
+) -> str:
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"filing_edge_{date_str}.md")
+    lines = [
+        f"# Filing-Edge Screen — {date_str}",
+        "",
+        "> Strategy: stable 10-K/10-Q language (Cohen-Malloy-Nguyen 2020 'Lazy Prices')",
+        "> in neglected small/micro caps ($50M–$2B) where arbitrage can't reach.",
+        "> High `text_stability` = language unchanged vs prior comparable filing = bullish.",
+        "",
+        "## Stable-Filing Longs",
+        "",
+        "| Rank | Ticker | Name | Sector | Composite | Conv | Stability | Doc Sim | Mkt Cap ($M) | ADV ($K) |",
+        "|------|--------|------|--------|-----------|------|-----------|---------|--------------|---------|",
+    ]
+    for i, (_, row) in enumerate(longs_df.iterrows(), 1):
+        name   = str(row.get("name", ""))[:28]
+        sector = str(row.get("sector", ""))[:18]
+        comp   = f"{row.get('composite', 0):+.3f}"
+        conv   = int(row.get("conviction", 0) or 0)
+        stab   = row.get("text_stability")
+        stab_s = f"{stab:.4f}" if stab == stab and stab is not None else "—"
+        doc    = row.get("doc_sim")
+        doc_s  = f"{doc:.4f}" if doc == doc and doc is not None else "—"
+        mcap   = row.get("market_cap")
+        mcap_s = f"{mcap/1e6:.0f}" if mcap == mcap and mcap else "—"
+        adv    = row.get("avg_dollar_vol_20d")
+        adv_s  = f"{adv/1e3:.0f}" if adv == adv and adv else "—"
+        lines.append(
+            f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {conv}/5 | {stab_s} | {doc_s} | {mcap_s} | {adv_s} |"
+        )
+
+    lines += [
+        "",
+        "## Deteriorating-Language Watch List",
+        "",
+        "> These names changed their filing language most vs prior year — on average bearish per the paper.",
+        "> Use as an avoid/short-watch list, or trigger the Claude precision layer to characterize the change.",
+        "",
+        "| Rank | Ticker | Name | Sector | Stability | Doc Sim | Risk Sim | MDA Sim | Sections |",
+        "|------|--------|------|--------|-----------|---------|----------|---------|----------|",
+    ]
+    for i, (_, row) in enumerate(watch_df.iterrows(), 1):
+        name   = str(row.get("name", ""))[:28]
+        sector = str(row.get("sector", ""))[:18]
+        stab   = row.get("text_stability")
+        stab_s = f"{stab:.4f}" if stab == stab and stab is not None else "—"
+        doc    = row.get("doc_sim")
+        doc_s  = f"{doc:.4f}" if doc == doc and doc is not None else "—"
+        risk   = row.get("risk_sim")
+        risk_s = f"{risk:.4f}" if risk == risk and risk is not None else "—"
+        mda    = row.get("mda_sim")
+        mda_s  = f"{mda:.4f}" if mda == mda and mda is not None else "—"
+        sec_n  = int(row.get("sections_used", 0) or 0)
+        lines.append(
+            f"| {i} | {row['ticker']} | {name} | {sector} | {stab_s} | {doc_s} | {risk_s} | {mda_s} | {sec_n} |"
+        )
+
+    lines += ["", "---", "*Research tool only. Not investment advice.*"]
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
 def print_top10(df: pd.DataFrame):
     print("\n=== TOP 10 ===")
     nan = float("nan")

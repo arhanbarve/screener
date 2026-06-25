@@ -182,9 +182,19 @@ def fetch_all_prices(
     ttl = cfg["cache"]["price_ttl_hours"]
     tickers = universe_df["ticker"].tolist()
 
-    spy_data = _fetch_batch_yfinance(["SPY"])
-    spy_df   = spy_data.get("SPY", pd.DataFrame())
-    if spy_df.empty:
+    spy_cached = get_prices(db_path, "SPY", ttl_hours=ttl)
+    if spy_cached is not None and len(spy_cached) >= 252:
+        spy_df = spy_cached
+    else:
+        spy_data = _fetch_batch_yfinance(["SPY"])
+        spy_df   = spy_data.get("SPY", pd.DataFrame())
+        if not spy_df.empty:
+            put_prices(db_path, "SPY", spy_df)
+        elif spy_cached is not None and not spy_cached.empty:
+            # Rate-limited: fall back to stale cache rather than hard-fail
+            logger.warning("[prices] SPY live fetch failed — using stale cache")
+            spy_df = spy_cached
+    if spy_df is None or spy_df.empty:
         raise RuntimeError("Failed to fetch SPY — cannot compute relative strength")
 
     price_store: dict[str, pd.DataFrame] = {"SPY": spy_df}
