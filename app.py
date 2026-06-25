@@ -54,7 +54,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Navigate",
-        ["📈 Screener Results", "🌍 Market Regime", "📋 Open Positions", "🧾 Filing Edge"],
+        ["📈 Screener Results", "🌍 Market Regime", "📋 Open Positions", "🧾 Filing Edge", "🔀 Confluence"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -178,30 +178,24 @@ def _top3_card(medal: str, row: pd.Series) -> str:
     else:
         signal_badge = ""
 
-    return f"""
-    <div style="border:1px solid #e2e8f0;border-radius:12px;padding:18px;background:#f8fafc;height:100%">
-      <div style="font-size:28px;margin-bottom:4px">{medal}</div>
-      <div style="font-weight:800;font-size:20px;color:#1e293b;letter-spacing:-0.5px">{_html.escape(ticker)}</div>
-      <div style="color:#64748b;font-size:12px;margin-bottom:10px">{_html.escape(name)}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
-        <span style="background:#dcfce7;color:#166534;padding:3px 9px;border-radius:8px;font-size:12px;font-weight:600">
-          📈 Mom: {_fmt_pct(mom)}
-        </span>
-        <span style="background:#dbeafe;color:#1e40af;padding:3px 9px;border-radius:8px;font-size:12px;font-weight:600">
-          ⚡ RS: {_fmt_pct(rs)}
-        </span>
-      </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
-        {conv_badge}
-        {streak_badge}
-        {signal_badge}
-      </div>
-      <div style="display:flex;gap:6px">
-        <span style="background:#f1f5f9;color:#475569;padding:3px 9px;border-radius:8px;font-size:11px">{_html.escape(sector)}</span>
-        <span style="background:#ede9fe;color:#6d28d9;padding:3px 9px;border-radius:8px;font-size:11px;font-weight:600">Score {score:.2f}</span>
-      </div>
-    </div>
-    """
+    return (
+        f'<div style="border:1px solid #e2e8f0;border-radius:12px;padding:18px;background:#f8fafc;height:100%">'
+        f'<div style="font-size:28px;margin-bottom:4px">{medal}</div>'
+        f'<div style="font-weight:800;font-size:20px;color:#1e293b;letter-spacing:-0.5px">{_html.escape(ticker)}</div>'
+        f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">{_html.escape(name)}</div>'
+        f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+        f'<span style="background:#dcfce7;color:#166534;padding:3px 9px;border-radius:8px;font-size:12px;font-weight:600">📈 Mom: {_fmt_pct(mom)}</span>'
+        f'<span style="background:#dbeafe;color:#1e40af;padding:3px 9px;border-radius:8px;font-size:12px;font-weight:600">⚡ RS: {_fmt_pct(rs)}</span>'
+        f'</div>'
+        f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+        f'{conv_badge}{streak_badge}{signal_badge}'
+        f'</div>'
+        f'<div style="display:flex;gap:6px">'
+        f'<span style="background:#f1f5f9;color:#475569;padding:3px 9px;border-radius:8px;font-size:11px">{_html.escape(sector)}</span>'
+        f'<span style="background:#ede9fe;color:#6d28d9;padding:3px 9px;border-radius:8px;font-size:11px;font-weight:600">Score {score:.2f}</span>'
+        f'</div>'
+        f'</div>'
+    )
 
 
 def _render_screener() -> None:
@@ -257,17 +251,10 @@ def _render_screener() -> None:
     display_df["Name"] = df2["name"].str[:35] if "name" in df2.columns else "—"
     display_df["Sector"] = df2["sector"].fillna("—") if "sector" in df2.columns else "—"
     display_df["Score"] = df2["composite"] if "composite" in df2.columns else None
-    if "conviction" in df2.columns and "conviction_news" in df2.columns:
-        def _conv_label(row):
-            c = int(row.get("conviction", 0) or 0)
-            raw = row.get("conviction_news")
-            if raw is not None and pd.notna(raw) and int(raw) != c:
-                delta = c - int(raw)
-                return f"{c} ({'+' if delta > 0 else ''}{delta})"
-            return str(c)
-        display_df["Conviction"] = df2.apply(_conv_label, axis=1)
-    else:
-        display_df["Conviction"] = df2["conviction"].fillna(0).astype(int) if "conviction" in df2.columns else 0
+    display_df["Conviction"] = (
+        df2["conviction"].fillna(0).apply(lambda x: int(x) if pd.notna(x) else 0)
+        if "conviction" in df2.columns else 0
+    )
     display_df["Streak"] = (
         df2["streak_consecutive"].map(lambda x: f"🔥{int(x)}d" if pd.notna(x) and int(x) >= 2 else "—")
         if "streak_consecutive" in df2.columns else "—"
@@ -772,6 +759,48 @@ def _cached_filing_edge() -> tuple[pd.DataFrame, pd.DataFrame, str]:
     return longs, watch, date_str
 
 
+@st.cache_data(ttl=1800)
+def _cached_momentum_check(tickers: tuple[str, ...]) -> dict[str, dict]:
+    """Price-based momentum snapshot for a list of tickers (used by Confluence page)."""
+    spy_df = fetch_ohlcv("SPY", days=200)
+    spy_c = spy_df["close"] if not spy_df.empty else pd.Series(dtype=float)
+    sp_now = float(spy_c.iloc[-1]) if not spy_c.empty else None
+    sp_3m  = float(spy_c.iloc[-63])  if len(spy_c) > 63  else None
+    spy_ret_3m = (sp_now - sp_3m) / sp_3m if sp_now and sp_3m else None
+
+    results: dict[str, dict] = {}
+    for ticker in tickers:
+        try:
+            df = fetch_ohlcv(ticker, days=200)
+            if df.empty or len(df) < 20:
+                continue
+            c = df["close"]
+            p     = float(c.iloc[-1])
+            p_3m  = float(c.iloc[-63])  if len(c) > 63  else None
+            p_6m  = float(c.iloc[-126]) if len(c) > 126 else None
+            ret_3m = (p - p_3m) / p_3m if p_3m else None
+            ret_6m = (p - p_6m) / p_6m if p_6m else None
+            rs_3m  = (ret_3m - spy_ret_3m) if ret_3m is not None and spy_ret_3m is not None else None
+            sma50  = float(c.rolling(50).mean().iloc[-1])  if len(c) >= 50  else None
+            sma200 = float(c.rolling(200).mean().iloc[-1]) if len(c) >= 200 else None
+            above_50  = (p > sma50)  if sma50  is not None else None
+            above_200 = (p > sma200) if sma200 is not None else None
+            mom_score = sum([
+                ret_3m is not None and ret_3m > 0,
+                ret_6m is not None and ret_6m > 0,
+                rs_3m  is not None and rs_3m  > 0,
+                above_50 is True,
+            ])
+            results[ticker] = {
+                "ret_3m": ret_3m, "ret_6m": ret_6m, "rs_3m": rs_3m,
+                "above_50": above_50, "above_200": above_200,
+                "mom_score": mom_score, "price": p,
+            }
+        except Exception:
+            continue
+    return results
+
+
 def _stab_badge(val: float) -> str:
     if pd.isna(val):
         return "—"
@@ -816,15 +845,16 @@ def _render_filing_edge():
             cd_badge = {1: "🔼 improving", 0: "", -1: "🔽 deteriorating"}.get(
                 int(cd) if pd.notna(cd) else 0, ""
             )
+            cd_div = f'<div style="font-size:11px;color:#94a3b8">{cd_badge}</div>' if cd_badge else ""
             st.markdown(
-                f"""<div style='background:#1e293b;border-radius:10px;padding:14px;text-align:center;'>
-                <div style='font-size:28px'>{medals[i]}</div>
-                <div style='font-size:22px;font-weight:700;color:#f1f5f9'>{row['ticker']}</div>
-                <div style='font-size:12px;color:#94a3b8'>{str(row.get('sector',''))}</div>
-                <div style='margin:8px 0;font-size:14px;color:#38bdf8'>Stability: {stab_s}</div>
-                <div style='font-size:12px;color:#94a3b8'>Conv {conv}/5 · {mcap_s}</div>
-                {f'<div style="font-size:11px;color:#94a3b8">{cd_badge}</div>' if cd_badge else ''}
-                </div>""",
+                f'<div style="background:#1e293b;border-radius:10px;padding:14px;text-align:center;">'
+                f'<div style="font-size:28px">{medals[i]}</div>'
+                f'<div style="font-size:22px;font-weight:700;color:#f1f5f9">{_html.escape(str(row["ticker"]))}</div>'
+                f'<div style="font-size:12px;color:#94a3b8">{_html.escape(str(row.get("sector", "") or ""))}</div>'
+                f'<div style="margin:8px 0;font-size:14px;color:#38bdf8">Stability: {stab_s}</div>'
+                f'<div style="font-size:12px;color:#94a3b8">Conv {conv}/5 · {mcap_s}</div>'
+                f'{cd_div}'
+                f'</div>',
                 unsafe_allow_html=True,
             )
 
@@ -940,6 +970,169 @@ over the raw deterministic signal.
         """)
 
 
+# ── Confluence page ───────────────────────────────────────────────────────────
+
+def _fmt_chg(x: float | None) -> str:
+    if x is None:
+        return "—"
+    return f"+{x:.1%}" if x >= 0 else f"{x:.1%}"
+
+
+def _render_confluence() -> None:
+    st.title("🔀 Confluence Screen")
+    st.caption(
+        "Filing Edge longs (stable 10-K language) cross-checked against price momentum. "
+        "Dual signal = fundamental stability already confirmed by price action."
+    )
+
+    longs, _, date_str = _cached_filing_edge()
+    if longs.empty:
+        st.info("No filing-edge data. Run `python -m src.lazy_run` first.")
+        return
+
+    tickers = tuple(longs["ticker"].tolist())
+
+    with st.spinner(f"Fetching momentum for {len(tickers)} tickers…"):
+        mom_data = _cached_momentum_check(tickers)
+
+    rows = []
+    for _, row in longs.iterrows():
+        t = str(row["ticker"])
+        md = mom_data.get(t, {})
+        stab = row.get("text_stability")
+        conv = int(row.get("conviction", 0) or 0)
+        mom_score = int(md.get("mom_score", 0))
+        filing_score = float(stab) if pd.notna(stab) else 0.0
+        combined = filing_score * 0.6 + (mom_score / 4.0) * 0.4
+        rows.append({
+            "ticker": t,
+            "name": str(row.get("name", "") or ""),
+            "sector": str(row.get("sector", "") or "—"),
+            "stability": filing_score,
+            "conv": conv,
+            "ret_3m": md.get("ret_3m"),
+            "ret_6m": md.get("ret_6m"),
+            "rs_3m": md.get("rs_3m"),
+            "above_50": md.get("above_50"),
+            "above_200": md.get("above_200"),
+            "mom_score": mom_score,
+            "combined": combined,
+        })
+
+    df = pd.DataFrame(rows).sort_values("combined", ascending=False).reset_index(drop=True)
+
+    def _classify(r) -> str:
+        if r["stability"] >= 0.97 and r["mom_score"] >= 3:
+            return "🟢 Strong Buy"
+        if r["stability"] >= 0.90 and r["mom_score"] >= 2:
+            return "🟡 Watchlist"
+        return "⚪ Filing Only"
+
+    df["signal"] = df.apply(_classify, axis=1)
+
+    strong_n = (df["signal"] == "🟢 Strong Buy").sum()
+    watch_n  = (df["signal"] == "🟡 Watchlist").sum()
+    filing_n = len(df) - strong_n - watch_n
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("📅 Filing date", date_str)
+    c2.metric("🟢 Strong Buy", strong_n, "filing + momentum ≥ 3")
+    c3.metric("🟡 Watchlist", watch_n, "filing ✓, momentum partial")
+    c4.metric("⚪ Filing Only", filing_n, "no price confirmation yet")
+
+    st.markdown("---")
+
+    strong_df = df[df["signal"] == "🟢 Strong Buy"]
+    if not strong_df.empty:
+        st.subheader("🟢 Strong Buy Candidates")
+        st.caption("Stable filings (≥0.97) **and** at least 3/4 momentum signals green")
+        medals = ["🥇", "🥈", "🥉"]
+        cols = st.columns(min(3, len(strong_df)))
+        for i, (_, r) in enumerate(strong_df.head(3).iterrows()):
+            with cols[i]:
+                m = medals[i] if i < len(medals) else "▪"
+                st.markdown(
+                    f'<div style="background:#1e293b;border-radius:10px;padding:14px;text-align:center;">'
+                    f'<div style="font-size:28px">{m}</div>'
+                    f'<div style="font-size:20px;font-weight:700;color:#f1f5f9">{_html.escape(r["ticker"])}</div>'
+                    f'<div style="font-size:11px;color:#94a3b8;margin-bottom:6px">{_html.escape(r["name"][:25])}</div>'
+                    f'<div style="font-size:13px;color:#38bdf8">Stability: {r["stability"]:.4f}</div>'
+                    f'<div style="font-size:12px;color:#4ade80">3M: {_fmt_chg(r["ret_3m"])} · RS: {_fmt_chg(r["rs_3m"])}</div>'
+                    f'<div style="font-size:11px;color:#94a3b8">Mom {r["mom_score"]}/4 · Conv {r["conv"]}/5</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+        st.markdown("")
+
+    st.markdown("---")
+    st.subheader("All Filing Edge Longs — Momentum Layer")
+    st.caption(f"Filing date: {date_str} · {len(df)} tickers")
+
+    disp = pd.DataFrame()
+    disp["#"]         = range(1, len(df) + 1)
+    disp["Ticker"]    = df["ticker"]
+    disp["Name"]      = df["name"].str[:22]
+    disp["Signal"]    = df["signal"]
+    disp["Combined"]  = df["combined"]
+    disp["Stability"] = df["stability"].apply(lambda x: f"{x:.4f}")
+    disp["3M Return"] = df["ret_3m"].apply(_fmt_chg)
+    disp["RS vs SPY"] = df["rs_3m"].apply(_fmt_chg)
+    disp["Above 50d"] = df["above_50"].apply(lambda x: "✅" if x is True else ("❌" if x is False else "—"))
+    disp["Mom"]       = df["mom_score"].apply(lambda x: f"{x}/4")
+
+    st.dataframe(
+        disp,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Combined": st.column_config.ProgressColumn(
+                "Combined Score",
+                min_value=0, max_value=1, format="%.2f",
+                help=(
+                    "Filing stability × 0.6 + momentum score × 0.4.\n"
+                    "Higher = dual-signal conviction (stable fundamentals + improving price)."
+                ),
+            ),
+        },
+    )
+
+    with st.expander("📖 How this works — why the two screens differ and how Confluence bridges them"):
+        st.markdown("""
+**Why Filing Edge and Screener Results look completely different**
+
+| | Screener | Filing Edge |
+|---|---|---|
+| Universe | Large caps ($10B+) | Small/micro caps ($50M–$2B) |
+| Alpha source | Price momentum, analyst revisions, earnings surprise | 10-K/10-Q language stability |
+| Conviction scale | 1–10 | 1–5 |
+| Time horizon | 3–12 months | 12+ months |
+
+They're designed to fish in completely different ponds — zero overlap is expected and correct.
+
+**Why not just run Filing Edge stocks through the regular screener?**
+
+The full screener needs analyst coverage (revision breadth) and earnings data (SUE) that simply
+doesn't exist for most micro caps. It would mostly return NaN. The momentum factors that *are*
+computable (12-1 return, RS vs SPY) are what this page checks instead.
+
+**Confluence scoring**
+- `text_stability × 0.6` — stable filing is the primary signal (from the paper)
+- `(momentum_signals / 4) × 0.4` — price confirmation
+
+**Momentum signals (4 total):**
+| Signal | Bullish condition |
+|---|---|
+| 3M return | > 0% |
+| 6M return | > 0% |
+| RS vs SPY 3M | Outperforming index |
+| Above 50d SMA | Price above 50-day MA |
+
+**🟢 Strong Buy:** stability ≥ 0.97 AND mom ≥ 3 signals — *buy now*
+**🟡 Watchlist:** stability ≥ 0.90 AND mom ≥ 2 — *monitor, enter on momentum turn*
+**⚪ Filing Only:** fundamental signal only — *put on radar, wait for price confirmation*
+        """)
+
+
 # ── Router ────────────────────────────────────────────────────────────────────
 
 if page == "📈 Screener Results":
@@ -948,6 +1141,8 @@ elif page == "🌍 Market Regime":
     _render_regime()
 elif page == "🧾 Filing Edge":
     _render_filing_edge()
+elif page == "🔀 Confluence":
+    _render_confluence()
 else:
     _render_positions()
 
