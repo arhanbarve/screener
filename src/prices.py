@@ -79,7 +79,10 @@ def _fetch_batch_yfinance(tickers: list[str]) -> dict[str, pd.DataFrame]:
 
 
 def _get_market_cap(ticker: str, db_path: str, ttl_hours: int) -> Optional[float]:
-    cached = get_market_cap(db_path, ticker, ttl_hours)
+    try:
+        cached = get_market_cap(db_path, ticker, ttl_hours)
+    except Exception:
+        cached = None
     if cached is not None:
         return cached
     try:
