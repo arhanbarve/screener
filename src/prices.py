@@ -1,7 +1,9 @@
 import time
 import logging
+import requests
 import pandas as pd
 import yfinance as yf
+from requests.adapters import HTTPAdapter
 from typing import Optional
 from src.factors import (
     mom_12_1, mom_1m, rs_vs_spy, rs_slope, residual_momentum,
@@ -9,7 +11,20 @@ from src.factors import (
     rsi_14, macd_state, vol_surge_ratio, entry_grade,
     stochastic, bollinger_pct_b, adx_14, mfi_14,
 )
-from src.cache import get_prices, put_prices, get_market_cap, put_market_cap
+from src.cache import (
+    get_prices, put_prices, get_market_cap, put_market_cap,
+    put_failed_ticker, is_failed_ticker,
+)
+
+
+class _TimeoutAdapter(HTTPAdapter):
+    def send(self, *args, **kwargs):
+        kwargs.setdefault("timeout", 8)
+        return super().send(*args, **kwargs)
+
+_yf_session = requests.Session()
+_yf_session.mount("https://", _TimeoutAdapter())
+_yf_session.mount("http://", _TimeoutAdapter())
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +101,7 @@ def _get_market_cap(ticker: str, db_path: str, ttl_hours: int) -> Optional[float
     if cached is not None:
         return cached
     try:
-        info = yf.Ticker(ticker).fast_info
+        info = yf.Ticker(ticker, session=_yf_session).fast_info
         val = float(getattr(info, "market_cap", None) or 0) or None
         if val:
             put_market_cap(db_path, ticker, val)
@@ -209,6 +224,8 @@ def fetch_all_prices(
 
         to_fetch = []
         for t in batch:
+            if is_failed_ticker(db_path, t):
+                continue
             cached = get_prices(db_path, t, ttl_hours=ttl)
             if cached is not None and len(cached) >= 252:
                 price_store[t] = cached
@@ -220,6 +237,10 @@ def fetch_all_prices(
             for t, df in fetched.items():
                 put_prices(db_path, t, df)
                 price_store[t] = df
+            for t in to_fetch:
+                if t not in fetched:
+                    put_failed_ticker(db_path, t, "no_data")
+                    logger.info(f"[prices] marked {t} as failed (no data returned)")
 
         for t in batch:
             df = price_store.get(t)

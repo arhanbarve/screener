@@ -114,6 +114,11 @@ def init_db(db_path: str):
             PRIMARY KEY (snapshot_date, ticker, list_type)
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS failed_tickers (
+            ticker TEXT PRIMARY KEY, reason TEXT, fetched_at TEXT
+        )
+    """)
     conn.commit()
 
 
@@ -407,6 +412,26 @@ def get_filing_analysis(db_path: str, accession: str) -> dict | None:
         return json.loads(row[0])
     except Exception:
         return None
+
+
+def put_failed_ticker(db_path: str, ticker: str, reason: str = "no_data"):
+    conn = _get_conn(db_path)
+    conn.execute(
+        "INSERT OR REPLACE INTO failed_tickers VALUES (?,?,?)",
+        (ticker, reason, _now_iso()),
+    )
+    conn.commit()
+
+
+def is_failed_ticker(db_path: str, ticker: str, ttl_days: int = 30) -> bool:
+    cutoff = (datetime.utcnow() - timedelta(days=ttl_days)).isoformat()
+    conn = _get_conn(db_path)
+    c = conn.cursor()
+    c.execute(
+        "SELECT 1 FROM failed_tickers WHERE ticker=? AND fetched_at > ?",
+        (ticker, cutoff),
+    )
+    return c.fetchone() is not None
 
 
 def put_edgar(db_path: str, cik: str, gp_assets: float, revenue: float, cogs: float, assets: float):
