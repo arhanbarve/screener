@@ -27,7 +27,7 @@ def _fetch_batch_yfinance(tickers: list[str]) -> dict[str, pd.DataFrame]:
             auto_adjust=True,
             progress=False,
             group_by="ticker",
-            threads=True,
+            threads=False,
         )
     except Exception as e:
         logger.warning(f"yfinance batch failed: {e}")
