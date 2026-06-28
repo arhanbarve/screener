@@ -20,13 +20,13 @@ _GLOBAL_CSS = """
 
 /* ── Design tokens ──────────────────────────────────────────────────────── */
 :root {
-  --bg:         #020617;
-  --surface-1:  #0a0f1e;
-  --surface-2:  #0f1729;
-  --surface-3:  #151f35;
-  --sidebar-bg: #07111f;
-  --border:     #1a2540;
-  --border-hi:  #2e4266;
+  --bg:         #010104;
+  --surface-1:  #06080f;
+  --surface-2:  #0b0d18;
+  --surface-3:  #0f1220;
+  --sidebar-bg: #030509;
+  --border:     #141825;
+  --border-hi:  #222d45;
   --text:       #e2e8f0;
   --muted:      #64748b;
   --dim:        #2a3a54;
@@ -686,6 +686,96 @@ if (!P._ghostCanvas && !P.matchMedia('(prefers-reduced-motion: reduce)').matches
   setInterval(drawCanvas, 130); // ~7.5fps — very slow, purely atmospheric
 }
 
+// ── 1b. Custom pulsating cursor ──────────────────────────────────────────────
+if (!P._cursorInit && !P.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  P._cursorInit = true;
+
+  // Inject cursor CSS once
+  var cursorStyle = PD.createElement('style');
+  cursorStyle.id = 'cursor-style';
+  cursorStyle.textContent = [
+    '* { cursor: none !important; }',
+    '#cx-dot {',
+    '  position:fixed;width:8px;height:8px;border-radius:50%;',
+    '  background:#f59e0b;',
+    '  box-shadow:0 0 6px 2px rgba(245,158,11,0.9),0 0 18px 6px rgba(245,158,11,0.35);',
+    '  pointer-events:none;z-index:99999;',
+    '  transform:translate(-50%,-50%);',
+    '  transition:transform 0.06s ease,background 0.2s ease,box-shadow 0.2s ease;',
+    '}',
+    '#cx-ring {',
+    '  position:fixed;width:28px;height:28px;border-radius:50%;',
+    '  border:1.5px solid rgba(245,158,11,0.55);',
+    '  pointer-events:none;z-index:99998;',
+    '  transform:translate(-50%,-50%);',
+    '  animation:cursorPulse 1.6s ease-in-out infinite;',
+    '}',
+    '#cx-ring2 {',
+    '  position:fixed;width:48px;height:48px;border-radius:50%;',
+    '  border:1px solid rgba(245,158,11,0.18);',
+    '  pointer-events:none;z-index:99997;',
+    '  transform:translate(-50%,-50%);',
+    '  animation:cursorPulse 1.6s ease-in-out infinite 0.5s;',
+    '}',
+    '@keyframes cursorPulse {',
+    '  0%,100%{opacity:1;transform:translate(-50%,-50%) scale(1);}',
+    '  50%{opacity:0.4;transform:translate(-50%,-50%) scale(1.35);}',
+    '}',
+    '.tilt-card:hover~#cx-dot,body:has(.tilt-card:hover) #cx-dot{background:#fcd34d;}',
+  ].join('');
+  PD.head.appendChild(cursorStyle);
+
+  var cxDot  = PD.createElement('div'); cxDot.id  = 'cx-dot';
+  var cxRing = PD.createElement('div'); cxRing.id = 'cx-ring';
+  var cxRing2= PD.createElement('div'); cxRing2.id= 'cx-ring2';
+  PD.body.appendChild(cxDot);
+  PD.body.appendChild(cxRing);
+  PD.body.appendChild(cxRing2);
+
+  // Ring lags slightly behind for fluid feel
+  var _mx = 0, _my = 0, _rx = 0, _ry = 0, _r2x = 0, _r2y = 0;
+
+  PD.addEventListener('mousemove', function(e) {
+    _mx = e.clientX; _my = e.clientY;
+    cxDot.style.left = _mx + 'px';
+    cxDot.style.top  = _my + 'px';
+  }, { passive: true });
+
+  // Animate rings with lag
+  (function loop() {
+    _rx  += (_mx - _rx)  * 0.18;
+    _ry  += (_my - _ry)  * 0.18;
+    _r2x += (_mx - _r2x) * 0.09;
+    _r2y += (_my - _r2y) * 0.09;
+    cxRing.style.left  = _rx  + 'px';
+    cxRing.style.top   = _ry  + 'px';
+    cxRing2.style.left = _r2x + 'px';
+    cxRing2.style.top  = _r2y + 'px';
+    P.requestAnimationFrame(loop);
+  })();
+
+  // Dot shrinks on mousedown, swells on hovering interactive elements
+  PD.addEventListener('mousedown', function() {
+    cxDot.style.transform = 'translate(-50%,-50%) scale(0.6)';
+  });
+  PD.addEventListener('mouseup', function() {
+    cxDot.style.transform = 'translate(-50%,-50%) scale(1)';
+  });
+  PD.addEventListener('mouseover', function(e) {
+    var t = e.target;
+    var interactive = t && (t.tagName === 'BUTTON' || t.tagName === 'A' ||
+      t.tagName === 'INPUT' || t.tagName === 'SELECT' ||
+      t.closest('.tilt-card') || t.closest('button'));
+    if (interactive) {
+      cxDot.style.transform = 'translate(-50%,-50%) scale(1.7)';
+      cxDot.style.background = '#fcd34d';
+    } else {
+      cxDot.style.transform = 'translate(-50%,-50%) scale(1)';
+      cxDot.style.background = '#f59e0b';
+    }
+  });
+}
+
 // ── 2. Terminal boot scan line ───────────────────────────────────────────────
 if (!P._bootScanEl) {
   var scanEl = PD.createElement('div');
@@ -727,41 +817,63 @@ if (!P._bootFired) {
   setTimeout(triggerBootScan, 80);
 }
 
-// ── 3. 3D card tilt with specular shine ─────────────────────────────────────
-function initTiltCards() {
-  PD.querySelectorAll('.tilt-card').forEach(function(card) {
-    if (card.dataset.tiltInit) return;
-    card.dataset.tiltInit = '1';
+// ── 3. 3D card tilt — delegated (ONE listener, permanent, all cards forever) ──
+// Event delegation: listen on the document once. Works for every .tilt-card
+// that exists now or is added later — no per-card init, no re-init needed.
+if (!P._tiltDelegated) {
+  P._tiltDelegated = true;
+  var _tiltCurrent = null;
 
-    card.addEventListener('mouseenter', function() {
+  function _tiltReset(card) {
+    if (!card) return;
+    card.style.transition = 'transform 0.7s cubic-bezier(0.23,1,0.32,1)';
+    card.style.transform   = 'perspective(920px) rotateX(0deg) rotateY(0deg) scale3d(1,1,1)';
+    var sh = card.querySelector('.card-shine');
+    if (sh) sh.style.opacity = '0';
+  }
+
+  PD.addEventListener('mousemove', function(e) {
+    if (P.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var card = e.target && e.target.closest ? e.target.closest('.tilt-card') : null;
+
+    if (!card) {
+      _tiltReset(_tiltCurrent);
+      _tiltCurrent = null;
+      return;
+    }
+
+    if (_tiltCurrent && _tiltCurrent !== card) {
+      _tiltReset(_tiltCurrent);
+    }
+    if (_tiltCurrent !== card) {
       card.style.transition = 'transform 0.07s ease-out';
-    });
+      _tiltCurrent = card;
+    }
 
-    card.addEventListener('mousemove', function(e) {
-      var r = card.getBoundingClientRect();
-      var dx = (e.clientX - (r.left + r.width  * 0.5)) / (r.width  * 0.5);
-      var dy = (e.clientY - (r.top  + r.height * 0.5)) / (r.height * 0.5);
-      var rotY =  dx * 13;
-      var rotX = -dy *  9;
-      card.style.transform =
-        'perspective(920px) rotateX(' + rotX + 'deg) rotateY(' + rotY + 'deg) scale3d(1.024,1.024,1.024)';
-      var shine = card.querySelector('.card-shine');
-      if (shine) {
-        shine.style.opacity = '1';
-        shine.style.background =
-          'radial-gradient(circle at ' + (50 + dx*36) + '% ' + (50 + dy*36) + '%, ' +
-          'rgba(245,158,11,0.11) 0%, rgba(255,255,255,0.03) 40%, transparent 68%)';
-      }
-    });
+    var r   = card.getBoundingClientRect();
+    var dx  = (e.clientX - (r.left + r.width  * 0.5)) / (r.width  * 0.5);
+    var dy  = (e.clientY - (r.top  + r.height * 0.5)) / (r.height * 0.5);
+    var rotY =  dx * 13;
+    var rotX = -dy *  9;
+    card.style.transform =
+      'perspective(920px) rotateX(' + rotX + 'deg) rotateY(' + rotY + 'deg) scale3d(1.024,1.024,1.024)';
+    var shine = card.querySelector('.card-shine');
+    if (shine) {
+      shine.style.opacity = '1';
+      shine.style.background =
+        'radial-gradient(circle at ' + (50 + dx * 36) + '% ' + (50 + dy * 36) + '%, ' +
+        'rgba(245,158,11,0.13) 0%, rgba(255,255,255,0.04) 40%, transparent 68%)';
+    }
+  }, { passive: true });
 
-    card.addEventListener('mouseleave', function() {
-      card.style.transition = 'transform 0.7s cubic-bezier(0.23,1,0.32,1)';
-      card.style.transform = 'perspective(920px) rotateX(0deg) rotateY(0deg) scale3d(1,1,1)';
-      var shine = card.querySelector('.card-shine');
-      if (shine) { shine.style.opacity = '0'; }
-    });
+  PD.addEventListener('mouseleave', function() {
+    _tiltReset(_tiltCurrent);
+    _tiltCurrent = null;
   });
 }
+
+// Keep initTiltCards as no-op (delegation handles all cards)
+function initTiltCards() {}
 
 // ── 4. Slot-machine score countup ────────────────────────────────────────────
 function initSlotScores() {
@@ -823,22 +935,27 @@ if (!P._keyRefreshInit) {
   });
 }
 
-// ── MutationObserver: re-attach after every Streamlit re-render ──────────────
+// ── MutationObserver: always replace so callback is bound to current scope ────
+// Bug: with `if (!P._animObserver)` guard, after 1st Streamlit iframe reload the
+// old observer's closure (referencing destroyed iframe) fires dead code.
+// Fix: unconditionally disconnect old + register fresh observer each load.
 function runAll() {
-  initTiltCards();
+  initTiltCards();   // no-op — tilt is fully delegated
   initSlotScores();
   initConvDots();
 }
 
 runAll();
 
-if (!P._animObserver) {
-  P._animObserver = new P.MutationObserver(function(mutations) {
-    var added = mutations.some(function(m) { return m.addedNodes.length > 0; });
-    if (added) runAll();
-  });
-  P._animObserver.observe(PD.body, { childList: true, subtree: true });
-}
+if (P._animObserver) { P._animObserver.disconnect(); }
+var _mutDebounce;
+P._animObserver = new P.MutationObserver(function(mutations) {
+  var added = mutations.some(function(m) { return m.addedNodes.length > 0; });
+  if (!added) return;
+  clearTimeout(_mutDebounce);
+  _mutDebounce = setTimeout(runAll, 60); // debounce: skip burst mutations
+});
+P._animObserver.observe(PD.body, { childList: true, subtree: true });
 
 })();
 </script>
@@ -1736,22 +1853,23 @@ def _cached_filing_edge() -> tuple[pd.DataFrame, pd.DataFrame, str]:
 @st.cache_data(ttl=1800)
 def _cached_momentum_check(tickers: tuple[str, ...]) -> dict[str, dict]:
     """Price-based momentum snapshot for a list of tickers (used by Confluence page)."""
+    import concurrent.futures
+
     spy_df = fetch_ohlcv("SPY", days=200)
     spy_c = spy_df["close"] if not spy_df.empty else pd.Series(dtype=float)
     sp_now = float(spy_c.iloc[-1]) if not spy_c.empty else None
     sp_3m  = float(spy_c.iloc[-63])  if len(spy_c) > 63  else None
     spy_ret_3m = (sp_now - sp_3m) / sp_3m if sp_now and sp_3m else None
 
-    results: dict[str, dict] = {}
-    for ticker in tickers:
+    def _fetch_one(ticker: str) -> tuple[str, dict]:
         try:
             df = fetch_ohlcv(ticker, days=200)
             if df.empty or len(df) < 20:
-                continue
+                return ticker, {}
             c = df["close"]
-            p     = float(c.iloc[-1])
-            p_3m  = float(c.iloc[-63])  if len(c) > 63  else None
-            p_6m  = float(c.iloc[-126]) if len(c) > 126 else None
+            p      = float(c.iloc[-1])
+            p_3m   = float(c.iloc[-63])  if len(c) > 63  else None
+            p_6m   = float(c.iloc[-126]) if len(c) > 126 else None
             ret_3m = (p - p_3m) / p_3m if p_3m else None
             ret_6m = (p - p_6m) / p_6m if p_6m else None
             rs_3m  = (ret_3m - spy_ret_3m) if ret_3m is not None and spy_ret_3m is not None else None
@@ -1765,13 +1883,19 @@ def _cached_momentum_check(tickers: tuple[str, ...]) -> dict[str, dict]:
                 rs_3m  is not None and rs_3m  > 0,
                 above_50 is True,
             ])
-            results[ticker] = {
+            return ticker, {
                 "ret_3m": ret_3m, "ret_6m": ret_6m, "rs_3m": rs_3m,
                 "above_50": above_50, "above_200": above_200,
                 "mom_score": mom_score, "price": p,
             }
         except Exception:
-            continue
+            return ticker, {}
+
+    results: dict[str, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        for ticker, data in ex.map(_fetch_one, tickers):
+            if data:
+                results[ticker] = data
     return results
 
 
