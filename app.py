@@ -1,6 +1,8 @@
 import html as _html
 import math
+import re
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -989,6 +991,7 @@ _NAV = [
     ("POSITIONS",  "positions",  "OPEN P&L"),
     ("FILING",     "filing",     "LAZY PRICES"),
     ("CONFLUENCE", "confluence", "DUAL SIGNAL"),
+    ("MONITOR",    "monitor",    "RUN STATUS"),
 ]
 
 _current_page = st.session_state.page
@@ -2309,6 +2312,275 @@ computable (12-1 return, RS vs SPY) are what this page checks instead.
         """)
 
 
+# ── Run Monitor ───────────────────────────────────────────────────────────────
+
+def _find_todays_log() -> "Path | None":
+    today = date.today().strftime("%Y-%m-%d")
+    cron = Path(f"logs/run_{today}.log")
+    if cron.exists():
+        return cron
+    manual = sorted(Path("logs").glob(f"manual_run_{today}_*.log"), reverse=True)
+    return manual[0] if manual else None
+
+
+def _parse_run_state(text: str) -> dict:
+    s: dict = {
+        "started_at": None, "finished_at": None,
+        "universe": None,
+        "batch_cur": None, "batch_tot": None, "liquidity_survivors": None,
+        "fund_cur": None, "fund_tot": None,
+        "stress_regime": None,
+        "quality_in": None, "quality_out": None,
+        "confirm_in": None, "confirm_out": None,
+        "compose_ranked": None, "compose_top": None,
+        "news_cur": None, "news_tot": None,
+        "output_done": False,
+    }
+    for line in text.splitlines():
+        if "=== Screener run started:" in line:
+            m = re.search(r"started: (.+) ===", line)
+            if m: s["started_at"] = m.group(1).strip()
+        if "=== Screener run finished:" in line:
+            m = re.search(r"finished: (.+) ===", line)
+            if m: s["finished_at"] = m.group(1).strip()
+        if m := re.search(r"\[universe\] loaded (\d+) tickers", line):
+            s["universe"] = int(m.group(1))
+        if m := re.search(r"\[prices\] batch (\d+)/(\d+)", line):
+            s["batch_cur"], s["batch_tot"] = int(m.group(1)), int(m.group(2))
+        if m := re.search(r"\[prices\] \d+ universe → (\d+) passed", line):
+            s["liquidity_survivors"] = int(m.group(1))
+        if m := re.search(r"\[fundamentals\] (\d+)/(\d+)", line):
+            s["fund_cur"], s["fund_tot"] = int(m.group(1)), int(m.group(2))
+        if m := re.search(r"\[stress\] regime=(\w+)", line):
+            s["stress_regime"] = m.group(1)
+        if m := re.search(r"\[quality_gate\] (\d+) → (\d+)", line):
+            s["quality_in"], s["quality_out"] = int(m.group(1)), int(m.group(2))
+        if m := re.search(r"\[confirmation_gate\] (\d+) → (\d+)", line):
+            s["confirm_in"], s["confirm_out"] = int(m.group(1)), int(m.group(2))
+        if m := re.search(r"\[compose\] (\d+) ranked → top (\d+)", line):
+            s["compose_ranked"], s["compose_top"] = int(m.group(1)), int(m.group(2))
+        if m := re.search(r"\[news\] overlay: (\d+)/(\d+)", line):
+            s["news_cur"], s["news_tot"] = int(m.group(1)), int(m.group(2))
+        if "[output] output/screen_" in line:
+            s["output_done"] = True
+    return s
+
+
+def _current_stage(s: dict) -> int:
+    if s["output_done"]:        return 7
+    if s["news_cur"] is not None: return 6
+    if s["compose_top"] is not None: return 5
+    if s["stress_regime"] is not None: return 4
+    if s["fund_cur"] is not None: return 3
+    if s["batch_cur"] is not None: return 2
+    if s["universe"] is not None: return 1
+    if s["started_at"] is not None: return 0
+    return -1
+
+
+def _render_monitor():
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.65rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:1.2rem">RUN MONITOR</div>',
+        unsafe_allow_html=True,
+    )
+
+    log_path = _find_todays_log()
+    lock_active = Path("/tmp/screener_run.lock").exists()
+
+    if log_path is None:
+        st.markdown(
+            '<div style="font-family:var(--mono);font-size:1rem;color:var(--muted)">— NO RUN TODAY</div>',
+            unsafe_allow_html=True,
+        )
+        _out = sorted(Path("output").glob("screen_*.csv"), reverse=True)
+        if _out:
+            st.markdown(
+                f'<div style="font-family:var(--mono);font-size:0.7rem;color:var(--dim);margin-top:0.5rem">'
+                f'Last run: {_out[0].stem.replace("screen_","")}</div>',
+                unsafe_allow_html=True,
+            )
+        return
+
+    text = log_path.read_text(errors="replace")
+    s = _parse_run_state(text)
+    stage = _current_stage(s)
+    done = s["finished_at"] is not None
+
+    # ── Status bar ────────────────────────────────────────────────────────────
+    if done:
+        status_html = '<span style="color:var(--bull);font-weight:700">✓ COMPLETE</span>'
+    elif lock_active or s["started_at"]:
+        status_html = (
+            '<span style="color:var(--accent);font-weight:700;animation:pulse 1.4s ease-in-out infinite">'
+            '● LIVE</span>'
+        )
+    else:
+        status_html = '<span style="color:var(--muted)">— STALE LOG</span>'
+
+    elapsed_str = "—"
+    if s["started_at"]:
+        try:
+            def _parse_ts(raw: str) -> datetime:
+                cleaned = re.sub(r" [A-Z]{2,4} ", " ", raw)
+                return datetime.strptime(cleaned, "%a %b %d %H:%M:%S %Y")
+            t0 = _parse_ts(s["started_at"])
+            t1 = _parse_ts(s["finished_at"]) if s["finished_at"] else datetime.now()
+            secs = int((t1 - t0).total_seconds())
+            elapsed_str = f"{secs//3600:02d}:{(secs%3600)//60:02d}:{secs%60:02d}"
+        except Exception:
+            elapsed_str = "—"
+
+    st.markdown(
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'font-family:var(--mono);font-size:0.85rem;padding:0.75rem 1rem;'
+        f'background:var(--surface-2);border:1px solid var(--border);'
+        f'border-radius:var(--radius);margin-bottom:1.2rem">'
+        f'<span>{status_html}</span>'
+        f'<span style="color:var(--muted);font-size:0.75rem">ELAPSED {elapsed_str}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Stage pipeline ────────────────────────────────────────────────────────
+    _STAGES = [
+        (0, "INIT"),
+        (1, "UNIVERSE"),
+        (2, "PRICES"),
+        (3, "FUNDS"),
+        (4, "STRESS"),
+        (5, "SCORING"),
+        (6, "NEWS"),
+        (7, "OUTPUT"),
+    ]
+
+    cells = []
+    for idx, (sid, label) in enumerate(_STAGES):
+        if stage > sid:
+            color = "var(--bull)"
+            icon = "✓"
+            weight = "600"
+        elif stage == sid:
+            color = "var(--accent)"
+            icon = "▶"
+            weight = "700"
+        else:
+            color = "var(--muted)"
+            icon = "○"
+            weight = "400"
+        arrow = '<span style="color:var(--border);margin:0 4px">›</span>' if idx < len(_STAGES) - 1 else ""
+        cells.append(
+            f'<span style="font-family:var(--mono);font-size:0.65rem;font-weight:{weight};'
+            f'color:{color};white-space:nowrap">{icon} {label}</span>{arrow}'
+        )
+
+    st.markdown(
+        f'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px;'
+        f'padding:0.75rem 1rem;background:var(--surface-1);border:1px solid var(--border);'
+        f'border-radius:var(--radius);margin-bottom:1.2rem">'
+        f'{"".join(cells)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Within-stage progress ─────────────────────────────────────────────────
+    prog_val = 1.0
+    prog_label = ""
+    if stage == 2 and s["batch_cur"] and s["batch_tot"]:
+        prog_val = s["batch_cur"] / s["batch_tot"]
+        prog_label = f'Batch {s["batch_cur"]} / {s["batch_tot"]}  ·  {s["universe"] or 9619:,} tickers'
+    elif stage == 3 and s["fund_cur"] and s["fund_tot"]:
+        prog_val = s["fund_cur"] / s["fund_tot"]
+        prog_label = f'Ticker {s["fund_cur"]:,} / {s["fund_tot"]:,}'
+    elif stage == 6 and s["news_cur"] and s["news_tot"]:
+        prog_val = s["news_cur"] / s["news_tot"]
+        prog_label = f'{s["news_cur"]} / {s["news_tot"]} stocks analyzed'
+    elif stage == 0:
+        prog_val = 0.0
+        prog_label = "Starting…"
+    elif stage == -1:
+        prog_val = 0.0
+        prog_label = ""
+
+    if stage >= 0:
+        st.progress(min(max(prog_val, 0.0), 1.0))
+        if prog_label:
+            st.markdown(
+                f'<div style="font-family:var(--mono);font-size:0.65rem;color:var(--muted);'
+                f'margin-top:-0.4rem;margin-bottom:0.8rem">{prog_label}</div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── Funnel panel ─────────────────────────────────────────────────────────
+    def _fv(v): return f"{v:,}" if v is not None else "—"
+    universe_n  = _fv(s["universe"])
+    liquidity_n = _fv(s["liquidity_survivors"])
+    confirm_n   = _fv(s["confirm_out"])
+    selected_n  = _fv(s["compose_top"])
+
+    col1, col2, col3, col4 = st.columns(4)
+    _funnel_style = (
+        "font-family:var(--mono);text-align:center;padding:0.75rem 0.5rem;"
+        "background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius)"
+    )
+    for col, label, val in [
+        (col1, "UNIVERSE",    universe_n),
+        (col2, "LIQUIDITY",   liquidity_n),
+        (col3, "CONFIRM GATE", confirm_n),
+        (col4, "SELECTED",    selected_n),
+    ]:
+        col.markdown(
+            f'<div style="{_funnel_style}">'
+            f'<div style="font-size:0.55rem;color:var(--muted);letter-spacing:0.1em;margin-bottom:0.3rem">{label}</div>'
+            f'<div style="font-size:1.2rem;font-weight:700;color:var(--text)">{val}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Stress regime badge ───────────────────────────────────────────────────
+    if s["stress_regime"]:
+        regime_color = {"NORMAL": "var(--bull)", "WARNING": "var(--accent)", "STRESS": "var(--bear)"}.get(
+            s["stress_regime"], "var(--muted)"
+        )
+        st.markdown(
+            f'<div style="font-family:var(--mono);font-size:0.65rem;margin-top:0.8rem;'
+            f'color:var(--muted)">MARKET REGIME  '
+            f'<span style="color:{regime_color};font-weight:700">{s["stress_regime"]}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Recent log lines ──────────────────────────────────────────────────────
+    st.markdown('<div style="height:1.2rem"></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.6rem;font-weight:700;'
+        'letter-spacing:0.1em;color:var(--muted);margin-bottom:0.4rem">LOG TAIL</div>',
+        unsafe_allow_html=True,
+    )
+    lines = [l for l in text.splitlines() if l.strip()][-10:]
+    colored_lines = []
+    for ln in lines:
+        if " ERROR " in ln or " WARNING " in ln:
+            c = "var(--bear)"
+        elif " INFO " in ln:
+            c = "var(--text)"
+        else:
+            c = "var(--accent)"
+        escaped = _html.escape(ln)
+        colored_lines.append(f'<span style="color:{c}">{escaped}</span>')
+
+    st.markdown(
+        f'<pre style="font-family:var(--mono);font-size:0.6rem;line-height:1.6;'
+        f'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);'
+        f'padding:0.8rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0">'
+        f'{"<br>".join(colored_lines)}</pre>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Auto-refresh while live ───────────────────────────────────────────────
+    if not done and (lock_active or (stage >= 0 and stage < 7)):
+        time.sleep(5)
+        st.rerun()
+
+
 # ── Router ────────────────────────────────────────────────────────────────────
 
 if _current_page == "screener":
@@ -2319,6 +2591,8 @@ elif _current_page == "filing":
     _render_filing_edge()
 elif _current_page == "confluence":
     _render_confluence()
+elif _current_page == "monitor":
+    _render_monitor()
 else:
     _render_positions()
 

@@ -233,7 +233,15 @@ def get_market_cap(db_path: str, ticker: str, ttl_hours: int) -> float | None:
         (ticker, cutoff),
     )
     row = c.fetchone()
+    return row[0] if row else None
 
+
+def get_market_cap_stale(db_path: str, ticker: str) -> float | None:
+    """Return any cached market cap regardless of age (stale fallback)."""
+    conn = _get_conn(db_path)
+    c = conn.cursor()
+    c.execute("SELECT value FROM market_cap WHERE ticker=? ORDER BY fetched_at DESC LIMIT 1", (ticker,))
+    row = c.fetchone()
     return row[0] if row else None
 
 def put_news_sentiment(db_path: str, ticker: str, payload: dict):

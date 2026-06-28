@@ -12,7 +12,7 @@ from src.factors import (
     stochastic, bollinger_pct_b, adx_14, mfi_14,
 )
 from src.cache import (
-    get_prices, put_prices, get_market_cap, put_market_cap,
+    get_prices, put_prices, get_market_cap, get_market_cap_stale, put_market_cap,
     put_failed_ticker, is_failed_ticker,
 )
 
@@ -105,7 +105,12 @@ def _get_market_cap(ticker: str, db_path: str, ttl_hours: int) -> Optional[float
         val = float(getattr(info, "market_cap", None) or 0) or None
         if val:
             put_market_cap(db_path, ticker, val)
-        return val
+            return val
+    except Exception:
+        pass
+    # Live fetch failed or returned None — fall back to any stale cached value
+    try:
+        return get_market_cap_stale(db_path, ticker)
     except Exception:
         return None
 
