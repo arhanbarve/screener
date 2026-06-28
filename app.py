@@ -12,6 +12,844 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent))
 load_dotenv()
 
+# ── Phase 1: CSS + JS Foundation ─────────────────────────────────────────────
+
+_GLOBAL_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+/* ── Design tokens ──────────────────────────────────────────────────────── */
+:root {
+  --bg:         #020617;
+  --surface-1:  #0a0f1e;
+  --surface-2:  #0f1729;
+  --surface-3:  #151f35;
+  --sidebar-bg: #07111f;
+  --border:     #1a2540;
+  --border-hi:  #2e4266;
+  --text:       #e2e8f0;
+  --muted:      #64748b;
+  --dim:        #2a3a54;
+  --accent:     #f59e0b;
+  --accent-dim: rgba(245,158,11,0.10);
+  --bull:       #22c55e;
+  --bull-dim:   rgba(34,197,94,0.10);
+  --bear:       #ef4444;
+  --bear-dim:   rgba(239,68,68,0.10);
+  --wait:       #f59e0b;
+  --wait-dim:   rgba(245,158,11,0.10);
+  --mono:       'IBM Plex Mono', 'Courier New', monospace;
+  --sans:       'IBM Plex Sans', system-ui, sans-serif;
+  --radius:     10px;
+  --radius-sm:  6px;
+  --radius-lg:  14px;
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* ── App backgrounds ────────────────────────────────────────────────────── */
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] > .main,
+[data-testid="stMainBlockContainer"],
+[data-testid="stBottom"],
+.main .block-container {
+  background: var(--bg) !important;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+[data-testid="stHeader"] {
+  background: var(--sidebar-bg) !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+[data-testid="stDecoration"] { display: none !important; }
+[data-testid="stToolbar"]    { opacity: 0.35 !important; }
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] > div:first-child {
+  background: var(--sidebar-bg) !important;
+  border-right: 1px solid var(--border) !important;
+}
+[data-testid="stSidebar"] * { color: var(--text) !important; }
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] small { font-family: var(--mono) !important; }
+[data-testid="stSidebar"] hr {
+  border: none !important;
+  border-top: 1px solid var(--border) !important;
+  opacity: 0.5 !important;
+}
+
+/* ── Typography ─────────────────────────────────────────────────────────── */
+body, p, div, li, td, th, label {
+  font-family: var(--sans) !important;
+}
+h1, h2, h3, h4, h5 {
+  font-family: var(--mono) !important;
+  color: var(--text) !important;
+  letter-spacing: -0.02em !important;
+  font-weight: 600 !important;
+}
+h1 { font-size: 1.35rem !important; margin-bottom: 0.4rem !important; }
+h2 { font-size: 1.1rem  !important; }
+h3 { font-size: 0.95rem !important; }
+
+/* ── Metric widgets ─────────────────────────────────────────────────────── */
+[data-testid="metric-container"] {
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  padding: 14px 16px !important;
+}
+[data-testid="stMetricLabel"] div {
+  color: var(--muted) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.67rem !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+}
+[data-testid="stMetricValue"] div {
+  color: var(--text) !important;
+  font-family: var(--mono) !important;
+  font-size: 1.35rem !important;
+}
+[data-testid="stMetricDelta"] {
+  font-family: var(--mono) !important;
+  font-size: 0.72rem !important;
+}
+
+/* ── DataFrames ─────────────────────────────────────────────────────────── */
+[data-testid="stDataFrame"] {
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  overflow: hidden !important;
+}
+[data-testid="stDataFrame"] * { font-family: var(--mono) !important; }
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.stButton > button {
+  background: var(--surface-2) !important;
+  color: var(--muted) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.72rem !important;
+  letter-spacing: 0.07em !important;
+  font-weight: 500 !important;
+  text-transform: uppercase !important;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease !important;
+  cursor: pointer !important;
+}
+.stButton > button:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: var(--accent-dim) !important;
+}
+[data-testid="stFormSubmitButton"] > button {
+  color: var(--accent) !important;
+  border-color: rgba(245,158,11,0.4) !important;
+  background: var(--accent-dim) !important;
+}
+
+/* ── Radio nav ──────────────────────────────────────────────────────────── */
+[data-testid="stRadio"] > div { gap: 2px !important; }
+[data-testid="stRadio"] label {
+  color: var(--muted) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.75rem !important;
+  letter-spacing: 0.06em !important;
+  padding: 7px 10px !important;
+  border-radius: var(--radius-sm) !important;
+  transition: color 140ms ease, background 140ms ease !important;
+  cursor: pointer !important;
+}
+[data-testid="stRadio"] label:hover {
+  color: var(--text) !important;
+  background: var(--surface-2) !important;
+}
+[data-testid="stRadio"] [data-baseweb="radio"] [aria-checked="true"] ~ div,
+[data-testid="stRadio"] label:has(input:checked) {
+  color: var(--accent) !important;
+}
+/* Active radio dot → amber */
+[data-testid="stRadio"] [data-baseweb="radio"] > div:first-child {
+  border-color: var(--border) !important;
+  background: transparent !important;
+}
+[data-testid="stRadio"] [data-baseweb="radio"][aria-checked="true"] > div:first-child {
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+}
+
+/* ── Form controls ──────────────────────────────────────────────────────── */
+[data-testid="stTextInput"] input,
+[data-testid="stDateInput"] input {
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.85rem !important;
+}
+[data-testid="stTextInput"] input:focus,
+[data-testid="stDateInput"] input:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px rgba(245,158,11,0.18) !important;
+  outline: none !important;
+}
+[data-testid="stSelectbox"] > div > div {
+  background: var(--surface-2) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.82rem !important;
+}
+[data-testid="stForm"] {
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  padding: 1rem !important;
+}
+
+/* ── Expanders ──────────────────────────────────────────────────────────── */
+[data-testid="stExpander"] {
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  background: var(--surface-1) !important;
+}
+[data-testid="stExpander"] summary {
+  background: transparent !important;
+  color: var(--muted) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.78rem !important;
+  letter-spacing: 0.04em !important;
+  padding: 10px 14px !important;
+}
+[data-testid="stExpander"] summary:hover { color: var(--text) !important; }
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+  background: transparent !important;
+  padding: 4px 14px 14px !important;
+}
+
+/* ── Alerts ─────────────────────────────────────────────────────────────── */
+[data-testid="stAlert"] {
+  background: var(--surface-1) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  color: var(--text) !important;
+}
+
+/* ── Spinner ────────────────────────────────────────────────────────────── */
+.stSpinner > div > div { border-top-color: var(--accent) !important; }
+
+/* ── Divider ────────────────────────────────────────────────────────────── */
+hr {
+  border: none !important;
+  border-top: 1px solid var(--border) !important;
+  opacity: 0.55 !important;
+  margin: 1.1rem 0 !important;
+}
+
+/* ── Captions ───────────────────────────────────────────────────────────── */
+.stCaption p, [data-testid="stCaptionContainer"] p {
+  color: var(--muted) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.71rem !important;
+  letter-spacing: 0.025em !important;
+}
+
+/* ── Selectbox dropdown items ───────────────────────────────────────────── */
+[data-baseweb="popover"] [role="option"] {
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.82rem !important;
+}
+[data-baseweb="popover"] [role="option"]:hover,
+[data-baseweb="popover"] [aria-selected="true"] {
+  background: var(--surface-3) !important;
+  color: var(--accent) !important;
+}
+[data-baseweb="popover"] { background: var(--surface-2) !important; border: 1px solid var(--border) !important; }
+
+/* ── Tabs (if any) ──────────────────────────────────────────────────────── */
+[data-testid="stTabs"] [data-baseweb="tab"] {
+  font-family: var(--mono) !important;
+  font-size: 0.75rem !important;
+  letter-spacing: 0.05em !important;
+  color: var(--muted) !important;
+}
+[data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"] {
+  color: var(--accent) !important;
+  border-bottom-color: var(--accent) !important;
+}
+
+/* ── Markdown links ─────────────────────────────────────────────────────── */
+a { color: var(--accent) !important; text-decoration: none !important; }
+a:hover { text-decoration: underline !important; }
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   KEYFRAMES
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Page content entrance */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Score bar fill left→right */
+@keyframes barFill {
+  from { width: 0 !important; }
+}
+
+/* Table row stagger slide-in */
+@keyframes rowReveal {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Conviction dot pop */
+@keyframes convDotPop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  60%  { transform: scale(1.45); opacity: 1; filter: brightness(1.6); }
+  100% { transform: scale(1);    opacity: 1; filter: brightness(1); }
+}
+
+/* Radar ping — single expanding ring for CONFIRM signals */
+@keyframes radarPing {
+  0%   { box-shadow: 0 0 0 0   rgba(34,197,94,0.55); }
+  70%  { box-shadow: 0 0 0 16px rgba(34,197,94,0);   }
+  100% { box-shadow: 0 0 0 16px rgba(34,197,94,0);   }
+}
+
+/* Exit shockwave — red ripple for danger cards */
+@keyframes shockwave {
+  0%   { box-shadow: 0 0 0 0   rgba(239,68,68,0.65), 0 0 18px 2px rgba(239,68,68,0.12); }
+  70%  { box-shadow: 0 0 0 42px rgba(239,68,68,0),   0 0 18px 2px rgba(239,68,68,0.12); }
+  100% { box-shadow: 0 0 0 42px rgba(239,68,68,0),   0 0 18px 2px rgba(239,68,68,0.12); }
+}
+
+/* Horizontal scan sweep across a table row on hover */
+@keyframes rowScan {
+  from { left: -20%; }
+  to   { left: 120%; }
+}
+
+/* Top card #1 amber pulse — fires once on load */
+@keyframes scanPulse {
+  0%   { box-shadow: 0 0 0 0   rgba(245,158,11,0.50); }
+  65%  { box-shadow: 0 0 0 18px rgba(245,158,11,0);   }
+  100% { box-shadow: 0 0 0 0   rgba(245,158,11,0);    }
+}
+
+/* Stability bar fill (Filing Edge) */
+@keyframes stabFill {
+  from { width: 0%; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   COMPONENT CLASSES  (used in injected HTML across pages)
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Tilt card base — 3D perspective ready */
+.tilt-card {
+  transform-style: preserve-3d;
+  transition: transform 0.08s ease-out, box-shadow 0.25s ease;
+  will-change: transform;
+  position: relative;
+  cursor: default;
+}
+.card-shine {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 2;
+}
+
+/* Signal badges */
+.sig-confirm {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--bull-dim);
+  color: var(--bull);
+  border: 1px solid rgba(34,197,94,0.28);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
+  letter-spacing: 0.06em;
+  animation: radarPing 1.6s ease-out 0.4s 1 both;
+}
+.sig-wait {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--wait-dim);
+  color: var(--wait);
+  border: 1px solid rgba(245,158,11,0.28);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.sig-avoid {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--bear-dim);
+  color: var(--bear);
+  border: 1px solid rgba(239,68,68,0.28);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+/* Conviction dot row */
+.conv-dot-row { display: flex; align-items: center; gap: 4px; }
+.conv-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  opacity: 0;
+}
+.conv-dot.bull  { background: var(--bull); }
+.conv-dot.mid   { background: var(--wait); }
+.conv-dot.low   { background: var(--bear); }
+.conv-dot.empty { background: var(--dim); border: 1px solid var(--border-hi); }
+
+/* Animated score number */
+.slot-score {
+  font-family: var(--mono) !important;
+  font-weight: 700 !important;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* Animated fill bar */
+.fill-bar-track {
+  width: 100%; height: 4px;
+  background: var(--surface-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.fill-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  animation: barFill 0.8s cubic-bezier(0.16,1,0.3,1) both;
+}
+
+/* Summary strip (replaces st.metric top row) */
+.summary-strip {
+  display: flex; gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 1.25rem;
+}
+.summary-cell {
+  flex: 1;
+  background: var(--surface-1);
+  padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.summary-cell:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.summary-cell:last-child  { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.summary-label {
+  font-family: var(--mono); font-size: 0.62rem;
+  color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase;
+}
+.summary-value {
+  font-family: var(--mono); font-size: 1.1rem; font-weight: 600;
+  color: var(--text);
+}
+.summary-value.accent { color: var(--accent); }
+.summary-value.bull   { color: var(--bull); }
+.summary-value.bear   { color: var(--bear); }
+
+/* Custom HTML table */
+.q-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+.q-table th {
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.62rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+}
+.q-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(26,37,64,0.5);
+  color: var(--text);
+  vertical-align: middle;
+}
+.q-table tbody tr {
+  background: var(--surface-1);
+  position: relative;
+  animation: rowReveal 0.3s ease-out both;
+}
+.q-table tbody tr:nth-child(even) { background: var(--surface-2); }
+.q-table tbody tr:hover td { background: rgba(245,158,11,0.04); color: var(--text); }
+.q-table tbody tr { overflow: hidden; }
+.q-table tbody tr::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 60px;
+  background: linear-gradient(90deg, transparent, rgba(245,158,11,0.18), transparent);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0s;
+}
+.q-table tbody tr:hover::before {
+  opacity: 1;
+  animation: rowScan 0.22s ease-out forwards;
+}
+.q-table .mono  { font-family: var(--mono); }
+.q-table .dim   { color: var(--muted); font-size: 0.7rem; }
+.q-table .rank  { color: var(--dim); font-size: 0.65rem; letter-spacing: 0.04em; }
+.q-table .ticker { font-weight: 600; font-size: 0.85rem; color: var(--text); }
+
+/* ── Sidebar chrome overrides ───────────────────────────────────────────── */
+.sidebar-header {
+  font-family: var(--mono) !important;
+  font-size: 0.82rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.22em !important;
+  color: var(--text) !important;
+  padding: 4px 0 20px !important;
+  display: block !important;
+}
+
+/* ALL sidebar buttons default: transparent, text-left, nav style */
+[data-testid="stSidebar"] .stButton > button {
+  background: transparent !important;
+  border: none !important;
+  color: var(--muted) !important;
+  text-align: left !important;
+  font-family: var(--mono) !important;
+  font-size: 0.72rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.11em !important;
+  text-transform: uppercase !important;
+  padding: 8px 10px 8px 14px !important;
+  border-radius: var(--radius-sm) !important;
+  transition: color 130ms ease, background 130ms ease !important;
+}
+[data-testid="stSidebar"] .stButton > button:hover {
+  color: var(--text) !important;
+  background: rgba(255,255,255,0.04) !important;
+  border: none !important;
+}
+
+/* Refresh button: override to keep bordered style */
+.refresh-btn-wrap .stButton > button {
+  border: 1px solid var(--border) !important;
+  background: var(--surface-2) !important;
+  color: var(--muted) !important;
+  padding: 7px 12px !important;
+  margin-bottom: 8px !important;
+}
+.refresh-btn-wrap .stButton > button:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: var(--accent-dim) !important;
+}
+
+/* Active nav item (rendered as div, not button) */
+.nav-active-item {
+  display: flex !important;
+  align-items: stretch !important;
+  gap: 10px !important;
+  padding: 7px 10px 7px 0 !important;
+  margin-bottom: 2px !important;
+  cursor: default !important;
+  user-select: none !important;
+}
+.nav-active-tick {
+  width: 2px !important;
+  flex-shrink: 0 !important;
+  background: var(--accent) !important;
+  border-radius: 0 1px 1px 0 !important;
+  min-height: 30px !important;
+}
+.nav-active-text { padding-left: 4px !important; }
+.nav-active-label {
+  font-family: var(--mono) !important;
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.11em !important;
+  color: var(--accent) !important;
+  text-transform: uppercase !important;
+  display: block !important;
+}
+.nav-active-sub {
+  font-family: var(--mono) !important;
+  font-size: 0.56rem !important;
+  letter-spacing: 0.08em !important;
+  color: var(--muted) !important;
+  text-transform: uppercase !important;
+  display: block !important;
+  margin-top: 2px !important;
+}
+
+/* Sidebar footer */
+.sidebar-footer {
+  font-family: var(--mono) !important;
+  font-size: 0.57rem !important;
+  letter-spacing: 0.10em !important;
+  color: var(--dim) !important;
+  text-transform: uppercase !important;
+  line-height: 1.9 !important;
+  padding-top: 8px !important;
+  border-top: 1px solid var(--border) !important;
+}
+.sidebar-footer span {
+  color: var(--muted) !important;
+  font-size: 0.64rem !important;
+}
+
+/* ── Reduced motion fallbacks ────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .tilt-card { transform: none !important; }
+  .tilt-card:hover { transform: none !important; }
+}
+</style>
+"""
+
+
+def _inject_global_css() -> None:
+    st.markdown(_GLOBAL_CSS, unsafe_allow_html=True)
+
+
+# ── JS animation block (uses window.parent — iframe pattern, proven) ──────────
+
+_JS_BLOCK = r"""
+<script>
+(function() {
+'use strict';
+
+var P = window.parent;
+var PD = P.document;
+
+// ── 1. Ghost canvas — atmospheric financial data stream ──────────────────────
+if (!P._ghostCanvas && !P.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  P._ghostCanvas = true;
+  var cv = PD.createElement('canvas');
+  cv.id = 'ghost-canvas';
+  cv.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:0;opacity:1;';
+  PD.body.appendChild(cv);
+
+  var ctx = cv.getContext('2d');
+  var chars = '01%$.+-×∑≈∂';
+
+  function resize() { cv.width = P.innerWidth; cv.height = P.innerHeight; }
+  resize();
+  P.addEventListener('resize', resize);
+
+  var cols = Math.floor(P.innerWidth / 22);
+  var drops = Array.from({length: cols}, function() { return Math.random() * -60; });
+
+  function drawCanvas() {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.font = '12px "IBM Plex Mono", monospace';
+    drops.forEach(function(y, i) {
+      // Vary opacity per column for depth illusion
+      var baseAlpha = 0.015 + (i % 3) * 0.004;
+      ctx.fillStyle = 'rgba(226,232,240,' + baseAlpha + ')';
+      var char = chars[Math.floor(Math.random() * chars.length)];
+      ctx.fillText(char, i * 22, y * 22);
+      if (y * 22 > cv.height && Math.random() > 0.977) drops[i] = 0;
+      drops[i] += 0.12;
+    });
+  }
+  setInterval(drawCanvas, 130); // ~7.5fps — very slow, purely atmospheric
+}
+
+// ── 2. Terminal boot scan line ───────────────────────────────────────────────
+if (!P._bootScanEl) {
+  var scanEl = PD.createElement('div');
+  scanEl.id = 'boot-scanner';
+  scanEl.style.cssText = [
+    'position:fixed;top:0;left:0;right:0;height:2px;',
+    'background:linear-gradient(90deg, transparent 0%, #f59e0b 40%, #fcd34d 50%, #f59e0b 60%, transparent 100%);',
+    'box-shadow:0 0 22px 4px rgba(245,158,11,0.7);',
+    'pointer-events:none;z-index:9999;',
+    'opacity:0;transform:translateY(0);',
+    'transition:transform 1.15s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease;'
+  ].join('');
+  PD.body.appendChild(scanEl);
+  P._bootScanEl = scanEl;
+}
+
+function triggerBootScan() {
+  var el = P._bootScanEl;
+  el.style.opacity = '1';
+  el.style.transform = 'translateY(0)';
+  P.requestAnimationFrame(function() {
+    P.requestAnimationFrame(function() {
+      el.style.transform = 'translateY(' + P.innerHeight + 'px)';
+      setTimeout(function() {
+        el.style.transition = 'none';
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(0)';
+        setTimeout(function() {
+          el.style.transition = 'transform 1.15s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease';
+        }, 50);
+      }, 1200);
+    });
+  });
+}
+
+// Fire on first load; Phase 2 nav will re-trigger on page switch
+if (!P._bootFired) {
+  P._bootFired = true;
+  setTimeout(triggerBootScan, 80);
+}
+
+// ── 3. 3D card tilt with specular shine ─────────────────────────────────────
+function initTiltCards() {
+  PD.querySelectorAll('.tilt-card').forEach(function(card) {
+    if (card.dataset.tiltInit) return;
+    card.dataset.tiltInit = '1';
+
+    card.addEventListener('mouseenter', function() {
+      card.style.transition = 'transform 0.07s ease-out';
+    });
+
+    card.addEventListener('mousemove', function(e) {
+      var r = card.getBoundingClientRect();
+      var dx = (e.clientX - (r.left + r.width  * 0.5)) / (r.width  * 0.5);
+      var dy = (e.clientY - (r.top  + r.height * 0.5)) / (r.height * 0.5);
+      var rotY =  dx * 13;
+      var rotX = -dy *  9;
+      card.style.transform =
+        'perspective(920px) rotateX(' + rotX + 'deg) rotateY(' + rotY + 'deg) scale3d(1.024,1.024,1.024)';
+      var shine = card.querySelector('.card-shine');
+      if (shine) {
+        shine.style.opacity = '1';
+        shine.style.background =
+          'radial-gradient(circle at ' + (50 + dx*36) + '% ' + (50 + dy*36) + '%, ' +
+          'rgba(245,158,11,0.11) 0%, rgba(255,255,255,0.03) 40%, transparent 68%)';
+      }
+    });
+
+    card.addEventListener('mouseleave', function() {
+      card.style.transition = 'transform 0.7s cubic-bezier(0.23,1,0.32,1)';
+      card.style.transform = 'perspective(920px) rotateX(0deg) rotateY(0deg) scale3d(1,1,1)';
+      var shine = card.querySelector('.card-shine');
+      if (shine) { shine.style.opacity = '0'; }
+    });
+  });
+}
+
+// ── 4. Slot-machine score countup ────────────────────────────────────────────
+function initSlotScores() {
+  PD.querySelectorAll('.slot-score:not([data-slot-init])').forEach(function(el) {
+    el.dataset.slotInit = '1';
+    var target   = parseFloat(el.dataset.target   || '0');
+    var decimals = parseInt(  el.dataset.decimals || '2');
+    var dur      = 920;
+    var flickEnd = dur * 0.62; // random flicker phase then smooth settle
+    var t0 = P.performance.now();
+
+    function easeOutQuart(t) { return 1 - Math.pow(1 - t, 4); }
+
+    (function tick(now) {
+      var elapsed   = now - t0;
+      var progress  = Math.min(elapsed / dur, 1);
+      var val;
+      if (elapsed < flickEnd) {
+        // Rapid random numbers, converging toward target
+        var flickP = elapsed / flickEnd;
+        val = Math.random() * target * (1.8 - flickP * 1.1);
+      } else {
+        val = easeOutQuart((elapsed - flickEnd) / (dur - flickEnd)) * target;
+      }
+      el.textContent = val.toFixed(decimals);
+      if (progress < 1) P.requestAnimationFrame(tick);
+      else el.textContent = target.toFixed(decimals);
+    })(t0);
+  });
+}
+
+// ── 5. Conviction dots — sequential fill with heartbeat pop ─────────────────
+function initConvDots() {
+  PD.querySelectorAll('.conv-dot-row:not([data-conv-init])').forEach(function(row) {
+    row.dataset.convInit = '1';
+    var dots = row.querySelectorAll('.conv-dot');
+    dots.forEach(function(dot, i) {
+      setTimeout(function() {
+        dot.style.animation = 'convDotPop 200ms cubic-bezier(0.34,1.56,0.64,1) forwards';
+      }, i * 90);
+    });
+  });
+}
+
+// ── 6. Keyboard shortcut: R = refresh ────────────────────────────────────────
+if (!P._keyRefreshInit) {
+  P._keyRefreshInit = true;
+  P.addEventListener('keydown', function(e) {
+    var tag = (PD.activeElement || {}).tagName || '';
+    if ((e.key === 'r' || e.key === 'R') &&
+        tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+      var btns = PD.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].innerText.indexOf('Refresh') !== -1) {
+          btns[i].click(); return;
+        }
+      }
+    }
+  });
+}
+
+// ── MutationObserver: re-attach after every Streamlit re-render ──────────────
+function runAll() {
+  initTiltCards();
+  initSlotScores();
+  initConvDots();
+}
+
+runAll();
+
+if (!P._animObserver) {
+  P._animObserver = new P.MutationObserver(function(mutations) {
+    var added = mutations.some(function(m) { return m.addedNodes.length > 0; });
+    if (added) runAll();
+  });
+  P._animObserver.observe(PD.body, { childList: true, subtree: true });
+}
+
+})();
+</script>
+"""
+
+
+def _inject_js_animations() -> None:
+    import streamlit.components.v1 as _cv1
+    _cv1.html(_JS_BLOCK, height=0, width=0)
+
+
 from src.positions import (
     add_position,
     compute_exit_signals,
@@ -29,36 +867,77 @@ from src.news import (
 )
 
 st.set_page_config(
-    page_title="Stock Screener",
-    page_icon="📊",
+    page_title="Screener",
+    page_icon="▲",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.markdown("""
-<style>
-[data-testid="stSidebar"] { background: #1e293b; }
-[data-testid="stSidebar"] * { color: #e2e8f0 !important; }
-[data-testid="stSidebar"] .stRadio label { font-size: 15px; }
-</style>
-""", unsafe_allow_html=True)
+# ── Session state: page routing ───────────────────────────────────────────────
+if "page" not in st.session_state:
+    st.session_state.page = "screener"
+
+_inject_global_css()
+
+# Reset boot scan line before JS block if nav just changed
+if st.session_state.pop("_trigger_boot", False):
+    _components.html(
+        "<script>if(window.parent)window.parent._bootFired=false;</script>",
+        height=0, width=0,
+    )
+
+_inject_js_animations()
+
+# ── Nav definition ────────────────────────────────────────────────────────────
+_NAV = [
+    ("SCREENER",   "screener",   "MOMENTUM RANKINGS"),
+    ("REGIME",     "regime",     "MARKET STATE"),
+    ("POSITIONS",  "positions",  "OPEN P&L"),
+    ("FILING",     "filing",     "LAZY PRICES"),
+    ("CONFLUENCE", "confluence", "DUAL SIGNAL"),
+]
+
+_current_page = st.session_state.page
 
 with st.sidebar:
-    st.markdown("## 📊 Screener")
-    st.markdown("---")
-    if st.button("🔄 Refresh", use_container_width=True,
-                 help="Clear all cached data and reload (keyboard shortcut: R)"):
+    st.markdown('<span class="sidebar-header">▲ SCREENER</span>', unsafe_allow_html=True)
+
+    # Refresh — wrapped div so CSS can target it separately
+    st.markdown('<div class="refresh-btn-wrap">', unsafe_allow_html=True)
+    if st.button("↺  REFRESH", use_container_width=True, key="refresh_btn",
+                 help="Clear all cached data and reload  ·  keyboard: R"):
         st.cache_data.clear()
         st.session_state.pop("news_cache", None)
         st.rerun()
-    st.markdown("---")
-    page = st.radio(
-        "Navigate",
-        ["📈 Screener Results", "🌍 Market Regime", "📋 Open Positions", "🧾 Filing Edge", "🔀 Confluence"],
-        label_visibility="collapsed",
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+
+    # Nav items
+    for _label, _pid, _sub in _NAV:
+        if _current_page == _pid:
+            st.markdown(f"""
+            <div class="nav-active-item">
+              <div class="nav-active-tick"></div>
+              <div class="nav-active-text">
+                <span class="nav-active-label">{_label}</span>
+                <span class="nav-active-sub">{_sub}</span>
+              </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            if st.button(_label, key=f"nav_{_pid}", use_container_width=True):
+                st.session_state.page = _pid
+                st.session_state._trigger_boot = True
+                st.rerun()
+
+    # Footer: last run date
+    st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
+    _out_files = sorted(Path("output").glob("screen_*.csv"), reverse=True)
+    _last_run  = _out_files[0].stem.replace("screen_", "") if _out_files else "—"
+    st.markdown(
+        f'<div class="sidebar-footer">LAST RUN<br><span>{_last_run}</span></div>',
+        unsafe_allow_html=True,
     )
-    st.markdown("---")
-    st.markdown("*Momentum factor strategy*")
 
 
 # ── Cached data loaders ───────────────────────────────────────────────────────
@@ -135,71 +1014,190 @@ def _fmt_pct(x: float) -> str:
     return f"+{x:.0%}" if x >= 0 else f"{x:.0%}"
 
 
-def _top3_card(medal: str, row: pd.Series) -> str:
-    mom = row.get("mom_12_1", float("nan"))
-    rs = row.get("rs_6m", float("nan"))
-    _s = row.get("sector", "")
-    sector = "—" if pd.isna(_s) or str(_s).strip() == "" else str(_s)
-    name = str(row.get("name", "") or "")[:32]
-    ticker = str(row.get("ticker", ""))
-    score = row.get("composite", 0)
+def _top3_card(rank: int, row: pd.Series) -> str:
+    mom        = row.get("mom_12_1", float("nan"))
+    rs         = row.get("rs_6m",    float("nan"))
+    _s         = row.get("sector", "")
+    sector     = "—" if pd.isna(_s) or str(_s).strip() == "" else str(_s)
+    name       = str(row.get("name", "") or "")[:30]
+    ticker     = str(row.get("ticker", ""))
+    score      = float(row.get("composite", 0) or 0)
     conviction = int(row.get("conviction", 0) or 0)
-    streak_cons = int(row.get("streak_consecutive", 0) or 0)
+    streak     = int(row.get("streak_consecutive", 0) or 0)
+    es         = str(row.get("entry_signal", "") or "")
 
-    streak_badge = (
-        f'<span style="background:#fef3c7;color:#92400e;padding:3px 9px;'
-        f'border-radius:8px;font-size:12px;font-weight:600">🔥{streak_cons}d</span>'
-        if streak_cons >= 2 else ""
-    )
-    if conviction >= 7:
-        conv_bg, conv_fg = "#dcfce7", "#166534"
-    elif conviction >= 4:
-        conv_bg, conv_fg = "#fef3c7", "#92400e"
-    else:
-        conv_bg, conv_fg = "#fee2e2", "#991b1b"
-    conv_raw = row.get("conviction_news")
-    conv_label = f"Conv {conviction}/10" + (f" (was {int(conv_raw)})" if conv_raw is not None and int(conv_raw or conviction) != conviction else "")
-    conv_badge = (
-        f'<span style="background:{conv_bg};color:{conv_fg};padding:3px 9px;'
-        f'border-radius:8px;font-size:12px;font-weight:600">{conv_label}</span>'
-    )
-    es = str(row.get("entry_signal", "") or "")
-    _es_styles = {
-        "confirm_entry": ("#166534", "#dcfce7", "✅ Confirm"),
-        "wait":          ("#92400e", "#fef3c7", "⏳ Wait"),
-        "avoid":         ("#991b1b", "#fee2e2", "🚫 Avoid"),
+    rank_str = f"0{rank}" if rank < 10 else str(rank)
+
+    def _dot(i: int) -> str:
+        if i > conviction:
+            return '<span class="conv-dot empty"></span>'
+        if conviction >= 7:
+            return '<span class="conv-dot bull"></span>'
+        if conviction >= 4:
+            return '<span class="conv-dot mid"></span>'
+        return '<span class="conv-dot low"></span>'
+    conv_dots = "".join(_dot(i) for i in range(1, 11))
+
+    _sig_map = {
+        "confirm_entry": ("CONFIRM", "sig-confirm"),
+        "wait":          ("WAIT",    "sig-wait"),
+        "avoid":         ("AVOID",   "sig-avoid"),
     }
-    if es in _es_styles:
-        es_fg, es_bg, es_label = _es_styles[es]
-        signal_badge = (
-            f'<span style="background:{es_bg};color:{es_fg};padding:3px 9px;'
-            f'border-radius:8px;font-size:12px;font-weight:600">{es_label}</span>'
-        )
+    if es in _sig_map:
+        sig_label, sig_cls = _sig_map[es]
+        signal_html = f'<span class="{sig_cls}">{sig_label}</span>'
     else:
-        signal_badge = ""
+        signal_html = ""
 
-    return (
-        f'<div style="border:1px solid #e2e8f0;border-radius:12px;padding:18px;background:#f8fafc;height:100%">'
-        f'<div style="font-size:28px;margin-bottom:4px">{medal}</div>'
-        f'<div style="font-weight:800;font-size:20px;color:#1e293b;letter-spacing:-0.5px">{_html.escape(ticker)}</div>'
-        f'<div style="color:#64748b;font-size:12px;margin-bottom:10px">{_html.escape(name)}</div>'
-        f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
-        f'<span style="background:#dcfce7;color:#166534;padding:3px 9px;border-radius:8px;font-size:12px;font-weight:600">📈 Mom: {_fmt_pct(mom)}</span>'
-        f'<span style="background:#dbeafe;color:#1e40af;padding:3px 9px;border-radius:8px;font-size:12px;font-weight:600">⚡ RS: {_fmt_pct(rs)}</span>'
-        f'</div>'
-        f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
-        f'{conv_badge}{streak_badge}{signal_badge}'
-        f'</div>'
-        f'<div style="display:flex;gap:6px">'
-        f'<span style="background:#f1f5f9;color:#475569;padding:3px 9px;border-radius:8px;font-size:11px">{_html.escape(sector)}</span>'
-        f'<span style="background:#ede9fe;color:#6d28d9;padding:3px 9px;border-radius:8px;font-size:11px;font-weight:600">Score {score:.2f}</span>'
-        f'</div>'
-        f'</div>'
+    streak_html = (
+        f'<span style="font-family:var(--mono);font-size:0.63rem;'
+        f'letter-spacing:0.05em;color:var(--accent)">{streak}d streak</span>'
+        if streak >= 2 else ""
     )
+
+    def _pct_color(v: float) -> str:
+        if pd.isna(v): return "var(--muted)"
+        return "var(--bull)" if v > 0 else "var(--bear)"
+
+    top_border  = ["var(--accent)", "var(--border-hi)", "var(--border)"][rank - 1]
+    score_color = "var(--accent)" if rank == 1 else "var(--text)"
+    pulse_anim  = "animation:scanPulse 2s ease-out 1.4s 1 both;" if rank == 1 else ""
+
+    card_style  = (
+        f"background:var(--surface-1);border:1px solid var(--border);"
+        f"border-top:2px solid {top_border};border-radius:var(--radius-lg);"
+        f"padding:20px 18px 16px;height:100%;position:relative;overflow:hidden;{pulse_anim}"
+    )
+
+    return f"""
+<div class="tilt-card" style="{card_style}">
+  <div class="card-shine"></div>
+  <div style="position:absolute;top:8px;right:14px;font-family:var(--mono);
+              font-size:3.6rem;font-weight:700;color:var(--dim);letter-spacing:-0.04em;
+              line-height:1;pointer-events:none;user-select:none">{rank_str}</div>
+  <div style="font-family:var(--mono);font-size:1.55rem;font-weight:700;
+              color:var(--text);letter-spacing:-0.01em;line-height:1;
+              position:relative;z-index:1">{_html.escape(ticker)}</div>
+  <div style="font-size:0.71rem;color:var(--muted);margin-top:3px;
+              margin-bottom:14px">{_html.escape(name)}</div>
+  <div style="display:flex;align-items:baseline;gap:7px;margin-bottom:12px">
+    <span class="slot-score" data-target="{score:.4f}" data-decimals="2"
+          style="font-size:1.85rem;font-weight:700;color:{score_color}">{score:.2f}</span>
+    <span style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);
+                 letter-spacing:0.08em">COMPOSITE</span>
+  </div>
+  <div style="margin-bottom:14px">
+    <div style="font-family:var(--mono);font-size:0.57rem;color:var(--muted);
+                letter-spacing:0.09em;margin-bottom:6px">CONVICTION {conviction}/10</div>
+    <div class="conv-dot-row">{conv_dots}</div>
+  </div>
+  <div style="display:flex;gap:18px;margin-bottom:14px">
+    <div>
+      <div style="font-family:var(--mono);font-size:0.56rem;color:var(--muted);letter-spacing:0.07em">MOM 12-1</div>
+      <div style="font-family:var(--mono);font-size:0.85rem;font-weight:600;color:{_pct_color(mom)}">{_fmt_pct(mom)}</div>
+    </div>
+    <div>
+      <div style="font-family:var(--mono);font-size:0.56rem;color:var(--muted);letter-spacing:0.07em">RS 6M</div>
+      <div style="font-family:var(--mono);font-size:0.85rem;font-weight:600;color:{_pct_color(rs)}">{_fmt_pct(rs)}</div>
+    </div>
+    <div>
+      <div style="font-family:var(--mono);font-size:0.56rem;color:var(--muted);letter-spacing:0.07em">SECTOR</div>
+      <div style="font-family:var(--mono);font-size:0.7rem;color:var(--text)">{_html.escape(sector[:18])}</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    {signal_html}{streak_html}
+  </div>
+</div>"""
+
+
+def _screener_html_table(df: pd.DataFrame) -> str:
+    max_score = float(df["composite"].max()) if "composite" in df.columns and df["composite"].notna().any() else 1.0
+    if max_score <= 0:
+        max_score = 1.0
+
+    _sig_badge = {
+        "confirm_entry": '<span class="sig-confirm">CONFIRM</span>',
+        "wait":          '<span class="sig-wait">WAIT</span>',
+        "avoid":         '<span class="sig-avoid">AVOID</span>',
+    }
+    _cat_badge = {
+        "estimate_up":   '<span style="font-family:var(--mono);font-size:0.7rem;color:var(--bull)">EST&#8593;</span>',
+        "estimate_down": '<span style="font-family:var(--mono);font-size:0.7rem;color:var(--bear)">EST&#8595;</span>',
+    }
+
+    rows = []
+    for i, (_, row) in enumerate(df.iterrows()):
+        rank      = i + 1
+        ticker    = _html.escape(str(row.get("ticker", "")))
+        name      = _html.escape(str(row.get("name", "") or "")[:28])
+        _sec      = row.get("sector", "")
+        sector    = _html.escape(("—" if pd.isna(_sec) or str(_sec).strip() == "" else str(_sec))[:14])
+        score     = float(row.get("composite", 0) or 0)
+        score_pct = min(score / max_score * 100, 100)
+        conv      = int(row.get("conviction", 0) or 0)
+        streak    = int(row.get("streak_consecutive", 0) or 0)
+        es        = str(row.get("entry_signal", "") or "")
+        cat       = str(row.get("catalyst", "") or "")
+        mom       = row.get("mom_12_1", float("nan"))
+        rs        = row.get("rs_6m", float("nan"))
+        price     = row.get("price")
+        mcap      = row.get("market_cap")
+
+        def _c(v: float) -> str:
+            if pd.isna(v): return "var(--muted)"
+            return "var(--bull)" if v > 0 else "var(--bear)"
+
+        sig_html    = _sig_badge.get(es, '<span style="color:var(--dim)">—</span>')
+        cat_html    = _cat_badge.get(cat, '<span style="color:var(--dim)">—</span>')
+        streak_html = (f'<span style="color:var(--accent);font-family:var(--mono);font-size:0.72rem">{streak}d</span>'
+                       if streak >= 2 else '<span style="color:var(--dim)">—</span>')
+        price_str   = f"${price:,.2f}" if price is not None and not pd.isna(price) else "—"
+        mcap_str    = f"${mcap/1e9:.1f}B" if mcap is not None and not pd.isna(mcap) else "—"
+
+        rows.append(f"""
+<tr style="animation-delay:{i * 20}ms">
+  <td class="rank">#{rank:02d}</td>
+  <td><span class="ticker">{ticker}</span></td>
+  <td class="dim">{name}</td>
+  <td class="dim">{sector}</td>
+  <td>
+    <div style="display:flex;align-items:center;gap:7px">
+      <div class="fill-bar-track" style="width:52px">
+        <div class="fill-bar-fill" style="width:{score_pct:.0f}%;background:var(--accent)"></div>
+      </div>
+      <span style="font-family:var(--mono);font-size:0.72rem;color:var(--text)">{score:.2f}</span>
+    </div>
+  </td>
+  <td style="font-family:var(--mono);font-size:0.78rem;color:var(--text)">{conv}<span style="color:var(--dim)">/10</span></td>
+  <td>{streak_html}</td>
+  <td>{sig_html}</td>
+  <td>{cat_html}</td>
+  <td style="font-family:var(--mono);font-size:0.78rem;color:{_c(mom)}">{_fmt_pct(mom)}</td>
+  <td style="font-family:var(--mono);font-size:0.78rem;color:{_c(rs)}">{_fmt_pct(rs)}</td>
+  <td style="font-family:var(--mono);font-size:0.75rem;color:var(--muted)">{price_str}</td>
+  <td style="font-family:var(--mono);font-size:0.72rem;color:var(--muted)">{mcap_str}</td>
+</tr>""")
+
+    return f"""
+<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:1rem">
+<table class="q-table">
+  <thead><tr>
+    <th>#</th><th>TICKER</th><th>NAME</th><th>SECTOR</th>
+    <th>SCORE</th><th>CONV</th><th>STREAK</th><th>SIGNAL</th>
+    <th>CAT</th><th>MOM 12-1</th><th>RS 6M</th><th>PRICE</th><th>MCAP</th>
+  </tr></thead>
+  <tbody>{"".join(rows)}</tbody>
+</table>
+</div>"""
 
 
 def _render_screener() -> None:
-    st.title("📈 Screener Results")
+    st.markdown(
+        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">SCREENER RESULTS</h2>',
+        unsafe_allow_html=True,
+    )
 
     output_dir = Path("output")
     csv_files = sorted(output_dir.glob("screen_*.csv"), reverse=True)
@@ -209,7 +1207,7 @@ def _render_screener() -> None:
         return
 
     dates = [f.stem.replace("screen_", "") for f in csv_files]
-    selected_date = st.selectbox("Screen date", dates)
+    selected_date = st.selectbox("Screen date", dates, label_visibility="collapsed")
 
     try:
         df = pd.read_csv(output_dir / f"screen_{selected_date}.csv")
@@ -217,141 +1215,61 @@ def _render_screener() -> None:
         st.error(f"Could not read {selected_date}: {e}")
         return
 
-    # ── Summary metrics ───────────────────────────────────────────────────────
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        top_ticker = df.iloc[0]["ticker"] if len(df) > 0 else "—"
-        top_score = df.iloc[0]["composite"] if len(df) > 0 and "composite" in df.columns else 0
-        st.metric("🥇 Top Pick", top_ticker, f"Score {top_score:.2f}")
-    with m2:
-        st.metric("📊 Stocks Ranked", len(df))
-    with m3:
-        avg = df["composite"].mean() if "composite" in df.columns else 0
-        st.metric("📈 Avg Score", f"{avg:.2f}")
+    top_ticker = str(df.iloc[0]["ticker"]) if len(df) > 0 else "—"
+    top_score  = float(df.iloc[0]["composite"]) if len(df) > 0 and "composite" in df.columns else 0.0
+    avg        = float(df["composite"].mean()) if "composite" in df.columns else 0.0
+    confirms   = int((df["entry_signal"] == "confirm_entry").sum()) if "entry_signal" in df.columns else 0
+    avoids     = int((df["entry_signal"] == "avoid").sum()) if "entry_signal" in df.columns else 0
 
-    st.markdown("")
+    # ── Summary strip ─────────────────────────────────────────────────────────
+    st.markdown(f"""
+<div class="summary-strip">
+  <div class="summary-cell">
+    <div class="summary-label">TOP PICK</div>
+    <div class="summary-value accent">{_html.escape(top_ticker)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">SCORE</div>
+    <div class="summary-value">
+      <span class="slot-score" data-target="{top_score:.4f}" data-decimals="2">{top_score:.2f}</span>
+    </div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">RANKED</div>
+    <div class="summary-value">{len(df)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">AVG SCORE</div>
+    <div class="summary-value">{avg:.2f}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">CONFIRMS</div>
+    <div class="summary-value bull">{confirms}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">AVOIDS</div>
+    <div class="summary-value bear">{avoids}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
-    # ── Top 3 medal cards ─────────────────────────────────────────────────────
-    medals = ["🥇", "🥈", "🥉"]
+    # ── Top 3 cards ───────────────────────────────────────────────────────────
     cols = st.columns(3)
-    for i, (col, medal) in enumerate(zip(cols, medals)):
+    for i, col in enumerate(cols):
         if i < len(df):
             with col:
-                st.markdown(_top3_card(medal, df.iloc[i]), unsafe_allow_html=True)
+                st.markdown(_top3_card(i + 1, df.iloc[i]), unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.markdown('<div style="height:1px;background:var(--border);margin:1.5rem 0"></div>', unsafe_allow_html=True)
 
     # ── Full ranked table ─────────────────────────────────────────────────────
-    df2 = df.copy()
-    df2.insert(0, "Rank", range(1, len(df2) + 1))
-
-    display_df = pd.DataFrame()
-    display_df["Rank"] = df2["Rank"]
-    display_df["Ticker"] = df2["ticker"]
-    display_df["Name"] = df2["name"].str[:35] if "name" in df2.columns else "—"
-    display_df["Sector"] = df2["sector"].fillna("—") if "sector" in df2.columns else "—"
-    display_df["Score"] = df2["composite"] if "composite" in df2.columns else None
-    display_df["Conviction"] = (
-        df2["conviction"].fillna(0).apply(lambda x: int(x) if pd.notna(x) else 0)
-        if "conviction" in df2.columns else 0
-    )
-    display_df["Streak"] = (
-        df2["streak_consecutive"].map(lambda x: f"🔥{int(x)}d" if pd.notna(x) and int(x) >= 2 else "—")
-        if "streak_consecutive" in df2.columns else "—"
-    )
-    _es_map = {"confirm_entry": "✅ Confirm", "wait": "⏳ Wait", "avoid": "🚫 Avoid"}
-    display_df["Signal"] = (
-        df2["entry_signal"].map(lambda x: _es_map.get(str(x), "—") if pd.notna(x) else "—")
-        if "entry_signal" in df2.columns else "—"
-    )
-    _cat_map = {"estimate_up": "📈 Est ↑", "estimate_down": "📉 Est ↓", "none": "—"}
-    display_df["Catalyst"] = (
-        df2["catalyst"].map(lambda x: _cat_map.get(str(x), "—") if pd.notna(x) else "—")
-        if "catalyst" in df2.columns else "—"
-    )
-    display_df["Mom 12-1"] = df2["mom_12_1"].map(_fmt_pct) if "mom_12_1" in df2.columns else "—"
-    display_df["RS vs SPY 6M"] = df2["rs_6m"].map(_fmt_pct) if "rs_6m" in df2.columns else "—"
-    display_df["Price"] = (
-        df2["price"].map(lambda x: f"${x:,.2f}" if pd.notna(x) else "—")
-        if "price" in df2.columns else "—"
-    )
-    display_df["Mkt Cap"] = (
-        df2["market_cap"].map(lambda x: f"${x / 1e9:.1f}B" if pd.notna(x) else "—")
-        if "market_cap" in df2.columns else "—"
-    )
-
-    max_score = float(df["composite"].max()) if "composite" in df.columns else 5.0
-
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Rank": st.column_config.NumberColumn(width="small"),
-            "Score": st.column_config.ProgressColumn(
-                "Score",
-                help=(
-                    "Composite factor score (weighted z-score):\n"
-                    "28% 12-month momentum · 20% analyst revision breadth · "
-                    "17% earnings surprise · 15% 6-month RS vs SPY · "
-                    "10% technical alignment · 5% RS slope · 5% streak bonus"
-                ),
-                min_value=0,
-                max_value=max_score,
-                format="%.2f",
-            ),
-            "Conviction": st.column_config.ProgressColumn(
-                "Conviction",
-                help=(
-                    "1–10 score synthesizing rank position, streak consistency, "
-                    "technical alignment (8 signals), and fundamental quality gates.\n"
-                    "≥7 = high conviction  4–6 = moderate  ≤3 = low"
-                ),
-                min_value=1,
-                max_value=10,
-                format="%d",
-            ),
-            "Streak": st.column_config.TextColumn(
-                "Streak",
-                help="Consecutive trading days this stock appeared in the top results. 🔥 = sustained momentum.",
-            ),
-            "Signal": st.column_config.TextColumn(
-                "Signal",
-                help=(
-                    "News entry signal overlay:\n"
-                    "✅ Confirm = news supports the momentum thesis\n"
-                    "⏳ Wait = mixed or uncertain — no edge from news\n"
-                    "🚫 Avoid = news contradicts or undermines the thesis"
-                ),
-            ),
-            "Catalyst": st.column_config.TextColumn(
-                "Catalyst",
-                help="📈 = news likely to drive analyst estimate upgrades  📉 = likely downgrades",
-            ),
-            "Mom 12-1": st.column_config.TextColumn(
-                "Mom 12-1",
-                help=(
-                    "12-month price return, skipping the most recent month.\n"
-                    "Why skip last month? 1-month returns tend to reverse.\n"
-                    "The 12-1 window captures durable institutional momentum."
-                ),
-            ),
-            "RS vs SPY 6M": st.column_config.TextColumn(
-                "RS vs SPY 6M",
-                help=(
-                    "Outperformance vs S&P 500 over 6 months.\n"
-                    "+300% = the stock beat the index by 300 percentage points.\n"
-                    "Filters stocks that rose only because the market rose."
-                ),
-            ),
-        },
-    )
+    st.markdown(_screener_html_table(df), unsafe_allow_html=True)
 
     # ── Sustained Movers ─────────────────────────────────────────────────────
     if "streak_consecutive" in df.columns:
         sustained = df[df["streak_consecutive"] >= 3].copy()
         if len(sustained) > 0:
-            with st.expander(f"🔥 Sustained Movers — {len(sustained)} stock{'s' if len(sustained) != 1 else ''} with ≥3-day streak"):
+            with st.expander(f"Sustained Movers — {len(sustained)} stock{'s' if len(sustained) != 1 else ''} with 3d+ streak"):
                 sus_display = sustained[
                     [c for c in ["ticker", "name", "composite", "conviction", "streak_consecutive", "streak_count"] if c in sustained.columns]
                 ].rename(columns={"streak_consecutive": "Streak Days", "conviction": "Conviction", "composite": "Score"})
@@ -395,26 +1313,29 @@ Exit rule: **3 or more of 5 signals triggered = exit**.
 
     # ── News Entry Signals — top picks ────────────────────────────────────────
     if "entry_signal" in df.columns and df["entry_signal"].notna().any():
-        st.markdown("---")
-        st.subheader("📰 News Entry Signals — Top Picks")
-        st.caption("Context-aware analysis: does today's news confirm or contradict the momentum thesis?")
+        st.markdown('<div style="height:1px;background:var(--border);margin:1rem 0"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-family:var(--mono);font-size:0.72rem;font-weight:700;'
+            'letter-spacing:0.1em;color:var(--muted);margin-bottom:0.75rem">NEWS ENTRY SIGNALS</div>',
+            unsafe_allow_html=True,
+        )
         _es_colors = {
-            "confirm_entry": ("#166534", "#dcfce7"),
-            "wait":          ("#92400e", "#fef3c7"),
-            "avoid":         ("#991b1b", "#fee2e2"),
+            "confirm_entry": ("#22c55e", "rgba(34,197,94,0.08)"),
+            "wait":          ("#f59e0b", "rgba(245,158,11,0.08)"),
+            "avoid":         ("#ef4444", "rgba(239,68,68,0.08)"),
         }
-        _cat_icons = {"estimate_up": "📈 Estimate revision UP", "estimate_down": "📉 Estimate revision DOWN"}
+        _cat_icons = {"estimate_up": "EST UP", "estimate_down": "EST DOWN"}
         for _, row in df.head(10).iterrows():
             es = str(row.get("entry_signal", "") or "")
-            if not es or es == "wait" and not row.get("news_reasoning"):
+            if not es or (es == "wait" and not row.get("news_reasoning")):
                 continue
             ticker = str(row.get("ticker", ""))
-            fg, bg = _es_colors.get(es, ("#374151", "#f3f4f6"))
-            es_label = {"confirm_entry": "✅ CONFIRM ENTRY", "wait": "⏳ WAIT", "avoid": "🚫 AVOID"}.get(es, es)
+            fg, bg = _es_colors.get(es, ("#94a3b8", "rgba(148,163,184,0.08)"))
+            es_label = {"confirm_entry": "CONFIRM", "wait": "WAIT", "avoid": "AVOID"}.get(es, es)
             cat = str(row.get("catalyst", "") or "")
             cat_str = _cat_icons.get(cat, "")
             tc = str(row.get("thesis_consistency", "") or "")
-            tc_badge = {"confirms": "📐 Confirms thesis", "contradicts": "⚠️ Contradicts thesis"}.get(tc, "")
+            tc_badge = {"confirms": "Confirms thesis", "contradicts": "Contradicts thesis"}.get(tc, "")
             reasoning = str(row.get("news_reasoning", "") or "")
             with st.expander(f"{ticker}  —  {es_label}"):
                 cols = st.columns([1, 1, 1])
@@ -427,8 +1348,9 @@ Exit rule: **3 or more of 5 signals triggered = exit**.
                     cols[2].markdown(f"**Impact:** {dur}")
                 if reasoning:
                     st.markdown(
-                        f'<div style="background:{bg};color:{fg};padding:10px 14px;'
-                        f'border-radius:8px;font-size:13px;margin-top:6px">{_html.escape(reasoning)}</div>',
+                        f'<div style="background:{bg};border:1px solid {fg}30;color:{fg};padding:10px 14px;'
+                        f'border-radius:8px;font-size:13px;margin-top:6px;font-family:var(--sans)">'
+                        f'{_html.escape(reasoning)}</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -436,8 +1358,11 @@ Exit rule: **3 or more of 5 signals triggered = exit**.
 # ── Market Regime ─────────────────────────────────────────────────────────────
 
 def _render_regime() -> None:
-    st.title("🌍 SPY Market Regime")
-    st.caption("Composite signal from 12+ technical, macro, and momentum indicators. Cached 18h.")
+    st.markdown(
+        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">MARKET REGIME</h2>',
+        unsafe_allow_html=True,
+    )
 
     with st.spinner("Computing market regime…"):
         data = _cached_spy_regime()
@@ -446,177 +1371,211 @@ def _render_regime() -> None:
         st.error(f"Could not compute regime: {data['error']}")
         return
 
-    regime = data["regime"]
-    score = data["score"]
-    signals = data["signals"]
-    as_of = data["as_of"]
-    bull_count = data["bull_count"]
+    regime      = data["regime"]
+    score       = data["score"]
+    signals     = data["signals"]
+    as_of       = data["as_of"]
+    bull_count  = data["bull_count"]
     total_count = data["total_count"]
 
-    # Regime banner
-    if regime == "BULL":
-        bg, fg, icon = "#dcfce7", "#166534", "📈"
-        desc = "Favorable conditions — momentum strategies have tailwind"
-    elif regime == "BEAR":
-        bg, fg, icon = "#fee2e2", "#991b1b", "📉"
-        desc = "Risk-off environment — reduce or hedge long exposure"
-    else:
-        bg, fg, icon = "#fef3c7", "#92400e", "⚠️"
-        desc = "Mixed signals — selective entries only, size down"
+    _rmap = {
+        "BULL":    ("var(--bull)", "FAVORABLE — momentum strategies have tailwind"),
+        "BEAR":    ("var(--bear)", "RISK-OFF — reduce or hedge long exposure"),
+        "NEUTRAL": ("var(--wait)", "MIXED — selective entries only, size down"),
+    }
+    r_color, r_desc = _rmap.get(regime, _rmap["NEUTRAL"])
+    score_pct = int(score / 10 * 100)
 
+    # ── Regime banner ─────────────────────────────────────────────────────────
+    banner_s = (f"background:var(--surface-1);border:1px solid var(--border);"
+                f"border-top:3px solid {r_color};border-radius:var(--radius-lg);"
+                f"padding:24px 28px;margin-bottom:1rem")
     st.markdown(f"""
-    <div style="background:{bg};border:2px solid {fg}30;border-radius:16px;
-                padding:28px;text-align:center;margin-bottom:24px">
-      <div style="font-size:52px;margin-bottom:8px">{icon}</div>
-      <div style="font-size:36px;font-weight:800;color:{fg};letter-spacing:-1px">{regime}</div>
-      <div style="color:{fg};font-size:15px;margin-top:4px;opacity:0.85">{desc}</div>
-      <div style="color:{fg};font-size:13px;margin-top:8px;opacity:0.65">
-        Score {score}/10 · {bull_count}/{total_count} signals bullish · As of {_html.escape(as_of)}
-      </div>
+<div style="{banner_s}">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap">
+    <div>
+      <div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);letter-spacing:0.1em;margin-bottom:6px">SPY COMPOSITE SIGNAL</div>
+      <div style="font-family:var(--mono);font-size:2.8rem;font-weight:700;color:{r_color};letter-spacing:-0.02em;line-height:1">{regime}</div>
+      <div style="font-size:0.76rem;color:var(--muted);margin-top:8px">{r_desc}</div>
     </div>
-    """, unsafe_allow_html=True)
-
-    # Score bar + key metrics
-    bar_color = "#10b981" if regime == "BULL" else ("#ef4444" if regime == "BEAR" else "#f59e0b")
-    bar_pct = int(score / 10 * 100)
-    st.markdown(f"""
-    <div style="background:#e2e8f0;border-radius:8px;height:10px;margin-bottom:20px">
-      <div style="background:{bar_color};width:{bar_pct}%;height:10px;border-radius:8px"></div>
+    <div style="text-align:right;flex-shrink:0">
+      <div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);letter-spacing:0.1em;margin-bottom:6px">COMPOSITE SCORE</div>
+      <span class="slot-score" data-target="{float(score):.1f}" data-decimals="1" style="font-size:2.2rem;font-weight:700;color:{r_color}">{score:.1f}</span>
+      <span style="font-family:var(--mono);font-size:0.9rem;color:var(--muted)">/10</span>
     </div>
-    """, unsafe_allow_html=True)
+  </div>
+  <div style="margin-top:16px">
+    <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+      <span style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);letter-spacing:0.07em">BULL SIGNALS {bull_count}/{total_count}</span>
+      <span style="font-family:var(--mono);font-size:0.58rem;color:{r_color}">{score_pct}%</span>
+    </div>
+    <div class="fill-bar-track" style="height:5px;width:100%">
+      <div class="fill-bar-fill" style="width:{score_pct}%;background:{r_color};height:5px"></div>
+    </div>
+  </div>
+  <div style="font-family:var(--mono);font-size:0.56rem;color:var(--dim);margin-top:10px;letter-spacing:0.05em">AS OF {_html.escape(as_of)}</div>
+</div>
+""", unsafe_allow_html=True)
 
-    # Quick key-metric cards
-    vix_sig = next((s for s in signals if s["name"] == "vix"), None)
-    yld_sig = next((s for s in signals if s["name"] == "yield_curve"), None)
-    rsi_sig = next((s for s in signals if s["name"] == "rsi"), None)
+    # ── Key metrics strip ─────────────────────────────────────────────────────
+    vix_sig = next((s for s in signals if s["name"] == "vix"),          None)
+    yld_sig = next((s for s in signals if s["name"] == "yield_curve"),  None)
     gc_sig  = next((s for s in signals if s["name"] == "golden_cross"), None)
+    rsi_sig = next((s for s in signals if s["name"] == "rsi"),          None)
 
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        st.metric("Composite", f"{score}/10")
-    with k2:
-        if vix_sig:
-            d = "Low fear ✅" if vix_sig["is_bull"] else "Elevated ⚠️"
-            st.metric("VIX", vix_sig["value"], delta=d,
-                      delta_color="normal" if vix_sig["is_bull"] else "inverse")
-    with k3:
-        if yld_sig:
-            d = "Normal ✅" if yld_sig["is_bull"] else "Inverted 🔴"
-            st.metric("Yield Curve", yld_sig["value"], delta=d,
-                      delta_color="normal" if yld_sig["is_bull"] else "inverse")
-    with k4:
-        if gc_sig:
-            d = "Golden cross ✅" if gc_sig["is_bull"] else "Death cross 🔴"
-            st.metric("SMA Cross", "Bullish" if gc_sig["is_bull"] else "Bearish", delta=d,
-                      delta_color="normal" if gc_sig["is_bull"] else "inverse")
+    def _sv(sig: dict | None) -> str:
+        return _html.escape(str(sig["value"])) if sig else "—"
+    def _sc(sig: dict | None) -> str:
+        if not sig: return "var(--muted)"
+        return "var(--bull)" if sig["is_bull"] else "var(--bear)"
+    sma_label = ("GOLDEN" if gc_sig and gc_sig["is_bull"] else
+                 "DEATH"  if gc_sig and not gc_sig["is_bull"] else "—")
 
-    # Signal breakdown table
-    st.subheader("Signal Breakdown")
-    rows_html = ""
-    for s in signals:
-        icon2 = "✅" if s["is_bull"] else "🔴"
-        row_bg = "#f0fdf4" if s["is_bull"] else "#fff5f5"
-        rows_html += (
-            f'<tr style="background:{row_bg}">'
-            f'<td style="padding:8px 14px;font-size:14px">{icon2} {_html.escape(s["label"])}</td>'
-            f'<td style="padding:8px 14px;color:#64748b;text-align:right;font-size:13px">'
-            f'{_html.escape(str(s["value"]))}</td>'
+    st.markdown(f"""
+<div class="summary-strip">
+  <div class="summary-cell">
+    <div class="summary-label">COMPOSITE</div>
+    <div class="summary-value" style="color:{r_color}">{score:.1f}/10</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">VIX</div>
+    <div class="summary-value" style="color:{_sc(vix_sig)}">{_sv(vix_sig)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">YIELD CURVE</div>
+    <div class="summary-value" style="color:{_sc(yld_sig)}">{_sv(yld_sig)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">SMA CROSS</div>
+    <div class="summary-value" style="color:{_sc(gc_sig)}">{sma_label}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">RSI</div>
+    <div class="summary-value" style="color:{_sc(rsi_sig)}">{_sv(rsi_sig)}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # ── Signal breakdown table ────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
+        'letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">SIGNAL BREAKDOWN</div>',
+        unsafe_allow_html=True,
+    )
+    sig_rows = []
+    for i, s in enumerate(signals):
+        dot_c = "var(--bull)" if s["is_bull"] else "var(--bear)"
+        state = "BULL" if s["is_bull"] else "BEAR"
+        sig_rows.append(
+            f'<tr style="animation-delay:{i*16}ms">'
+            f'<td><span style="width:6px;height:6px;border-radius:50%;background:{dot_c};'
+            f'display:inline-block;margin-right:10px;flex-shrink:0"></span>'
+            f'<span style="font-size:0.8rem;color:var(--text)">{_html.escape(s["label"])}</span></td>'
+            f'<td style="font-family:var(--mono);font-size:0.75rem;color:var(--muted);text-align:right">{_html.escape(str(s["value"]))}</td>'
+            f'<td style="text-align:right"><span style="font-family:var(--mono);font-size:0.63rem;color:{dot_c};letter-spacing:0.07em">{state}</span></td>'
             f'</tr>'
         )
     st.markdown(f"""
-    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;
-                  border-radius:8px;overflow:hidden">
-      <thead>
-        <tr style="background:#f8fafc">
-          <th style="padding:10px 14px;text-align:left;color:#64748b;font-size:12px;
-                     text-transform:uppercase;letter-spacing:.5px">Indicator</th>
-          <th style="padding:10px 14px;text-align:right;color:#64748b;font-size:12px;
-                     text-transform:uppercase;letter-spacing:.5px">Value</th>
-        </tr>
-      </thead>
-      <tbody>{rows_html}</tbody>
-    </table>
-    """, unsafe_allow_html=True)
+<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:1rem">
+<table class="q-table">
+  <thead><tr><th>INDICATOR</th><th style="text-align:right">VALUE</th><th style="text-align:right">STATE</th></tr></thead>
+  <tbody>{"".join(sig_rows)}</tbody>
+</table>
+</div>""", unsafe_allow_html=True)
 
-    st.markdown("")
-
-    # Sector signals from news overlay (if available)
+    # ── Sector signals ────────────────────────────────────────────────────────
     try:
-        import sqlite3, json as _json
-        _db = "data/cache.db"
-        _conn = sqlite3.connect(_db)
-        _row = _conn.execute(
+        import sqlite3 as _sq3, json as _json
+        _conn2 = _sq3.connect("data/cache.db")
+        _row2  = _conn2.execute(
             "SELECT payload FROM news_sentiment WHERE ticker='__MARKET__' ORDER BY fetched_at DESC LIMIT 1"
         ).fetchone()
-        _conn.close()
-        if _row:
-            _market_payload = _json.loads(_row[0])
-            _sector_sigs = _market_payload.get("sector_signals") or {}
-            _regime_note = _market_payload.get("regime_note", "")
+        _conn2.close()
+        if _row2:
+            _mp         = _json.loads(_row2[0])
+            _sector_sigs = _mp.get("sector_signals") or {}
+            _regime_note = _mp.get("regime_note", "")
             if _sector_sigs:
-                st.subheader("📡 Sector Signals")
+                st.markdown(
+                    '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
+                    'letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">SECTOR SIGNALS</div>',
+                    unsafe_allow_html=True,
+                )
                 if _regime_note:
-                    st.caption(_regime_note)
-                chips_html = ""
-                for _sec, _sig in _sector_sigs.items():
-                    _dir = _sig.get("direction", "")
-                    _str = _sig.get("strength", "")
-                    _rsn = _sig.get("reason", "")
-                    _chip_bg = "#fee2e2" if _dir == "headwind" else "#dcfce7"
-                    _chip_fg = "#991b1b" if _dir == "headwind" else "#166534"
-                    _icon = "⬇" if _dir == "headwind" else "⬆"
-                    chips_html += (
-                        f'<span title="{_html.escape(_rsn)}" style="display:inline-block;'
-                        f'background:{_chip_bg};color:{_chip_fg};padding:4px 12px;'
-                        f'border-radius:20px;font-size:13px;font-weight:600;margin:3px">'
-                        f'{_icon} {_html.escape(_sec)} ({_str})</span>'
+                    st.markdown(
+                        f'<div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.75rem">'
+                        f'{_html.escape(_regime_note)}</div>',
+                        unsafe_allow_html=True,
                     )
-                st.markdown(f'<div style="margin-bottom:12px">{chips_html}</div>', unsafe_allow_html=True)
+                chips = ""
+                for _sec, _sig in _sector_sigs.items():
+                    _dir  = _sig.get("direction", "")
+                    _str  = _sig.get("strength", "")
+                    _rsn  = _sig.get("reason", "")
+                    _cc   = "var(--bear)" if _dir == "headwind" else "var(--bull)"
+                    _cbg  = "var(--bear-dim)" if _dir == "headwind" else "var(--bull-dim)"
+                    _arr  = "&#8595;" if _dir == "headwind" else "&#8593;"
+                    _tail = f" · {_html.escape(_str)}" if _str else ""
+                    chips += (
+                        f'<span title="{_html.escape(_rsn)}" style="display:inline-block;'
+                        f'background:{_cbg};color:{_cc};border:1px solid {_cc}30;'
+                        f'padding:4px 12px;border-radius:20px;font-family:var(--mono);'
+                        f'font-size:0.68rem;font-weight:600;margin:3px">'
+                        f'{_arr} {_html.escape(_sec)}{_tail}</span>'
+                    )
+                st.markdown(f'<div style="margin-bottom:1rem">{chips}</div>', unsafe_allow_html=True)
     except Exception:
         pass
 
-    # Market news analysis
-    st.subheader("📰 Market News Analysis")
+    # ── Market news ───────────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
+        'letter-spacing:0.1em;color:var(--muted);margin:1rem 0 0.5rem">MARKET NEWS</div>',
+        unsafe_allow_html=True,
+    )
     with st.spinner("Loading market news…"):
         articles, news_analysis = _cached_market_news()
 
     _news_card(news_analysis, articles, headline_count=8)
 
-    with st.expander("📑 All headlines"):
+    with st.expander("All headlines"):
         for a in articles:
-            h = a.get("headline", "")
+            h   = a.get("headline", "")
             src = a.get("source", "")
             if h:
-                st.caption(f"• {_html.escape(h)}  *({_html.escape(src)})*")
+                st.caption(f"• {_html.escape(h)}  ({_html.escape(src)})")
 
 
 # ── Open Positions ────────────────────────────────────────────────────────────
 
 def _signal_badge(label: str, triggered: bool | None, val: float | None = None) -> str:
     if triggered is None:
-        bg, fg, icon = "#e2e8f0", "#64748b", "—"
+        dot_c, lbl_c = "var(--dim)", "var(--dim)"
     elif triggered:
-        bg, fg, icon = "#fee2e2", "#991b1b", "🔴"
+        dot_c, lbl_c = "var(--bear)", "var(--bear)"
     else:
-        bg, fg, icon = "#dcfce7", "#166534", "✓"
+        dot_c, lbl_c = "var(--bull)", "var(--muted)"
     val_str = ""
     if val is not None and not (isinstance(val, float) and math.isnan(val)):
         val_str = f" {val:.0f}"
     return (
-        f'<span style="background:{bg};color:{fg};padding:3px 10px;'
-        f'border-radius:12px;font-size:12px;margin-right:6px">'
-        f'{icon} {label}{val_str}</span>'
+        f'<span style="display:inline-flex;align-items:center;gap:5px;'
+        f'padding:5px 10px;border-radius:var(--radius-sm);background:var(--surface-2);'
+        f'border:1px solid var(--border)">'
+        f'<span style="width:7px;height:7px;border-radius:50%;background:{dot_c};flex-shrink:0"></span>'
+        f'<span style="font-family:var(--mono);font-size:0.65rem;color:{lbl_c}">{label}{val_str}</span>'
+        f'</span>'
     )
 
 
 def _render_position_card(pos: dict) -> None:
-    ticker = pos["ticker"]
+    ticker      = pos["ticker"]
     entry_price = pos["entry_price"]
-    entry_date = pos["entry_date"]
+    entry_date  = pos["entry_date"]
     signals, current_price = _cached_position_data(ticker)
     score = signals.get("score", 0)
 
-    ticker_safe = _html.escape(ticker)
+    ticker_safe     = _html.escape(ticker)
     entry_date_safe = _html.escape(str(entry_date))
 
     try:
@@ -625,71 +1584,74 @@ def _render_position_card(pos: dict) -> None:
         held_days = "?"
 
     if current_price and entry_price:
-        pnl = (current_price - entry_price) / entry_price
-        pnl_str = f"+{pnl:.1%}" if pnl >= 0 else f"{pnl:.1%}"
-        pnl_color = "#10b981" if pnl >= 0 else "#dc2626"
+        pnl       = (current_price - entry_price) / entry_price
+        pnl_str   = f"+{pnl:.1%}" if pnl >= 0 else f"{pnl:.1%}"
+        pnl_color = "var(--bull)" if pnl >= 0 else "var(--bear)"
     else:
-        pnl_str, pnl_color = "N/A", "#94a3b8"
+        pnl_str, pnl_color = "—", "var(--muted)"
 
-    price_str = f"${current_price:,.2f}" if current_price else "N/A"
+    price_str = f"${current_price:,.2f}" if current_price else "—"
 
-    if score >= 3:
-        border, bg = "#dc2626", "#fff5f5"
-    elif score >= 1:
-        border, bg = "#f59e0b", "#fffbeb"
-    else:
-        border, bg = "#10b981", "#f0fdf4"
+    top_c = "var(--bear)" if score >= 3 else ("var(--wait)" if score >= 1 else "var(--bull)")
 
     badges = (
-        _signal_badge("RSI", signals.get("rsi"), signals.get("rsi_val"))
-        + _signal_badge("MACD", signals.get("macd"))
-        + _signal_badge("Stoch", signals.get("stoch"), signals.get("stoch_k"))
-        + _signal_badge("ADX", signals.get("adx"), signals.get("adx_val"))
-        + _signal_badge("MFI", signals.get("mfi"), signals.get("mfi_val"))
+        _signal_badge("RSI",   signals.get("rsi"),   signals.get("rsi_val"))
+        + " " + _signal_badge("MACD",  signals.get("macd"))
+        + " " + _signal_badge("Stoch", signals.get("stoch"), signals.get("stoch_k"))
+        + " " + _signal_badge("ADX",   signals.get("adx"),   signals.get("adx_val"))
+        + " " + _signal_badge("MFI",   signals.get("mfi"),   signals.get("mfi_val"))
     )
 
-    exit_banner = ""
+    exit_html = ""
     if score >= 3:
-        exit_banner = (
-            f'<div style="margin-top:10px;color:#dc2626;font-weight:600;font-size:13px">'
-            f'🚨 EXIT SIGNAL — {score}/5 momentum signals triggered</div>'
+        exit_html = (
+            f'<div style="margin-top:12px;padding:10px 14px;background:var(--bear-dim);'
+            f'border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-sm);'
+            f'animation:shockwave 0.55s ease-out 0.25s 1 both">'
+            f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
+            f'color:var(--bear);letter-spacing:0.08em">EXIT SIGNAL — {score}/5 triggered</span>'
+            f'</div>'
         )
 
+    card_s = (f"background:var(--surface-1);border:1px solid var(--border);"
+              f"border-top:2px solid {top_c};border-radius:var(--radius-lg);"
+              f"padding:18px;margin-bottom:10px;position:relative;overflow:hidden")
+
     card_html = f"""
-    <div style="border:2px solid {border};border-radius:10px;padding:16px;
-                margin-bottom:4px;background:{bg}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div>
-          <span style="font-weight:700;font-size:18px;color:#1e293b">{ticker_safe}</span>
-          <span style="color:#64748b;font-size:13px;margin-left:8px">
-            · entered {entry_date_safe} @ ${entry_price:,.2f}
-            · {held_days}d held
-            · now {price_str} ·
-          </span>
-          <span style="color:{pnl_color};font-weight:600;font-size:14px">{pnl_str}</span>
-        </div>
+<div class="tilt-card" style="{card_s}">
+  <div class="card-shine"></div>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+    <div>
+      <div style="font-family:var(--mono);font-size:1.35rem;font-weight:700;color:var(--text)">{ticker_safe}</div>
+      <div style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);margin-top:3px;letter-spacing:0.04em">
+        {entry_date_safe} · {held_days}d held · ${entry_price:,.2f} entry
       </div>
-      <div>{badges}</div>
-      {exit_banner}
     </div>
-    """
+    <div style="text-align:right">
+      <div style="font-family:var(--mono);font-size:1.5rem;font-weight:700;color:{pnl_color}">{pnl_str}</div>
+      <div style="font-family:var(--mono);font-size:0.62rem;color:var(--muted)">{price_str} now</div>
+    </div>
+  </div>
+  <div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);letter-spacing:0.09em;margin-bottom:8px">EXIT SIGNALS {score}/5</div>
+  <div style="display:flex;flex-wrap:wrap;gap:6px">{badges}</div>
+  {exit_html}
+</div>"""
 
     col_card, col_btn = st.columns([11, 1])
     with col_card:
         st.markdown(card_html, unsafe_allow_html=True)
     with col_btn:
-        st.markdown("<div style='margin-top:12px'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='margin-top:18px'></div>", unsafe_allow_html=True)
         if st.button("✕", key=f"close_{ticker}", help=f"Close {ticker} position"):
             remove_position(ticker)
             st.rerun()
 
 
 def _render_positions() -> None:
-    st.title("📋 Open Positions")
-
-    st.caption(
-        "Enter a ticker and the date you bought it — the closing price on that date "
-        "is fetched automatically and used as your entry price for P&L tracking."
+    st.markdown(
+        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">OPEN POSITIONS</h2>',
+        unsafe_allow_html=True,
     )
 
     with st.form("add_position_form", clear_on_submit=True):
@@ -700,7 +1662,7 @@ def _render_positions() -> None:
             entry_date_input = st.date_input("Entry date", value=date.today())
         with c3:
             st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-            submitted = st.form_submit_button("＋ Add", use_container_width=True)
+            submitted = st.form_submit_button("+ Add", use_container_width=True)
 
     if submitted:
         if not ticker_input:
@@ -722,14 +1684,26 @@ def _render_positions() -> None:
         st.info("No open positions. Add one above.")
         return
 
-    st.markdown(f"**{len(positions)} open position{'s' if len(positions) != 1 else ''}**")
-    st.markdown("---")
-
     enriched = []
     for p in positions:
         signals, _ = _cached_position_data(p["ticker"])
         enriched.append({**p, "_score": signals.get("score", 0)})
     enriched.sort(key=lambda x: x["_score"], reverse=True)
+
+    exits = sum(1 for e in enriched if e["_score"] >= 3)
+    exit_cls = "bear" if exits > 0 else ""
+    st.markdown(f"""
+<div class="summary-strip">
+  <div class="summary-cell">
+    <div class="summary-label">POSITIONS</div>
+    <div class="summary-value">{len(enriched)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">EXIT ALERTS</div>
+    <div class="summary-value {exit_cls}">{exits}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
     for pos in enriched:
         _render_position_card(pos)
@@ -814,12 +1788,18 @@ def _stab_badge(val: float) -> str:
 def _render_filing_edge():
     longs, watch, date_str = _cached_filing_edge()
 
-    st.markdown("## 🧾 Filing Edge Screen")
     st.markdown(
-        "> **Strategy:** stable 10-K/10-Q language vs prior year "
-        "([Cohen, Malloy & Nguyen 2020 *Lazy Prices*](https://doi.org/10.1111/jofi.12885)) "
-        "in neglected small/micro caps ($50M–$2B) where institutional arbitrage can't reach. "
-        "High `text_stability` = language unchanged = bullish signal."
+        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">FILING EDGE</h2>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div style="font-size:0.74rem;color:var(--muted);margin-bottom:1rem;padding-left:12px;'
+        'border-left:2px solid var(--border-hi)">Stable 10-K/10-Q language vs prior year '
+        '(Cohen, Malloy &amp; Nguyen 2020). High <code style="color:var(--accent);'
+        'background:transparent">text_stability</code> = language unchanged = bullish in '
+        'neglected small/micro caps ($50M–$2B).</div>',
+        unsafe_allow_html=True,
     )
 
     if longs.empty:
@@ -828,41 +1808,93 @@ def _render_filing_edge():
             st.code("python -m src.lazy_run --limit 200  # quick test\npython -m src.lazy_run         # full run")
         return
 
-    st.caption(f"Screen date: **{date_str}** · {len(longs)} longs · {len(watch)} on watch list")
+    avg_stab = float(longs["text_stability"].mean()) if "text_stability" in longs.columns and longs["text_stability"].notna().any() else 0.0
+
+    # ── Summary strip ─────────────────────────────────────────────────────────
+    st.markdown(f"""
+<div class="summary-strip">
+  <div class="summary-cell">
+    <div class="summary-label">DATE</div>
+    <div class="summary-value accent">{_html.escape(date_str)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">STABLE LONGS</div>
+    <div class="summary-value bull">{len(longs)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">WATCH LIST</div>
+    <div class="summary-value bear">{len(watch)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">AVG STABILITY</div>
+    <div class="summary-value">{avg_stab:.4f}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
     # ── Top-3 cards ──────────────────────────────────────────────────────────
     top3 = longs.head(3)
     cols = st.columns(min(3, len(top3)))
-    medals = ["🥇", "🥈", "🥉"]
     for i, (_, row) in enumerate(top3.iterrows()):
         with cols[i]:
-            stab = row.get("text_stability")
-            stab_s = f"{stab:.4f}" if pd.notna(stab) else "—"
-            mcap = row.get("market_cap")
-            mcap_s = f"${mcap/1e6:.0f}M" if pd.notna(mcap) and mcap else "—"
-            conv = int(row.get("conviction", 0) or 0)
-            cd = row.get("change_direction")
-            cd_badge = {1: "🔼 improving", 0: "", -1: "🔽 deteriorating"}.get(
-                int(cd) if pd.notna(cd) else 0, ""
-            )
-            cd_div = f'<div style="font-size:11px;color:#94a3b8">{cd_badge}</div>' if cd_badge else ""
-            st.markdown(
-                f'<div style="background:#1e293b;border-radius:10px;padding:14px;text-align:center;">'
-                f'<div style="font-size:28px">{medals[i]}</div>'
-                f'<div style="font-size:22px;font-weight:700;color:#f1f5f9">{_html.escape(str(row["ticker"]))}</div>'
-                f'<div style="font-size:12px;color:#94a3b8">{_html.escape(str(row.get("sector", "") or ""))}</div>'
-                f'<div style="margin:8px 0;font-size:14px;color:#38bdf8">Stability: {stab_s}</div>'
-                f'<div style="font-size:12px;color:#94a3b8">Conv {conv}/5 · {mcap_s}</div>'
-                f'{cd_div}'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+            stab    = row.get("text_stability")
+            stab_f  = float(stab) if pd.notna(stab) else 0.0
+            stab_s  = f"{stab_f:.4f}"
+            stab_pct = min(stab_f * 100, 100)
+            stab_c  = "var(--bull)" if stab_f >= 0.97 else ("var(--wait)" if stab_f >= 0.90 else "var(--bear)")
+            mcap    = row.get("market_cap")
+            mcap_s  = f"${mcap/1e6:.0f}M" if pd.notna(mcap) and mcap else "—"
+            conv    = int(row.get("conviction", 0) or 0)
+            cd      = row.get("change_direction")
+            cd_int  = int(cd) if pd.notna(cd) else 0
+            cd_html = ""
+            if cd_int == 1:
+                cd_html = '<span style="font-family:var(--mono);font-size:0.6rem;color:var(--bull)">&#8593; IMPROVING</span>'
+            elif cd_int == -1:
+                cd_html = '<span style="font-family:var(--mono);font-size:0.6rem;color:var(--bear)">&#8595; DETERIORATING</span>'
 
-    st.markdown("---")
+            def _fd(j: int) -> str:
+                if j > conv: return '<span class="conv-dot empty"></span>'
+                return '<span class="conv-dot bull"></span>' if conv >= 4 else ('<span class="conv-dot mid"></span>' if conv >= 2 else '<span class="conv-dot low"></span>')
+            conv_dots = "".join(_fd(j) for j in range(1, 6))
+
+            rn = f"0{i+1}" if i < 9 else str(i+1)
+            tb = ["var(--accent)", "var(--border-hi)", "var(--border)"][i]
+            cs = (f"background:var(--surface-1);border:1px solid var(--border);border-top:2px solid {tb};"
+                  f"border-radius:var(--radius-lg);padding:18px 16px 14px;position:relative;overflow:hidden")
+
+            st.markdown(f"""
+<div class="tilt-card" style="{cs}">
+  <div class="card-shine"></div>
+  <div style="position:absolute;top:8px;right:12px;font-family:var(--mono);font-size:3rem;font-weight:700;color:var(--dim);letter-spacing:-0.04em;line-height:1;pointer-events:none;user-select:none">{rn}</div>
+  <div style="font-family:var(--mono);font-size:1.35rem;font-weight:700;color:var(--text);position:relative;z-index:1">{_html.escape(str(row["ticker"]))}</div>
+  <div style="font-size:0.68rem;color:var(--muted);margin-top:2px;margin-bottom:12px">{_html.escape(str(row.get("name","") or "")[:28])}</div>
+  <div style="margin-bottom:12px">
+    <div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);letter-spacing:0.08em;margin-bottom:5px">TEXT STABILITY</div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <div class="fill-bar-track" style="flex:1"><div class="fill-bar-fill" style="width:{stab_pct:.0f}%;background:{stab_c}"></div></div>
+      <span class="slot-score" data-target="{stab_f:.6f}" data-decimals="4" style="font-family:var(--mono);font-size:0.88rem;font-weight:700;color:{stab_c}">{stab_s}</span>
+    </div>
+  </div>
+  <div style="margin-bottom:12px">
+    <div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);letter-spacing:0.08em;margin-bottom:5px">CONVICTION {conv}/5</div>
+    <div class="conv-dot-row">{conv_dots}</div>
+  </div>
+  <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+    <div><div style="font-family:var(--mono);font-size:0.52rem;color:var(--muted);letter-spacing:0.06em">SECTOR</div><div style="font-family:var(--mono);font-size:0.68rem;color:var(--text)">{_html.escape(("—" if pd.isna(row.get("sector","")) or not str(row.get("sector","")).strip() else str(row.get("sector",""))[:14]))}</div></div>
+    <div><div style="font-family:var(--mono);font-size:0.52rem;color:var(--muted);letter-spacing:0.06em">MKT CAP</div><div style="font-family:var(--mono);font-size:0.68rem;color:var(--text)">{mcap_s}</div></div>
+    {f"<div>{cd_html}</div>" if cd_html else ""}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+    st.markdown('<div style="height:1px;background:var(--border);margin:1.5rem 0"></div>', unsafe_allow_html=True)
 
     # ── Stable-filing longs table ────────────────────────────────────────────
-    st.markdown("### Stable-Filing Longs")
-    st.caption("Ranked by composite score (text_stability × 0.55 + gp_assets × 0.25 + neglect × 0.20)")
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">STABLE-FILING LONGS</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Ranked: text_stability × 0.55 + gp_assets × 0.25 + neglect × 0.20")
 
     display = pd.DataFrame()
     display["#"] = range(1, len(longs) + 1)
@@ -885,9 +1917,8 @@ def _render_filing_edge():
     )
     if "change_direction" in longs.columns:
         display["Change"] = longs["change_direction"].apply(
-            lambda v: {1: "🔼", 0: "—", -1: "🔽"}.get(int(v) if pd.notna(v) else 0, "—")
+            lambda v: {1: "UP", 0: "—", -1: "DN"}.get(int(v) if pd.notna(v) else 0, "—")
         )
-
     st.dataframe(display, use_container_width=True, hide_index=True)
 
     # ── Change-direction detail (Claude layer, if populated) ─────────────────
@@ -895,20 +1926,19 @@ def _render_filing_edge():
         with st.expander("Claude change-characterization details"):
             for _, row in longs[longs["change_reason"].notna()].iterrows():
                 cd = int(row.get("change_direction", 0) or 0)
-                icon = {1: "🔼", 0: "➡️", -1: "🔽"}.get(cd, "—")
+                icon = {1: "UP", 0: "—", -1: "DN"}.get(cd, "—")
                 ct = str(row.get("change_type", ""))
                 cr = str(row.get("change_reason", ""))
                 st.markdown(f"**{row['ticker']}** {icon} `{ct}` — {cr}")
 
-    st.markdown("---")
+    st.markdown('<div style="height:1px;background:var(--border);margin:1.5rem 0"></div>', unsafe_allow_html=True)
 
     # ── Deteriorating-language watch list ────────────────────────────────────
-    st.markdown("### ⚠️ Deteriorating-Language Watch List")
-    st.caption(
-        "Lowest text_stability — language changed most vs prior year. "
-        "Per the paper: changes are *on average* bearish. Use as avoid/short-watch, "
-        "or inspect `change_reason` to confirm direction."
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">DETERIORATING-LANGUAGE WATCH LIST</div>',
+        unsafe_allow_html=True,
     )
+    st.caption("Lowest text_stability — language changed most vs prior year. Treat as avoid/short-watch signal.")
     if watch.empty:
         st.info("No watch-list data.")
     else:
@@ -931,12 +1961,12 @@ def _render_filing_edge():
         )
         if "change_direction" in watch.columns:
             wdisplay["Change"] = watch["change_direction"].apply(
-                lambda v: {1: "🔼", 0: "—", -1: "🔽"}.get(int(v) if pd.notna(v) else 0, "—")
+                lambda v: {1: "UP", 0: "—", -1: "DN"}.get(int(v) if pd.notna(v) else 0, "—")
             )
         st.dataframe(wdisplay, use_container_width=True, hide_index=True)
 
     # ── Methodology expander ─────────────────────────────────────────────────
-    with st.expander("📖 Methodology & edge rationale"):
+    with st.expander("Methodology & edge rationale"):
         st.markdown("""
 **Why this is different from the momentum screen:**
 
@@ -979,10 +2009,16 @@ def _fmt_chg(x: float | None) -> str:
 
 
 def _render_confluence() -> None:
-    st.title("🔀 Confluence Screen")
-    st.caption(
-        "Filing Edge longs (stable 10-K language) cross-checked against price momentum. "
-        "Dual signal = fundamental stability already confirmed by price action."
+    st.markdown(
+        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">CONFLUENCE</h2>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div style="font-size:0.74rem;color:var(--muted);margin-bottom:1rem;padding-left:12px;'
+        'border-left:2px solid var(--border-hi)">Filing Edge longs cross-checked against price momentum. '
+        'Dual signal = fundamental stability confirmed by price action.</div>',
+        unsafe_allow_html=True,
     )
 
     longs, _, date_str = _cached_filing_edge()
@@ -1005,98 +2041,137 @@ def _render_confluence() -> None:
         filing_score = float(stab) if pd.notna(stab) else 0.0
         combined = filing_score * 0.6 + (mom_score / 4.0) * 0.4
         rows.append({
-            "ticker": t,
-            "name": str(row.get("name", "") or ""),
-            "sector": str(row.get("sector", "") or "—"),
+            "ticker":    t,
+            "name":      str(row.get("name", "") or ""),
+            "sector":    str(row.get("sector", "") or "—"),
             "stability": filing_score,
-            "conv": conv,
-            "ret_3m": md.get("ret_3m"),
-            "ret_6m": md.get("ret_6m"),
-            "rs_3m": md.get("rs_3m"),
-            "above_50": md.get("above_50"),
+            "conv":      conv,
+            "ret_3m":    md.get("ret_3m"),
+            "ret_6m":    md.get("ret_6m"),
+            "rs_3m":     md.get("rs_3m"),
+            "above_50":  md.get("above_50"),
             "above_200": md.get("above_200"),
             "mom_score": mom_score,
-            "combined": combined,
+            "combined":  combined,
         })
 
     df = pd.DataFrame(rows).sort_values("combined", ascending=False).reset_index(drop=True)
 
     def _classify(r) -> str:
-        if r["stability"] >= 0.97 and r["mom_score"] >= 3:
-            return "🟢 Strong Buy"
-        if r["stability"] >= 0.90 and r["mom_score"] >= 2:
-            return "🟡 Watchlist"
-        return "⚪ Filing Only"
+        if r["stability"] >= 0.97 and r["mom_score"] >= 3: return "STRONG BUY"
+        if r["stability"] >= 0.90 and r["mom_score"] >= 2: return "WATCHLIST"
+        return "FILING ONLY"
 
     df["signal"] = df.apply(_classify, axis=1)
 
-    strong_n = (df["signal"] == "🟢 Strong Buy").sum()
-    watch_n  = (df["signal"] == "🟡 Watchlist").sum()
+    strong_n = (df["signal"] == "STRONG BUY").sum()
+    watch_n  = (df["signal"] == "WATCHLIST").sum()
     filing_n = len(df) - strong_n - watch_n
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("📅 Filing date", date_str)
-    c2.metric("🟢 Strong Buy", strong_n, "filing + momentum ≥ 3")
-    c3.metric("🟡 Watchlist", watch_n, "filing ✓, momentum partial")
-    c4.metric("⚪ Filing Only", filing_n, "no price confirmation yet")
+    # ── Summary strip ─────────────────────────────────────────────────────────
+    st.markdown(f"""
+<div class="summary-strip">
+  <div class="summary-cell">
+    <div class="summary-label">DATE</div>
+    <div class="summary-value accent">{_html.escape(date_str)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">STRONG BUY</div>
+    <div class="summary-value bull">{strong_n}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">WATCHLIST</div>
+    <div class="summary-value" style="color:var(--wait)">{watch_n}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">FILING ONLY</div>
+    <div class="summary-value">{filing_n}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
-    st.markdown("---")
-
-    strong_df = df[df["signal"] == "🟢 Strong Buy"]
+    # ── Strong Buy cards ──────────────────────────────────────────────────────
+    strong_df = df[df["signal"] == "STRONG BUY"]
     if not strong_df.empty:
-        st.subheader("🟢 Strong Buy Candidates")
-        st.caption("Stable filings (≥0.97) **and** at least 3/4 momentum signals green")
-        medals = ["🥇", "🥈", "🥉"]
+        st.markdown(
+            '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
+            'letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">STRONG BUY CANDIDATES</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Stable filings (>=0.97) and 3/4 momentum signals green")
         cols = st.columns(min(3, len(strong_df)))
         for i, (_, r) in enumerate(strong_df.head(3).iterrows()):
             with cols[i]:
-                m = medals[i] if i < len(medals) else "▪"
-                st.markdown(
-                    f'<div style="background:#1e293b;border-radius:10px;padding:14px;text-align:center;">'
-                    f'<div style="font-size:28px">{m}</div>'
-                    f'<div style="font-size:20px;font-weight:700;color:#f1f5f9">{_html.escape(r["ticker"])}</div>'
-                    f'<div style="font-size:11px;color:#94a3b8;margin-bottom:6px">{_html.escape(r["name"][:25])}</div>'
-                    f'<div style="font-size:13px;color:#38bdf8">Stability: {r["stability"]:.4f}</div>'
-                    f'<div style="font-size:12px;color:#4ade80">3M: {_fmt_chg(r["ret_3m"])} · RS: {_fmt_chg(r["rs_3m"])}</div>'
-                    f'<div style="font-size:11px;color:#94a3b8">Mom {r["mom_score"]}/4 · Conv {r["conv"]}/5</div>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+                rn  = f"0{i+1}" if i < 9 else str(i+1)
+                tb  = ["var(--accent)", "var(--border-hi)", "var(--border)"][i]
+                cs  = (f"background:var(--surface-1);border:1px solid var(--border);"
+                       f"border-top:2px solid {tb};border-radius:var(--radius-lg);"
+                       f"padding:18px 16px 14px;position:relative;overflow:hidden")
+                comb_pct = min(r["combined"] * 100, 100)
+                ret_c = "var(--bull)" if r["ret_3m"] and r["ret_3m"] > 0 else "var(--bear)" if r["ret_3m"] is not None else "var(--muted)"
+                st.markdown(f"""
+<div class="tilt-card" style="{cs}">
+  <div class="card-shine"></div>
+  <div style="position:absolute;top:8px;right:12px;font-family:var(--mono);font-size:3rem;font-weight:700;color:var(--dim);letter-spacing:-0.04em;line-height:1;pointer-events:none;user-select:none">{rn}</div>
+  <div style="font-family:var(--mono);font-size:1.35rem;font-weight:700;color:var(--text);position:relative;z-index:1">{_html.escape(r["ticker"])}</div>
+  <div style="font-size:0.68rem;color:var(--muted);margin-top:2px;margin-bottom:12px">{_html.escape(r["name"][:28])}</div>
+  <div style="margin-bottom:10px">
+    <div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);letter-spacing:0.08em;margin-bottom:5px">COMBINED {r["combined"]:.2f}</div>
+    <div class="fill-bar-track"><div class="fill-bar-fill" style="width:{comb_pct:.0f}%;background:var(--bull)"></div></div>
+  </div>
+  <div style="display:flex;gap:16px;margin-bottom:10px">
+    <div><div style="font-family:var(--mono);font-size:0.52rem;color:var(--muted);letter-spacing:0.06em">STABILITY</div><div style="font-family:var(--mono);font-size:0.78rem;font-weight:600;color:var(--bull)">{r["stability"]:.4f}</div></div>
+    <div><div style="font-family:var(--mono);font-size:0.52rem;color:var(--muted);letter-spacing:0.06em">3M RETURN</div><div style="font-family:var(--mono);font-size:0.78rem;font-weight:600;color:{ret_c}">{_fmt_chg(r["ret_3m"])}</div></div>
+    <div><div style="font-family:var(--mono);font-size:0.52rem;color:var(--muted);letter-spacing:0.06em">RS SPY</div><div style="font-family:var(--mono);font-size:0.78rem;font-weight:600;color:{ret_c}">{_fmt_chg(r["rs_3m"])}</div></div>
+  </div>
+  <div style="font-family:var(--mono);font-size:0.62rem;color:var(--muted)">Mom {r["mom_score"]}/4 · Conv {r["conv"]}/5 · <span style="color:var(--bull)">STRONG BUY</span></div>
+</div>""", unsafe_allow_html=True)
         st.markdown("")
 
-    st.markdown("---")
-    st.subheader("All Filing Edge Longs — Momentum Layer")
-    st.caption(f"Filing date: {date_str} · {len(df)} tickers")
+    st.markdown('<div style="height:1px;background:var(--border);margin:1.5rem 0"></div>', unsafe_allow_html=True)
 
-    disp = pd.DataFrame()
-    disp["#"]         = range(1, len(df) + 1)
-    disp["Ticker"]    = df["ticker"]
-    disp["Name"]      = df["name"].str[:22]
-    disp["Signal"]    = df["signal"]
-    disp["Combined"]  = df["combined"]
-    disp["Stability"] = df["stability"].apply(lambda x: f"{x:.4f}")
-    disp["3M Return"] = df["ret_3m"].apply(_fmt_chg)
-    disp["RS vs SPY"] = df["rs_3m"].apply(_fmt_chg)
-    disp["Above 50d"] = df["above_50"].apply(lambda x: "✅" if x is True else ("❌" if x is False else "—"))
-    disp["Mom"]       = df["mom_score"].apply(lambda x: f"{x}/4")
-
-    st.dataframe(
-        disp,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Combined": st.column_config.ProgressColumn(
-                "Combined Score",
-                min_value=0, max_value=1, format="%.2f",
-                help=(
-                    "Filing stability × 0.6 + momentum score × 0.4.\n"
-                    "Higher = dual-signal conviction (stable fundamentals + improving price)."
-                ),
-            ),
-        },
+    # ── Full table ────────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">ALL FILING EDGE LONGS — MOMENTUM LAYER · {date_str} · {len(df)} tickers</div>',
+        unsafe_allow_html=True,
     )
 
-    with st.expander("📖 How this works — why the two screens differ and how Confluence bridges them"):
+    _sig_tier = {
+        "STRONG BUY": '<span class="sig-confirm">STRONG BUY</span>',
+        "WATCHLIST":  '<span class="sig-wait">WATCHLIST</span>',
+        "FILING ONLY":'<span style="font-family:var(--mono);font-size:0.63rem;color:var(--muted)">FILING ONLY</span>',
+    }
+
+    cf_rows = []
+    for i, r in df.iterrows():
+        comb_pct = min(r["combined"] * 100, 100)
+        r3c = "var(--bull)" if r["ret_3m"] and r["ret_3m"] > 0 else ("var(--bear)" if r["ret_3m"] is not None else "var(--muted)")
+        a50 = '<span style="color:var(--bull)">YES</span>' if r["above_50"] is True else ('<span style="color:var(--bear)">NO</span>' if r["above_50"] is False else '<span style="color:var(--dim)">—</span>')
+        cf_rows.append(
+            f'<tr style="animation-delay:{i*14}ms">'
+            f'<td class="rank">#{i+1:02d}</td>'
+            f'<td><span class="ticker">{_html.escape(r["ticker"])}</span></td>'
+            f'<td class="dim">{_html.escape(r["name"][:20])}</td>'
+            f'<td>{_sig_tier.get(r["signal"], "")}</td>'
+            f'<td><div style="display:flex;align-items:center;gap:7px"><div class="fill-bar-track" style="width:52px"><div class="fill-bar-fill" style="width:{comb_pct:.0f}%;background:var(--bull)"></div></div>'
+            f'<span style="font-family:var(--mono);font-size:0.72rem;color:var(--text)">{r["combined"]:.2f}</span></div></td>'
+            f'<td style="font-family:var(--mono);font-size:0.72rem;color:var(--bull)">{r["stability"]:.4f}</td>'
+            f'<td style="font-family:var(--mono);font-size:0.75rem;color:{r3c}">{_fmt_chg(r["ret_3m"])}</td>'
+            f'<td style="font-family:var(--mono);font-size:0.75rem;color:{r3c}">{_fmt_chg(r["rs_3m"])}</td>'
+            f'<td style="text-align:center">{a50}</td>'
+            f'<td style="font-family:var(--mono);font-size:0.72rem;color:var(--text)">{r["mom_score"]}/4</td>'
+            f'</tr>'
+        )
+
+    st.markdown(f"""
+<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:1rem">
+<table class="q-table">
+  <thead><tr><th>#</th><th>TICKER</th><th>NAME</th><th>TIER</th><th>COMBINED</th><th>STABILITY</th><th>3M RET</th><th>RS SPY</th><th>ABOVE 50</th><th>MOM</th></tr></thead>
+  <tbody>{"".join(cf_rows)}</tbody>
+</table>
+</div>""", unsafe_allow_html=True)
+
+    with st.expander("How this works — why the two screens differ and how Confluence bridges them"):
         st.markdown("""
 **Why Filing Edge and Screener Results look completely different**
 
@@ -1135,38 +2210,15 @@ computable (12-1 return, RS vs SPY) are what this page checks instead.
 
 # ── Router ────────────────────────────────────────────────────────────────────
 
-if page == "📈 Screener Results":
+if _current_page == "screener":
     _render_screener()
-elif page == "🌍 Market Regime":
+elif _current_page == "regime":
     _render_regime()
-elif page == "🧾 Filing Edge":
+elif _current_page == "filing":
     _render_filing_edge()
-elif page == "🔀 Confluence":
+elif _current_page == "confluence":
     _render_confluence()
 else:
     _render_positions()
 
-# ── Keyboard shortcut: R = Refresh ───────────────────────────────────────────
-_components.html("""
-<script>
-(function() {
-    function _onKey(e) {
-        var tag = (document.activeElement || {}).tagName || '';
-        if ((e.key === 'r' || e.key === 'R') &&
-            tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
-            try {
-                var btns = window.parent.document.querySelectorAll('button');
-                for (var i = 0; i < btns.length; i++) {
-                    if (btns[i].innerText.indexOf('Refresh') !== -1) {
-                        btns[i].click();
-                        return;
-                    }
-                }
-            } catch(ex) {}
-        }
-    }
-    try { window.parent.addEventListener('keydown', _onKey); }
-    catch(ex) {}
-})();
-</script>
-""", height=0, width=0)
+# Keyboard shortcut (R = Refresh) is now handled inside _inject_js_animations().
