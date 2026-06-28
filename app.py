@@ -2323,6 +2323,13 @@ def _find_todays_log() -> "Path | None":
     return manual[0] if manual else None
 
 
+def _last_run_text(text: str) -> str:
+    """Return only the portion of the log file belonging to the most recent run."""
+    marker = "=== Screener run started:"
+    idx = text.rfind(marker)
+    return text[idx:] if idx != -1 else text
+
+
 def _parse_run_state(text: str) -> dict:
     s: dict = {
         "started_at": None, "finished_at": None,
@@ -2378,15 +2385,16 @@ def _current_stage(s: dict) -> int:
     return -1
 
 
+@st.fragment(run_every="5s")
 def _render_monitor():
+    log_path = _find_todays_log()
+    lock_active = Path("/tmp/screener_run.lock").exists()
+
     st.markdown(
         '<div style="font-family:var(--mono);font-size:0.65rem;font-weight:700;'
         'letter-spacing:0.12em;color:var(--muted);margin-bottom:1.2rem">RUN MONITOR</div>',
         unsafe_allow_html=True,
     )
-
-    log_path = _find_todays_log()
-    lock_active = Path("/tmp/screener_run.lock").exists()
 
     if log_path is None:
         st.markdown(
@@ -2403,6 +2411,7 @@ def _render_monitor():
         return
 
     text = log_path.read_text(errors="replace")
+    text = _last_run_text(text)
     s = _parse_run_state(text)
     stage = _current_stage(s)
     done = s["finished_at"] is not None
@@ -2568,17 +2577,14 @@ def _render_monitor():
         colored_lines.append(f'<span style="color:{c}">{escaped}</span>')
 
     st.markdown(
+        f'<style>@keyframes log-refresh{{0%{{opacity:0.3;filter:grayscale(1)}}100%{{opacity:1;filter:none}}}}</style>'
         f'<pre style="font-family:var(--mono);font-size:0.6rem;line-height:1.6;'
         f'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);'
-        f'padding:0.8rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0">'
+        f'padding:0.8rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0;'
+        f'animation:log-refresh 0.6s ease-out">'
         f'{"<br>".join(colored_lines)}</pre>',
         unsafe_allow_html=True,
     )
-
-    # ── Auto-refresh while live ───────────────────────────────────────────────
-    if not done and (lock_active or (stage >= 0 and stage < 7)):
-        time.sleep(5)
-        st.rerun()
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
