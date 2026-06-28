@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as _components
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -20,13 +19,13 @@ _GLOBAL_CSS = """
 
 /* ── Design tokens ──────────────────────────────────────────────────────── */
 :root {
-  --bg:         #010104;
-  --surface-1:  #06080f;
-  --surface-2:  #0b0d18;
-  --surface-3:  #0f1220;
-  --sidebar-bg: #030509;
-  --border:     #141825;
-  --border-hi:  #222d45;
+  --bg:         #020209;
+  --surface-1:  #07090f;
+  --surface-2:  #0c0e1a;
+  --surface-3:  #111420;
+  --sidebar-bg: #040408;
+  --border:     #161824;
+  --border-hi:  #242c42;
   --text:       #e2e8f0;
   --muted:      #64748b;
   --dim:        #2a3a54;
@@ -651,30 +650,39 @@ _JS_BLOCK = r"""
 
 var P = window.parent;
 var PD = P.document;
+var _noMotion = P.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // ── 1. Ghost canvas — atmospheric financial data stream ──────────────────────
-if (!P._ghostCanvas && !P.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-  P._ghostCanvas = true;
-  var cv = PD.createElement('canvas');
-  cv.id = 'ghost-canvas';
-  cv.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:0;opacity:1;';
-  PD.body.appendChild(cv);
+// DOM created once; setInterval + resize handler always fresh from current realm.
+if (!_noMotion) {
+  if (P._ghostIntervalId) clearInterval(P._ghostIntervalId);
+  if (P._ghostResizeHandler) P.removeEventListener('resize', P._ghostResizeHandler);
+
+  var cv = PD.getElementById('ghost-canvas');
+  if (!cv) {
+    cv = PD.createElement('canvas');
+    cv.id = 'ghost-canvas';
+    cv.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:0;opacity:1;';
+    PD.body.appendChild(cv);
+  }
 
   var ctx = cv.getContext('2d');
   var chars = '01%$.+-×∑≈∂';
-
-  function resize() { cv.width = P.innerWidth; cv.height = P.innerHeight; }
-  resize();
-  P.addEventListener('resize', resize);
-
   var cols = Math.floor(P.innerWidth / 22);
   var drops = Array.from({length: cols}, function() { return Math.random() * -60; });
+
+  P._ghostResizeHandler = function() {
+    cv.width = P.innerWidth; cv.height = P.innerHeight;
+    cols = Math.floor(P.innerWidth / 22);
+    drops = Array.from({length: cols}, function() { return Math.random() * -60; });
+  };
+  P._ghostResizeHandler();
+  P.addEventListener('resize', P._ghostResizeHandler);
 
   function drawCanvas() {
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.font = '12px "IBM Plex Mono", monospace';
     drops.forEach(function(y, i) {
-      // Vary opacity per column for depth illusion
       var baseAlpha = 0.015 + (i % 3) * 0.004;
       ctx.fillStyle = 'rgba(226,232,240,' + baseAlpha + ')';
       var char = chars[Math.floor(Math.random() * chars.length)];
@@ -683,97 +691,97 @@ if (!P._ghostCanvas && !P.matchMedia('(prefers-reduced-motion: reduce)').matches
       drops[i] += 0.12;
     });
   }
-  setInterval(drawCanvas, 130); // ~7.5fps — very slow, purely atmospheric
+  P._ghostIntervalId = setInterval(drawCanvas, 130);
 }
 
 // ── 1b. Custom pulsating cursor ──────────────────────────────────────────────
-if (!P._cursorInit && !P.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-  P._cursorInit = true;
+// DOM + CSS created once; all event listeners + rAF always fresh from current realm.
+if (!_noMotion) {
+  // DOM elements — create once and persist
+  if (!PD.getElementById('cx-dot')) {
+    var cursorStyle = PD.createElement('style');
+    cursorStyle.id = 'cursor-style';
+    cursorStyle.textContent = [
+      '* { cursor: none !important; }',
+      '#cx-dot {',
+      '  position:fixed;width:8px;height:8px;border-radius:50%;',
+      '  background:#f59e0b;',
+      '  box-shadow:0 0 6px 2px rgba(245,158,11,0.9),0 0 18px 6px rgba(245,158,11,0.35);',
+      '  pointer-events:none;z-index:99999;',
+      '  transform:translate(-50%,-50%);',
+      '  transition:transform 0.06s ease,background 0.2s ease,box-shadow 0.2s ease;',
+      '}',
+      '#cx-ring {',
+      '  position:fixed;width:28px;height:28px;border-radius:50%;',
+      '  border:1.5px solid rgba(245,158,11,0.55);',
+      '  pointer-events:none;z-index:99998;',
+      '  transform:translate(-50%,-50%);',
+      '  animation:cursorPulse 1.6s ease-in-out infinite;',
+      '}',
+      '#cx-ring2 {',
+      '  position:fixed;width:48px;height:48px;border-radius:50%;',
+      '  border:1px solid rgba(245,158,11,0.18);',
+      '  pointer-events:none;z-index:99997;',
+      '  transform:translate(-50%,-50%);',
+      '  animation:cursorPulse 1.6s ease-in-out infinite 0.5s;',
+      '}',
+      '@keyframes cursorPulse {',
+      '  0%,100%{opacity:1;transform:translate(-50%,-50%) scale(1);}',
+      '  50%{opacity:0.4;transform:translate(-50%,-50%) scale(1.35);}',
+      '}',
+    ].join('');
+    PD.head.appendChild(cursorStyle);
+    var _d = PD.createElement('div'); _d.id = 'cx-dot';
+    var _r = PD.createElement('div'); _r.id = 'cx-ring';
+    var _r2= PD.createElement('div'); _r2.id= 'cx-ring2';
+    PD.body.appendChild(_d);
+    PD.body.appendChild(_r);
+    PD.body.appendChild(_r2);
+  }
+  var cxDot  = PD.getElementById('cx-dot');
+  var cxRing = PD.getElementById('cx-ring');
+  var cxRing2= PD.getElementById('cx-ring2');
 
-  // Inject cursor CSS once
-  var cursorStyle = PD.createElement('style');
-  cursorStyle.id = 'cursor-style';
-  cursorStyle.textContent = [
-    '* { cursor: none !important; }',
-    '#cx-dot {',
-    '  position:fixed;width:8px;height:8px;border-radius:50%;',
-    '  background:#f59e0b;',
-    '  box-shadow:0 0 6px 2px rgba(245,158,11,0.9),0 0 18px 6px rgba(245,158,11,0.35);',
-    '  pointer-events:none;z-index:99999;',
-    '  transform:translate(-50%,-50%);',
-    '  transition:transform 0.06s ease,background 0.2s ease,box-shadow 0.2s ease;',
-    '}',
-    '#cx-ring {',
-    '  position:fixed;width:28px;height:28px;border-radius:50%;',
-    '  border:1.5px solid rgba(245,158,11,0.55);',
-    '  pointer-events:none;z-index:99998;',
-    '  transform:translate(-50%,-50%);',
-    '  animation:cursorPulse 1.6s ease-in-out infinite;',
-    '}',
-    '#cx-ring2 {',
-    '  position:fixed;width:48px;height:48px;border-radius:50%;',
-    '  border:1px solid rgba(245,158,11,0.18);',
-    '  pointer-events:none;z-index:99997;',
-    '  transform:translate(-50%,-50%);',
-    '  animation:cursorPulse 1.6s ease-in-out infinite 0.5s;',
-    '}',
-    '@keyframes cursorPulse {',
-    '  0%,100%{opacity:1;transform:translate(-50%,-50%) scale(1);}',
-    '  50%{opacity:0.4;transform:translate(-50%,-50%) scale(1.35);}',
-    '}',
-    '.tilt-card:hover~#cx-dot,body:has(.tilt-card:hover) #cx-dot{background:#fcd34d;}',
-  ].join('');
-  PD.head.appendChild(cursorStyle);
+  // Cancel old rAF loop before starting a new one
+  if (P._cursorRafId) P.cancelAnimationFrame(P._cursorRafId);
 
-  var cxDot  = PD.createElement('div'); cxDot.id  = 'cx-dot';
-  var cxRing = PD.createElement('div'); cxRing.id = 'cx-ring';
-  var cxRing2= PD.createElement('div'); cxRing2.id= 'cx-ring2';
-  PD.body.appendChild(cxDot);
-  PD.body.appendChild(cxRing);
-  PD.body.appendChild(cxRing2);
+  // Remove old listeners — always swap in fresh functions from current realm
+  if (P._cxMove)  PD.removeEventListener('mousemove',  P._cxMove,  { passive: true });
+  if (P._cxDown)  PD.removeEventListener('mousedown',  P._cxDown);
+  if (P._cxUp)    PD.removeEventListener('mouseup',    P._cxUp);
+  if (P._cxOver)  PD.removeEventListener('mouseover',  P._cxOver);
 
-  // Ring lags slightly behind for fluid feel
-  var _mx = 0, _my = 0, _rx = 0, _ry = 0, _r2x = 0, _r2y = 0;
+  // Carry forward last known position so rings don't jump to 0,0
+  var _mx = P._cxMX || 0, _my = P._cxMY || 0;
+  var _rx = _mx, _ry = _my, _r2x = _mx, _r2y = _my;
 
-  PD.addEventListener('mousemove', function(e) {
-    _mx = e.clientX; _my = e.clientY;
-    cxDot.style.left = _mx + 'px';
-    cxDot.style.top  = _my + 'px';
-  }, { passive: true });
-
-  // Animate rings with lag
-  (function loop() {
-    _rx  += (_mx - _rx)  * 0.18;
-    _ry  += (_my - _ry)  * 0.18;
-    _r2x += (_mx - _r2x) * 0.09;
-    _r2y += (_my - _r2y) * 0.09;
-    cxRing.style.left  = _rx  + 'px';
-    cxRing.style.top   = _ry  + 'px';
-    cxRing2.style.left = _r2x + 'px';
-    cxRing2.style.top  = _r2y + 'px';
-    P.requestAnimationFrame(loop);
-  })();
-
-  // Dot shrinks on mousedown, swells on hovering interactive elements
-  PD.addEventListener('mousedown', function() {
-    cxDot.style.transform = 'translate(-50%,-50%) scale(0.6)';
-  });
-  PD.addEventListener('mouseup', function() {
-    cxDot.style.transform = 'translate(-50%,-50%) scale(1)';
-  });
-  PD.addEventListener('mouseover', function(e) {
+  P._cxMove = function(e) {
+    _mx = P._cxMX = e.clientX; _my = P._cxMY = e.clientY;
+    cxDot.style.left = _mx + 'px'; cxDot.style.top = _my + 'px';
+  };
+  P._cxDown = function() { cxDot.style.transform = 'translate(-50%,-50%) scale(0.6)'; };
+  P._cxUp   = function() { cxDot.style.transform = 'translate(-50%,-50%) scale(1)'; };
+  P._cxOver = function(e) {
     var t = e.target;
-    var interactive = t && (t.tagName === 'BUTTON' || t.tagName === 'A' ||
+    var hit = t && (t.tagName === 'BUTTON' || t.tagName === 'A' ||
       t.tagName === 'INPUT' || t.tagName === 'SELECT' ||
       t.closest('.tilt-card') || t.closest('button'));
-    if (interactive) {
-      cxDot.style.transform = 'translate(-50%,-50%) scale(1.7)';
-      cxDot.style.background = '#fcd34d';
-    } else {
-      cxDot.style.transform = 'translate(-50%,-50%) scale(1)';
-      cxDot.style.background = '#f59e0b';
-    }
-  });
+    if (hit) { cxDot.style.transform = 'translate(-50%,-50%) scale(1.7)'; cxDot.style.background = '#fcd34d'; }
+    else      { cxDot.style.transform = 'translate(-50%,-50%) scale(1)';   cxDot.style.background = '#f59e0b'; }
+  };
+
+  PD.addEventListener('mousemove', P._cxMove,  { passive: true });
+  PD.addEventListener('mousedown', P._cxDown);
+  PD.addEventListener('mouseup',   P._cxUp);
+  PD.addEventListener('mouseover', P._cxOver);
+
+  (function loop() {
+    _rx  += (_mx - _rx)  * 0.18; _ry  += (_my - _ry)  * 0.18;
+    _r2x += (_mx - _r2x) * 0.09; _r2y += (_my - _r2y) * 0.09;
+    cxRing.style.left  = _rx  + 'px'; cxRing.style.top  = _ry  + 'px';
+    cxRing2.style.left = _r2x + 'px'; cxRing2.style.top = _r2y + 'px';
+    P._cursorRafId = P.requestAnimationFrame(loop);
+  })();
 }
 
 // ── 2. Terminal boot scan line ───────────────────────────────────────────────
@@ -811,69 +819,48 @@ function triggerBootScan() {
   });
 }
 
-// Fire on first load; Phase 2 nav will re-trigger on page switch
-if (!P._bootFired) {
-  P._bootFired = true;
-  setTimeout(triggerBootScan, 80);
+if (!P._bootFired) { P._bootFired = true; setTimeout(triggerBootScan, 80); }
+
+// ── 3. 3D card tilt — always re-register from current realm ─────────────────
+// Remove old handlers (possibly from a dead realm) then add live ones.
+var _tiltCurrent = null;
+
+function _tiltReset(card) {
+  if (!card) return;
+  card.style.transition = 'transform 0.7s cubic-bezier(0.23,1,0.32,1)';
+  card.style.transform  = 'perspective(920px) rotateX(0deg) rotateY(0deg) scale3d(1,1,1)';
+  var sh = card.querySelector('.card-shine');
+  if (sh) sh.style.opacity = '0';
 }
 
-// ── 3. 3D card tilt — delegated (ONE listener, permanent, all cards forever) ──
-// Event delegation: listen on the document once. Works for every .tilt-card
-// that exists now or is added later — no per-card init, no re-init needed.
-if (!P._tiltDelegated) {
-  P._tiltDelegated = true;
-  var _tiltCurrent = null;
+if (P._tiltMove)  PD.removeEventListener('mousemove',  P._tiltMove,  { passive: true });
+if (P._tiltLeave) PD.removeEventListener('mouseleave', P._tiltLeave);
 
-  function _tiltReset(card) {
-    if (!card) return;
-    card.style.transition = 'transform 0.7s cubic-bezier(0.23,1,0.32,1)';
-    card.style.transform   = 'perspective(920px) rotateX(0deg) rotateY(0deg) scale3d(1,1,1)';
-    var sh = card.querySelector('.card-shine');
-    if (sh) sh.style.opacity = '0';
+P._tiltMove = function(e) {
+  if (_noMotion) return;
+  var card = e.target && e.target.closest ? e.target.closest('.tilt-card') : null;
+  if (!card) { _tiltReset(_tiltCurrent); _tiltCurrent = null; return; }
+  if (_tiltCurrent && _tiltCurrent !== card) _tiltReset(_tiltCurrent);
+  if (_tiltCurrent !== card) { card.style.transition = 'transform 0.07s ease-out'; _tiltCurrent = card; }
+  var r  = card.getBoundingClientRect();
+  var dx = (e.clientX - (r.left + r.width  * 0.5)) / (r.width  * 0.5);
+  var dy = (e.clientY - (r.top  + r.height * 0.5)) / (r.height * 0.5);
+  card.style.transform =
+    'perspective(920px) rotateX(' + (-dy*9) + 'deg) rotateY(' + (dx*13) + 'deg) scale3d(1.024,1.024,1.024)';
+  var shine = card.querySelector('.card-shine');
+  if (shine) {
+    shine.style.opacity = '1';
+    shine.style.background =
+      'radial-gradient(circle at '+(50+dx*36)+'% '+(50+dy*36)+'%, '+
+      'rgba(245,158,11,0.13) 0%, rgba(255,255,255,0.04) 40%, transparent 68%)';
   }
+};
+P._tiltLeave = function() { _tiltReset(_tiltCurrent); _tiltCurrent = null; };
 
-  PD.addEventListener('mousemove', function(e) {
-    if (P.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    var card = e.target && e.target.closest ? e.target.closest('.tilt-card') : null;
+PD.addEventListener('mousemove',  P._tiltMove,  { passive: true });
+PD.addEventListener('mouseleave', P._tiltLeave);
 
-    if (!card) {
-      _tiltReset(_tiltCurrent);
-      _tiltCurrent = null;
-      return;
-    }
-
-    if (_tiltCurrent && _tiltCurrent !== card) {
-      _tiltReset(_tiltCurrent);
-    }
-    if (_tiltCurrent !== card) {
-      card.style.transition = 'transform 0.07s ease-out';
-      _tiltCurrent = card;
-    }
-
-    var r   = card.getBoundingClientRect();
-    var dx  = (e.clientX - (r.left + r.width  * 0.5)) / (r.width  * 0.5);
-    var dy  = (e.clientY - (r.top  + r.height * 0.5)) / (r.height * 0.5);
-    var rotY =  dx * 13;
-    var rotX = -dy *  9;
-    card.style.transform =
-      'perspective(920px) rotateX(' + rotX + 'deg) rotateY(' + rotY + 'deg) scale3d(1.024,1.024,1.024)';
-    var shine = card.querySelector('.card-shine');
-    if (shine) {
-      shine.style.opacity = '1';
-      shine.style.background =
-        'radial-gradient(circle at ' + (50 + dx * 36) + '% ' + (50 + dy * 36) + '%, ' +
-        'rgba(245,158,11,0.13) 0%, rgba(255,255,255,0.04) 40%, transparent 68%)';
-    }
-  }, { passive: true });
-
-  PD.addEventListener('mouseleave', function() {
-    _tiltReset(_tiltCurrent);
-    _tiltCurrent = null;
-  });
-}
-
-// Keep initTiltCards as no-op (delegation handles all cards)
-function initTiltCards() {}
+function initTiltCards() {} // delegation handles all cards — no per-card init
 
 // ── 4. Slot-machine score countup ────────────────────────────────────────────
 function initSlotScores() {
@@ -882,19 +869,15 @@ function initSlotScores() {
     var target   = parseFloat(el.dataset.target   || '0');
     var decimals = parseInt(  el.dataset.decimals || '2');
     var dur      = 920;
-    var flickEnd = dur * 0.62; // random flicker phase then smooth settle
+    var flickEnd = dur * 0.62;
     var t0 = P.performance.now();
-
     function easeOutQuart(t) { return 1 - Math.pow(1 - t, 4); }
-
     (function tick(now) {
-      var elapsed   = now - t0;
-      var progress  = Math.min(elapsed / dur, 1);
+      var elapsed  = now - t0;
+      var progress = Math.min(elapsed / dur, 1);
       var val;
       if (elapsed < flickEnd) {
-        // Rapid random numbers, converging toward target
-        var flickP = elapsed / flickEnd;
-        val = Math.random() * target * (1.8 - flickP * 1.1);
+        val = Math.random() * target * (1.8 - (elapsed / flickEnd) * 1.1);
       } else {
         val = easeOutQuart((elapsed - flickEnd) / (dur - flickEnd)) * target;
       }
@@ -918,31 +901,29 @@ function initConvDots() {
   });
 }
 
-// ── 6. Keyboard shortcut: R = refresh ────────────────────────────────────────
-if (!P._keyRefreshInit) {
-  P._keyRefreshInit = true;
-  P.addEventListener('keydown', function(e) {
-    var tag = (PD.activeElement || {}).tagName || '';
-    if ((e.key === 'r' || e.key === 'R') &&
-        tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
-      var btns = PD.querySelectorAll('button');
-      for (var i = 0; i < btns.length; i++) {
-        if (btns[i].innerText.indexOf('Refresh') !== -1) {
-          btns[i].click(); return;
-        }
-      }
+// ── 6. Keyboard shortcut: R = refresh — always re-register ──────────────────
+if (P._keyHandler) P.removeEventListener('keydown', P._keyHandler);
+P._keyHandler = function(e) {
+  var tag = (PD.activeElement || {}).tagName || '';
+  if ((e.key === 'r' || e.key === 'R') &&
+      tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') {
+    var btns = PD.querySelectorAll('button');
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].innerText.indexOf('Refresh') !== -1) { btns[i].click(); return; }
     }
-  });
-}
+  }
+};
+P.addEventListener('keydown', P._keyHandler);
 
-// ── MutationObserver: always replace so callback is bound to current scope ────
-// Bug: with `if (!P._animObserver)` guard, after 1st Streamlit iframe reload the
-// old observer's closure (referencing destroyed iframe) fires dead code.
-// Fix: unconditionally disconnect old + register fresh observer each load.
+// ── MutationObserver: always replace so callback lives in current realm ────
 function runAll() {
-  initTiltCards();   // no-op — tilt is fully delegated
+  initTiltCards();
   initSlotScores();
   initConvDots();
+  // Boot scan triggered by a hidden span injected by Python on page nav
+  var bt = PD.getElementById('x-boot-trigger');
+  if (bt) { bt.parentNode && bt.parentNode.removeChild(bt); P._bootFired = false; }
+  if (!P._bootFired) { P._bootFired = true; triggerBootScan(); }
 }
 
 runAll();
@@ -953,7 +934,7 @@ P._animObserver = new P.MutationObserver(function(mutations) {
   var added = mutations.some(function(m) { return m.addedNodes.length > 0; });
   if (!added) return;
   clearTimeout(_mutDebounce);
-  _mutDebounce = setTimeout(runAll, 60); // debounce: skip burst mutations
+  _mutDebounce = setTimeout(runAll, 60);
 });
 P._animObserver.observe(PD.body, { childList: true, subtree: true });
 
@@ -995,15 +976,11 @@ if "page" not in st.session_state:
     st.session_state.page = "screener"
 
 _inject_global_css()
-
-# Reset boot scan line before JS block if nav just changed
-if st.session_state.pop("_trigger_boot", False):
-    _components.html(
-        "<script>if(window.parent)window.parent._bootFired=false;</script>",
-        height=0, width=0,
-    )
-
 _inject_js_animations()
+
+# Signal boot scan to JS via a DOM span (no iframe = no position shift for JS component)
+if st.session_state.pop("_trigger_boot", False):
+    st.markdown('<span id="x-boot-trigger" style="display:none"></span>', unsafe_allow_html=True)
 
 # ── Nav definition ────────────────────────────────────────────────────────────
 _NAV = [
