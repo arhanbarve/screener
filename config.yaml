@@ -67,7 +67,7 @@ finnhub:
 
 news:
   enabled: true
-  analyze_top_n: 10
+  analyze_top_n: 20
 
 lazy_prices:
   # Neglect universe: capacity-constrained small/micro caps where arbitrage can't reach.
