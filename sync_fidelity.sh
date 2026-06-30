@@ -10,6 +10,13 @@ LOCK_FILE="/tmp/fidelity_sync_last_run"
 mkdir -p "$SCREENER_DIR/logs"
 
 TODAY=$(date +%Y-%m-%d)
+HOUR=$(date +%H)
+
+# Don't run between midnight and 5 AM
+if [ "$HOUR" -lt 5 ]; then
+    echo "$(date): before 5 AM, skipping" >> "$LOG_FILE"
+    exit 0
+fi
 
 # Already ran today — skip
 if [ -f "$LOCK_FILE" ] && [ "$(cat "$LOCK_FILE" 2>/dev/null)" = "$TODAY" ]; then
