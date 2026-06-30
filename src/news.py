@@ -151,7 +151,7 @@ def _prefilter_articles(ticker: str, articles: list[dict]) -> list[dict]:
         'Return ONLY JSON: {"material":[1,3]}'
     )
     try:
-        text = _claude("claude-haiku-4-5", prompt, max_tokens=150)
+        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=150)
         parsed = _parse_json(text)
         if parsed and "material" in parsed:
             indices = {int(i) - 1 for i in parsed["material"] if str(i).isdigit()}
@@ -230,7 +230,7 @@ Return ONLY JSON:
 }}"""
 
     try:
-        text = _claude("claude-sonnet-4-6", prompt, max_tokens=600)
+        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=600)
         parsed = _parse_json(text)
         if parsed:
             parsed["conviction_delta"] = max(-1, min(1, int(parsed.get("conviction_delta", 0))))
@@ -264,7 +264,7 @@ Return ONLY JSON:
 }}
 Only emit entries when news genuinely shifts a sector's outlook. Restrict to: {sectors_str}"""
     try:
-        text = _claude("claude-sonnet-4-6", prompt, max_tokens=800)
+        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=800)
         parsed = _parse_json(text)
         if parsed:
             return parsed
@@ -397,7 +397,7 @@ Headlines:
 Return ONLY valid JSON:
 {{"sentiment": "bullish|bearish|neutral|mixed", "summary": "2-3 sentences on key themes", "key_risks": ["risk 1", "risk 2"]}}"""
     try:
-        text = _claude("claude-haiku-4-5", prompt, max_tokens=600)
+        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=600)
         parsed = _parse_json(text)
         return parsed if parsed else {**_CARD_FALLBACK, "summary": text[:300]}
     except Exception as e:
@@ -418,7 +418,7 @@ Headlines:
 Return ONLY valid JSON:
 {{"sentiment": "bullish|bearish|neutral|mixed", "summary": "1-2 sentences on momentum impact", "key_risks": ["risk 1"]}}"""
     try:
-        text = _claude("claude-haiku-4-5", prompt, max_tokens=400)
+        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=400)
         parsed = _parse_json(text)
         return parsed if parsed else {**_CARD_FALLBACK, "summary": text[:300]}
     except Exception as e:
