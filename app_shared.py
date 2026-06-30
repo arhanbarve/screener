@@ -1051,6 +1051,25 @@ def _cached_position_data(ticker: str) -> tuple[dict, float | None]:
     return signals, price
 
 
+@st.cache_data(ttl=900)
+def _batch_position_data(tickers: tuple[str, ...]) -> dict[str, tuple[dict, float | None]]:
+    import concurrent.futures
+
+    def _fetch_one(ticker: str) -> tuple[str, tuple[dict, float | None]]:
+        try:
+            df = fetch_ohlcv(ticker, days=60)
+            signals = compute_exit_signals(df)
+            price = get_current_price(ticker)
+            return ticker, (signals, price)
+        except Exception:
+            return ticker, ({}, None)
+
+    workers = min(len(tickers), 10)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        results = list(ex.map(_fetch_one, tickers))
+    return dict(results)
+
+
 @st.cache_data(ttl=64800)  # 18h — recompute once per trading day
 def _cached_spy_regime() -> dict:
     return compute_spy_regime()
@@ -1686,9 +1705,9 @@ def _fmt_gl(dollar: float, pct: float) -> str:
     return f"{sign}${dollar:,.2f} ({sign}{pct:.1%})"
 
 
-def _render_position_card(pos: dict, fid: dict | None) -> None:
+def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float | None] | None = None) -> None:
     ticker  = pos["ticker"]
-    signals, _ = _cached_position_data(ticker)
+    signals, _ = cached if cached is not None else _cached_position_data(ticker)
     score   = signals.get("score", 0)
 
     entry_price = pos.get("entry_price", 0)
@@ -1727,7 +1746,7 @@ def _render_position_card(pos: dict, fid: dict | None) -> None:
         )
         desc_html = f'<div style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);margin-top:1px">{_html.escape(desc)}</div>' if desc else ""
     else:
-        _, current_price = _cached_position_data(ticker)
+        _, current_price = cached if cached is not None else _cached_position_data(ticker)
         price_str = f"${current_price:,.2f}" if current_price else "—"
         if current_price and entry_price:
             pnl = (current_price - entry_price) / entry_price
@@ -1799,25 +1818,37 @@ def _render_positions() -> None:
     fid_positions, synced_at = _load_fidelity_data()
     fid_by_ticker = {f["ticker"]: f for f in fid_positions}
 
-    if synced_at:
-        try:
-            ts = datetime.fromisoformat(synced_at).strftime("%-I:%M %p")
-        except Exception:
-            ts = synced_at
-        st.markdown(
-            f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);'
-            f'margin-bottom:0.75rem">FIDELITY SYNC · {ts}</div>',
-            unsafe_allow_html=True,
-        )
+    col_sync, col_btn = st.columns([5, 1])
+    with col_sync:
+        if synced_at:
+            try:
+                ts = datetime.fromisoformat(synced_at).strftime("%-I:%M %p")
+            except Exception:
+                ts = synced_at
+            st.markdown(
+                f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);'
+                f'padding-top:6px">FIDELITY SYNC · {ts}</div>',
+                unsafe_allow_html=True,
+            )
+    with col_btn:
+        if st.button("↺ LIVE REFRESH", key="positions_live_refresh", use_container_width=True):
+            _batch_position_data.clear()
+            st.rerun()
+
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
 
     positions = load_positions()
     if not positions:
         st.info("No positions synced yet — run Fidelity sync to populate.")
         return
 
+    tickers = tuple(sorted(p["ticker"] for p in positions))
+    with st.spinner(f"Fetching live data for {len(tickers)} position{'s' if len(tickers) != 1 else ''}…"):
+        batch = _batch_position_data(tickers)
+
     enriched = []
     for p in positions:
-        signals, _ = _cached_position_data(p["ticker"])
+        signals, _ = batch.get(p["ticker"], ({}, None))
         enriched.append({**p, "_score": signals.get("score", 0)})
     enriched.sort(key=lambda x: x["_score"], reverse=True)
 
@@ -1859,7 +1890,7 @@ def _render_positions() -> None:
 """, unsafe_allow_html=True)
 
     for pos in enriched:
-        _render_position_card(pos, fid_by_ticker.get(pos["ticker"]))
+        _render_position_card(pos, fid_by_ticker.get(pos["ticker"]), batch.get(pos["ticker"]))
 
 
 # ── Filing Edge page ─────────────────────────────────────────────────────────
