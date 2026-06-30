@@ -57,6 +57,8 @@ def run(force_universe: bool = False):
     if "name_uni" in survivors_df.columns:
         survivors_df["name"] = survivors_df["name"].fillna(survivors_df["name_uni"])
         survivors_df = survivors_df.drop(columns=["name_uni"])
+    if "cik_uni" in survivors_df.columns:
+        survivors_df = survivors_df.drop(columns=["cik_uni"])
 
     # Stage 3: Fundamentals (survivors only)
     fund_df = fetch_all_fundamentals(survivors_df, cfg, DB_PATH)
@@ -69,7 +71,13 @@ def run(force_universe: bool = False):
     # Stage 3.5: Market stress overlay — scale top_n down in momentum-crash regimes
     stress = compute_market_stress_overlay()
     scale  = stress["scale_factor"]
-    if scale < 1.0:
+    if scale == 0.0:
+        print(f"[stress] regime={stress['regime']} — STRESS: outputting empty screen")
+        ranked_df = pd.DataFrame(columns=["ticker"])
+        csv_path = write_csv(ranked_df, OUTPUT_DIR, today)
+        print(f"\n[output] {csv_path} (empty — market stress)")
+        return
+    elif scale < 1.0:
         original_top_n = cfg["output"]["top_n"]
         new_top_n = max(1, int(original_top_n * scale))
         cfg = dict(cfg)
@@ -79,13 +87,6 @@ def run(force_universe: bool = False):
               f"reason='{stress['reason']}' → top_n {original_top_n}→{new_top_n}")
     else:
         print(f"[stress] regime={stress['regime']} — full screen")
-
-    if scale == 0.0:
-        print("[stress] STRESS regime: skipping ranking, outputting empty screen")
-        ranked_df = pd.DataFrame(columns=["ticker"])
-        csv_path = write_csv(ranked_df, OUTPUT_DIR, today)
-        print(f"\n[output] {csv_path} (empty — market stress)")
-        return
 
     # Stage 4: Composite score
     streak_data = load_streak_history(OUTPUT_DIR, lookback_days=cfg.get("streak", {}).get("lookback_days", 14))

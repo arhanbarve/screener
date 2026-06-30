@@ -1,9 +1,11 @@
 # tests/test_cache.py
 import os
 import tempfile
+import math
+import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from src.cache import init_db, put_prices, get_prices, put_fundamentals, get_fundamentals, put_edgar, get_edgar
+from src.cache import init_db, put_prices, get_prices, put_fundamentals, get_fundamentals, put_edgar, get_edgar, archive_universe_snapshot
 
 def make_tmp_db():
     f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -69,4 +71,19 @@ def test_edgar_roundtrip():
     result = get_edgar(db, "0000320193", ttl_days=30)
     assert result is not None
     assert abs(result["gp_assets"] - 0.35) < 1e-9
+    os.unlink(db)
+
+def test_archive_universe_snapshot_nan_cik():
+    import sqlite3
+    db = make_tmp_db()
+    init_db(db)
+    df = pd.DataFrame({"ticker": ["AAPL", "MSFT"], "cik": [np.nan, "0000789019"]})
+    archive_universe_snapshot(db, "2026-06-30", df)
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT ticker, cik FROM universe_snapshots ORDER BY ticker"
+    ).fetchall()
+    conn.close()
+    assert rows[0] == ("AAPL", "")
+    assert rows[1] == ("MSFT", "0000789019")
     os.unlink(db)

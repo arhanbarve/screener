@@ -19,6 +19,8 @@ def mom_1m(close: pd.Series) -> float:
 
 def compute_sue(actuals: list, estimates: list) -> float:
     """Standardized Unexpected Earnings. actuals/estimates oldest-first."""
+    if not actuals or not estimates:
+        return 0.0
     if len(actuals) < 4 or len(estimates) < 4:
         latest_a = actuals[-1]
         latest_e = estimates[-1]

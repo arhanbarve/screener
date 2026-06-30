@@ -44,6 +44,12 @@ def test_sue_fallback_fewer_than_four_quarters():
     result = compute_sue(actuals, estimates)
     assert abs(result - 0.3) < 1e-6
 
+def test_sue_empty_both_lists():
+    assert compute_sue([], []) == 0.0
+
+def test_sue_empty_actuals():
+    assert compute_sue([], [1.0]) == 0.0
+
 def test_rev_breadth_score_basic():
     result = rev_breadth_score(n_up=3, n_down=1, n_total=5)
     assert abs(result - 0.4) < 1e-6

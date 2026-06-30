@@ -288,7 +288,7 @@ async def run_sync() -> None:
                         await btn.click()
                     dl = await dl_info.value
                     await dl.save_as(str(download_path))
-                    csv_content = download_path.read_text()
+                    csv_content = download_path.read_text(encoding='utf-8-sig')
                     print(f"Downloaded via selector: {sel}", flush=True)
                     break
             except Exception:
@@ -318,6 +318,15 @@ async def run_sync() -> None:
 
         # Save rich data for the UI to read
         _save_fidelity_data(holdings)
+
+        # Deduplicate by ticker (keep first; user may hold same stock in multiple accounts)
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for h in holdings:
+            if h["ticker"] not in seen:
+                seen.add(h["ticker"])
+                deduped.append(h)
+        holdings = deduped
 
         # ── Step 6: merge into positions.json ────────────────────────────────
         fidelity_tickers  = {h["ticker"] for h in holdings}

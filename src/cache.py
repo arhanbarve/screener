@@ -1,7 +1,18 @@
 import sqlite3
+import math
 import json
 import pandas as pd
 from datetime import datetime, timedelta
+
+
+def _str_or_empty(v) -> str:
+    try:
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(v)
+
 
 _conn_cache: dict[str, sqlite3.Connection] = {}
 
@@ -138,7 +149,7 @@ def archive_fundamentals_snapshot(db_path: str, date_str: str):
 def archive_universe_snapshot(db_path: str, date_str: str, tickers_df):
     """Save today's liquidity-gate-surviving universe for survivorship-bias-aware backtesting."""
     conn = _get_conn(db_path)
-    rows = [(date_str, str(row.get("ticker", "")), str(row.get("cik", "")))
+    rows = [(date_str, _str_or_empty(row.get("ticker", "")), _str_or_empty(row.get("cik", "")))
             for _, row in tickers_df.iterrows()]
     conn.executemany(
         "INSERT OR IGNORE INTO universe_snapshots VALUES (?,?,?)", rows

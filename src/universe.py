@@ -9,7 +9,7 @@ SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _EXCLUDE_TERMS = [
     " warrant", "-wt", " unit", " pfd", " preferred",
     "proshares", "ishares", "invesco", "direxion",
-    " etf", "trust", "fund", " lp ", " lp$",
+    " etf", "trust", "fund", " lp",
 ]
 
 def _user_agent() -> str:

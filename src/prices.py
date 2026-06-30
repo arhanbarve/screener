@@ -1,4 +1,5 @@
 import os
+import math
 import time
 import logging
 import requests
@@ -107,8 +108,9 @@ def _get_market_cap(ticker: str, db_path: str, ttl_hours: int) -> Optional[float
         return cached
     try:
         info = yf.Ticker(ticker, session=_yf_session).fast_info
-        val = float(getattr(info, "market_cap", None) or 0) or None
-        if val:
+        raw = getattr(info, "market_cap", None)
+        if raw is not None and not math.isnan(float(raw)) and float(raw) > 0:
+            val = float(raw)
             put_market_cap(db_path, ticker, val)
             return val
     except Exception:

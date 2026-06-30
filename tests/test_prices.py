@@ -40,3 +40,22 @@ def test_apply_liquidity_gate():
     cfg = {"liquidity_gate": {"min_market_cap": 300e6, "min_avg_dollar_vol_20d": 5e6}}
     result = apply_liquidity_gate(df, cfg)
     assert list(result["ticker"]) == ["A"]
+
+def test_get_market_cap_nan_returns_none():
+    import math
+    from unittest.mock import patch, MagicMock
+    from src.prices import _get_market_cap
+
+    mock_info = MagicMock()
+    mock_info.market_cap = math.nan
+    mock_ticker = MagicMock()
+    mock_ticker.fast_info = mock_info
+
+    with patch("src.prices.yf.Ticker", return_value=mock_ticker), \
+         patch("src.prices.get_market_cap", return_value=None), \
+         patch("src.prices.get_market_cap_stale", return_value=None), \
+         patch("src.prices.put_market_cap") as mock_put:
+        result = _get_market_cap("FAKE", ":memory:", 1)
+
+    assert result is None
+    mock_put.assert_not_called()

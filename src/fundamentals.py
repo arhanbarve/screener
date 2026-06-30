@@ -58,6 +58,8 @@ def parse_edgar_gp(data: dict) -> tuple[float, float, float, float]:
     assets  = _resolve_tag(facts, ASSETS_TAGS)
     if revenue is None or cogs is None or assets is None:
         raise KeyError("Could not resolve revenue/cogs/assets XBRL tags")
+    if assets <= 0:
+        raise KeyError("assets <= 0, gp/assets undefined")
     gp = (revenue - cogs) / assets
     return gp, revenue, cogs, assets
 

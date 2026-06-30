@@ -63,9 +63,11 @@ def apply_quality_gate(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     sector = df.get("sector", pd.Series([""] * len(df), index=df.index)).fillna("")
 
     if threshold == "median":
-        cutoff = gp[~sector.isin(FINANCIAL_SECTORS)].median()
+        non_fin = gp[~sector.isin(FINANCIAL_SECTORS)]
+        cutoff = non_fin.median() if len(non_fin) > 0 else 0.0
     elif threshold == "q25":
-        cutoff = gp[~sector.isin(FINANCIAL_SECTORS)].quantile(0.25)
+        non_fin = gp[~sector.isin(FINANCIAL_SECTORS)]
+        cutoff = non_fin.quantile(0.25) if len(non_fin) > 0 else 0.0
     else:
         cutoff = float(threshold)
 
