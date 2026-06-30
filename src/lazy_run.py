@@ -163,7 +163,6 @@ def run(force_universe: bool = False, limit: int | None = None):
         full_df["sector"] = ""
 
     # --- Stage 4.5: Claude precision layer (conditional on ANTHROPIC_API_KEY) ---
-    import os
     if os.environ.get("ANTHROPIC_API_KEY"):
         full_df = attach_filing_analysis(full_df, cfg, DB_PATH)
     else:

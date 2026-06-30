@@ -222,6 +222,16 @@ def fetch_all_fundamentals(
 
             cached_fund = get_fundamentals(db_path, ticker, ttl_days=ttl_fund)
             if cached_fund:
+                # Back-fill empty sector in stale cache entries without full re-fetch
+                if not cached_fund.get("sector"):
+                    try:
+                        info = yf.Ticker(ticker).get_info()
+                        sector = (info.get("sector") or info.get("industry") or "").strip()
+                        if sector:
+                            cached_fund["sector"] = sector
+                            put_fundamentals(db_path, ticker, cached_fund)
+                    except Exception:
+                        pass
                 row.update(cached_fund)
             else:
                 fund = {}
@@ -271,18 +281,15 @@ def fetch_all_fundamentals(
                     fund["insider_flag"]      = False
 
                 try:
-                    tk = yf.Ticker(ticker, session=yf_session)
-                    info = tk.info
+                    # Use get_info() not .info property — the property bypasses
+                    # yfinance's cookie/crumb handling with custom sessions,
+                    # causing silent rate-limit failures that blank sector.
+                    tk = yf.Ticker(ticker)
+                    info = tk.get_info()
                     sf, dtc = parse_short_interest(info)
                     fund["short_float"]   = sf
                     fund["days_to_cover"] = dtc
                     sector = (info.get("sector") or info.get("industry") or "").strip()
-                    if not sector:
-                        try:
-                            fast = tk.fast_info
-                            sector = getattr(fast, "sector", "") or ""
-                        except Exception:
-                            sector = ""
                     fund["sector"] = sector
                 except Exception:
                     fund["short_float"]   = float("nan")

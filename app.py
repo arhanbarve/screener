@@ -2330,6 +2330,55 @@ def _last_run_text(text: str) -> str:
     return text[idx:] if idx != -1 else text
 
 
+def _parse_filing_state(text: str) -> dict:
+    s: dict = {
+        "started_at": None, "finished_at": None, "failed": False,
+        "neglect_n": None,
+        "edgar_cur": None, "edgar_tot": None,
+        "filings_cur": None, "filings_tot": None,
+        "similarity_n": None,
+        "longs_n": None, "watch_n": None,
+        "output_done": False,
+    }
+    for line in text.splitlines():
+        if "=== Filing-edge run started:" in line:
+            m = re.search(r"started: (.+) ===", line)
+            if m: s["started_at"] = m.group(1).strip()
+        if "=== Filing-edge run finished:" in line:
+            m = re.search(r"finished: (.+) ===", line)
+            if m: s["finished_at"] = m.group(1).strip()
+        if "Filing-edge run FAILED" in line:
+            s["failed"] = True
+        if m := re.search(r"\[neglect_gate\] \d+ → (\d+)", line):
+            s["neglect_n"] = int(m.group(1))
+        if m := re.search(r"\[lazy_run\] fetching EDGAR gp_assets for (\d+)", line):
+            s["edgar_tot"] = int(m.group(1))
+        if m := re.search(r"\[lazy_run\] edgar (\d+)/(\d+)", line):
+            s["edgar_cur"], s["edgar_tot"] = int(m.group(1)), int(m.group(2))
+        if m := re.search(r"\[lazy_run\] fetching \S+ similarities for (\d+)", line):
+            s["filings_tot"] = int(m.group(1))
+        if m := re.search(r"\[lazy_run\] filings (\d+)/(\d+)", line):
+            s["filings_cur"], s["filings_tot"] = int(m.group(1)), int(m.group(2))
+        if m := re.search(r"\[lazy_run\] (\d+)/\d+ tickers have filing similarity", line):
+            s["similarity_n"] = int(m.group(1))
+        if m := re.search(r"\[lazy_run\] archived (\d+) longs \+ (\d+) watch", line):
+            s["longs_n"], s["watch_n"] = int(m.group(1)), int(m.group(2))
+        if "[output] output/filing_edge_" in line:
+            s["output_done"] = True
+    return s
+
+
+def _filing_stage(s: dict) -> int:
+    if s["output_done"]:          return 6
+    if s["longs_n"] is not None:  return 5
+    if s["similarity_n"] is not None: return 4
+    if s["filings_cur"] is not None:  return 3
+    if s["edgar_cur"] is not None:    return 2
+    if s["neglect_n"] is not None:    return 1
+    if s["started_at"] is not None:   return 0
+    return -1
+
+
 def _parse_run_state(text: str) -> dict:
     s: dict = {
         "started_at": None, "finished_at": None,
@@ -2583,6 +2632,148 @@ def _render_monitor():
         f'padding:0.8rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0;'
         f'animation:log-refresh 0.6s ease-out">'
         f'{"<br>".join(colored_lines)}</pre>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Filing Edge sub-monitor ───────────────────────────────────────────────
+    st.markdown('<div style="height:1.6rem"></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.65rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:1rem">FILING EDGE MONITOR</div>',
+        unsafe_allow_html=True,
+    )
+
+    fs = _parse_filing_state(text)
+    fstage = _filing_stage(fs)
+
+    # Latest filing edge output freshness (independent of today's log)
+    fe_files = sorted(Path("output").glob("filing_edge_*.csv"), reverse=True)
+    fe_date = fe_files[0].stem.replace("filing_edge_", "") if fe_files else None
+
+    if fs["started_at"] is None:
+        fe_status_html = '<span style="color:var(--muted)">— NOT YET RUN TODAY</span>'
+        if fe_date:
+            fe_status_html += (
+                f' <span style="color:var(--dim);font-size:0.7rem">'
+                f'(last: {fe_date})</span>'
+            )
+    elif fs["failed"]:
+        fe_status_html = '<span style="color:var(--bear);font-weight:700">✗ FAILED</span>'
+    elif fs["finished_at"]:
+        fe_status_html = '<span style="color:var(--bull);font-weight:700">✓ COMPLETE</span>'
+    else:
+        fe_status_html = (
+            '<span style="color:var(--accent);font-weight:700;animation:pulse 1.4s ease-in-out infinite">'
+            '● LIVE</span>'
+        )
+
+    _FE_STAGES = [(0,"INIT"),(1,"NEGLECT"),(2,"EDGAR"),(3,"FILINGS"),(4,"SIMILARITY"),(5,"SCORING"),(6,"OUTPUT")]
+    fe_cells = []
+    for idx, (sid, label) in enumerate(_FE_STAGES):
+        if fstage > sid:
+            color, icon, weight = "var(--bull)", "✓", "600"
+        elif fstage == sid:
+            color, icon, weight = "var(--accent)", "▶", "700"
+        else:
+            color, icon, weight = "var(--muted)", "○", "400"
+        arrow = '<span style="color:var(--border);margin:0 4px">›</span>' if idx < len(_FE_STAGES)-1 else ""
+        fe_cells.append(
+            f'<span style="font-family:var(--mono);font-size:0.65rem;font-weight:{weight};'
+            f'color:{color};white-space:nowrap">{icon} {label}</span>{arrow}'
+        )
+
+    st.markdown(
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'font-family:var(--mono);font-size:0.8rem;padding:0.6rem 1rem;'
+        f'background:var(--surface-2);border:1px solid var(--border);'
+        f'border-radius:var(--radius);margin-bottom:0.8rem">'
+        f'<span>{fe_status_html}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if fs["started_at"] is not None:
+        st.markdown(
+            f'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px;'
+            f'padding:0.6rem 1rem;background:var(--surface-1);border:1px solid var(--border);'
+            f'border-radius:var(--radius);margin-bottom:0.8rem">'
+            f'{"".join(fe_cells)}</div>',
+            unsafe_allow_html=True,
+        )
+
+        fe_prog, fe_label = 1.0, ""
+        if fstage == 2 and fs["edgar_cur"] and fs["edgar_tot"]:
+            fe_prog = fs["edgar_cur"] / fs["edgar_tot"]
+            fe_label = f'EDGAR {fs["edgar_cur"]} / {fs["edgar_tot"]}'
+        elif fstage == 3 and fs["filings_cur"] and fs["filings_tot"]:
+            fe_prog = fs["filings_cur"] / fs["filings_tot"]
+            fe_label = f'Filings {fs["filings_cur"]} / {fs["filings_tot"]}'
+        elif fstage == 0:
+            fe_prog, fe_label = 0.0, "Starting…"
+
+        if fstage >= 0:
+            st.progress(min(max(fe_prog, 0.0), 1.0))
+            if fe_label:
+                st.markdown(
+                    f'<div style="font-family:var(--mono);font-size:0.65rem;color:var(--muted);'
+                    f'margin-top:-0.4rem;margin-bottom:0.5rem">{fe_label}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        if fs["longs_n"] is not None:
+            st.markdown(
+                f'<div style="font-family:var(--mono);font-size:0.7rem;color:var(--muted);margin-top:0.3rem">'
+                f'<span style="color:var(--bull)">{fs["longs_n"]} longs</span>'
+                f'<span style="color:var(--border)"> · </span>'
+                f'<span style="color:var(--accent)">{fs["watch_n"]} watch</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # ── Confluence sub-monitor ────────────────────────────────────────────────
+    st.markdown('<div style="height:1.2rem"></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.65rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.8rem">CONFLUENCE MONITOR</div>',
+        unsafe_allow_html=True,
+    )
+
+    today_str = date.today().isoformat()
+    fe_fresh  = fe_date == today_str
+    screen_files = sorted(Path("output").glob("screen_*.csv"), reverse=True)
+    screen_date  = screen_files[0].stem.replace("screen_", "") if screen_files else None
+    screen_fresh = screen_date == today_str
+
+    conf_rows = [
+        ("FILING EDGE",  fe_date or "—",     fe_fresh),
+        ("SCREENER",     screen_date or "—",  screen_fresh),
+    ]
+    cells_conf = []
+    for label, val, fresh in conf_rows:
+        color = "var(--bull)" if fresh else "var(--bear)"
+        icon  = "✓" if fresh else "✗"
+        cells_conf.append(
+            f'<div style="flex:1;background:var(--surface-2);border:1px solid var(--border);'
+            f'border-radius:var(--radius);padding:0.6rem 0.8rem;text-align:center">'
+            f'<div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);'
+            f'letter-spacing:0.1em;margin-bottom:0.2rem">{label}</div>'
+            f'<div style="font-family:var(--mono);font-size:0.8rem;font-weight:700;color:{color}">'
+            f'{icon} {val}</div>'
+            f'</div>'
+        )
+    conf_note = (
+        '<span style="color:var(--bull);font-weight:700">✓ READY</span>'
+        if (fe_fresh and screen_fresh)
+        else '<span style="color:var(--bear)">⚠ STALE DATA</span>'
+    )
+    st.markdown(
+        f'<div style="font-family:var(--mono);font-size:0.75rem;padding:0.5rem 0.8rem;'
+        f'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);'
+        f'margin-bottom:0.6rem">{conf_note}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div style="display:flex;gap:6px">{"".join(cells_conf)}</div>',
         unsafe_allow_html=True,
     )
 
