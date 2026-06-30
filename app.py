@@ -2388,12 +2388,15 @@ def _parse_filing_state(text: str) -> dict:
             s["longs_n"], s["watch_n"] = int(m.group(1)), int(m.group(2))
         if "[output] output/filing_edge_" in line:
             s["output_done"] = True
-    # Fallback: if no shell wrapper marker, extract start time from first log timestamp
-    if s["started_at"] is None and text.strip():
-        first = text.strip().splitlines()[0]
-        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+", first)
-        if m:
-            s["started_at"] = m.group(1)
+    # Fallback: extract start/finish from Python log timestamps (manual runs lack shell wrapper)
+    lines = [l for l in text.splitlines() if re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", l)]
+    if lines:
+        if s["started_at"] is None:
+            m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+", lines[0])
+            if m: s["started_at"] = m.group(1)
+        if s["finished_at"] is None and s["output_done"]:
+            m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+", lines[-1])
+            if m: s["finished_at"] = m.group(1)
     return s
 
 
