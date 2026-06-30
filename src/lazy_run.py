@@ -54,7 +54,7 @@ def _apply_neglect_gate(factors_df: pd.DataFrame, lp_cfg: dict) -> pd.DataFrame:
         (factors_df["market_cap"] <= max_cap) &
         (factors_df["avg_dollar_vol_20d"] >= min_vol)
     ].reset_index(drop=True)
-    print(f"[neglect_gate] {before} → {len(result)} in $50M–$2B band (ADV≥$200K)")
+    logger.info(f"[neglect_gate] {before} → {len(result)} in $50M–$2B band (ADV≥$200K)")
     return result
 
 
@@ -72,7 +72,7 @@ def run(force_universe: bool = False, limit: int | None = None):
         universe_df = build_universe(cfg, UNIVERSE_PATH)
     else:
         universe_df = pd.read_parquet(UNIVERSE_PATH)
-        print(f"[universe] loaded {len(universe_df)} tickers from cache")
+        logger.info(f"[universe] loaded {len(universe_df)} tickers from cache")
 
     # --- Stage 2: Prices (reuse existing cache; apply neglect gate) ---
     # fetch_all_prices applies the *main* liquidity gate internally, so we pass
@@ -89,19 +89,19 @@ def run(force_universe: bool = False, limit: int | None = None):
     neglect_df = _apply_neglect_gate(factors_df, lp)
 
     if len(neglect_df) == 0:
-        print("[lazy_run] No survivors after neglect gate — aborting")
+        logger.info("[lazy_run] No survivors after neglect gate — aborting")
         return
 
     # Optional: limit universe size for faster dev/test runs
     if limit is not None:
         neglect_df = neglect_df.head(limit)
-        print(f"[lazy_run] --limit {limit}: truncated to {len(neglect_df)} tickers")
+        logger.info(f"[lazy_run] --limit {limit}: truncated to {len(neglect_df)} tickers")
 
     # --- Stage 3: EDGAR gp_assets for quality gate ---
     ttl_edgar = cfg["cache"]["edgar_ttl_days"]
     gp_rows = []
     total = len(neglect_df)
-    print(f"[lazy_run] fetching EDGAR gp_assets for {total} tickers…")
+    logger.info(f"[lazy_run] fetching EDGAR gp_assets for {total} tickers")
     for i, (_, row) in enumerate(neglect_df.iterrows()):
         ticker = row["ticker"]
         cik = str(row.get("cik", "")) if pd.notna(row.get("cik")) else ""
@@ -112,7 +112,7 @@ def run(force_universe: bool = False, limit: int | None = None):
                 gp = edgar.get("gp_assets", float("nan"))
         gp_rows.append({"ticker": ticker, "gp_assets": gp})
         if (i + 1) % 50 == 0:
-            print(f"[lazy_run] edgar {i+1}/{total}")
+            logger.info(f"[lazy_run] edgar {i+1}/{total}")
 
     gp_df = pd.DataFrame(gp_rows)
     merged = neglect_df.merge(gp_df, on="ticker", how="left", suffixes=("", "_edgar"))
@@ -124,7 +124,7 @@ def run(force_universe: bool = False, limit: int | None = None):
     filing_form = lp.get("filing_form", "10-K")
     filing_ttl  = lp.get("filing_ttl_hours", 24)
     filing_rows = []
-    print(f"[lazy_run] fetching {filing_form} similarities for {len(merged)} tickers…")
+    logger.info(f"[lazy_run] fetching {filing_form} similarities for {len(merged)} tickers")
     total = len(merged)
     for i, (_, row) in enumerate(merged.iterrows()):
         ticker = row["ticker"]
@@ -141,7 +141,7 @@ def run(force_universe: bool = False, limit: int | None = None):
         else:
             filing_rows.append({"ticker": ticker, "text_stability": float("nan")})
         if (i + 1) % 25 == 0:
-            print(f"[lazy_run] filings {i+1}/{total} (cached hits are fast)")
+            logger.info(f"[lazy_run] filings {i+1}/{total}")
 
     filing_df = pd.DataFrame(filing_rows)
     # Drop heavy text columns before merge (too large for CSV)
@@ -151,11 +151,11 @@ def run(force_universe: bool = False, limit: int | None = None):
 
     # Drop tickers with no filing data at all
     has_filing = full_df["text_stability"].notna()
-    print(f"[lazy_run] {has_filing.sum()}/{len(full_df)} tickers have filing similarity")
+    logger.info(f"[lazy_run] {has_filing.sum()}/{len(full_df)} tickers have filing similarity")
     full_df = full_df[has_filing].reset_index(drop=True)
 
     if len(full_df) == 0:
-        print("[lazy_run] No tickers with filing data — aborting")
+        logger.info("[lazy_run] No tickers with filing data — aborting")
         return
 
     # Merge sector from fundamentals cache if missing
@@ -166,7 +166,7 @@ def run(force_universe: bool = False, limit: int | None = None):
     if os.environ.get("ANTHROPIC_API_KEY"):
         full_df = attach_filing_analysis(full_df, cfg, DB_PATH)
     else:
-        print("[lazy_run] ANTHROPIC_API_KEY not set — skipping Claude change characterization")
+        logger.info("[lazy_run] ANTHROPIC_API_KEY not set — skipping Claude change characterization")
         full_df["change_direction"] = 0
 
     # --- Stage 5: Composite ---
@@ -174,24 +174,13 @@ def run(force_universe: bool = False, limit: int | None = None):
 
     # --- Stage 5.5: Archive point-in-time snapshot for backtest validation ---
     archive_filing_edge_snapshot(DB_PATH, today, longs_df, watch_df)
-    print(f"[lazy_run] archived {len(longs_df)} longs + {len(watch_df)} watch to filing_edge_snapshots")
+    logger.info(f"[lazy_run] archived {len(longs_df)} longs + {len(watch_df)} watch to filing_edge_snapshots")
 
     # --- Stage 6: Output ---
     csv_path = write_filing_edge_csv(longs_df, watch_df, OUTPUT_DIR, today)
     md_path  = write_filing_edge_markdown(longs_df, watch_df, OUTPUT_DIR, today)
-    print(f"\n[output] {csv_path}")
-    print(f"[output] {md_path}")
-
-    print("\n=== FILING EDGE TOP 10 LONGS ===")
-    for i, (_, row) in enumerate(longs_df.head(10).iterrows(), 1):
-        stab = row.get("text_stability", float("nan"))
-        stab_s = f"{stab:.4f}" if stab == stab else "—"
-        mcap = row.get("market_cap", 0) or 0
-        comp = row.get("composite", 0)
-        conv = int(row.get("conviction", 0) or 0)
-        print(f"  {i:2d}. {row['ticker']:<8} composite={comp:+.4f}  stability={stab_s}  "
-              f"mktcap=${mcap/1e6:.0f}M  conv={conv}/5")
-    print()
+    logger.info(f"[output] {csv_path}")
+    logger.info(f"[output] {md_path}")
 
 
 if __name__ == "__main__":

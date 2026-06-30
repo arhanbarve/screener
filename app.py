@@ -2350,6 +2350,8 @@ def _last_run_text(text: str) -> str:
 def _parse_filing_state(text: str) -> dict:
     s: dict = {
         "started_at": None, "finished_at": None, "failed": False,
+        "prices_cur": None, "prices_tot": None,
+        "edgar_seen": False,
         "neglect_n": None,
         "edgar_cur": None, "edgar_tot": None,
         "filings_cur": None, "filings_tot": None,
@@ -2366,7 +2368,11 @@ def _parse_filing_state(text: str) -> dict:
             if m: s["finished_at"] = m.group(1).strip()
         if "Filing-edge run FAILED" in line:
             s["failed"] = True
-        if m := re.search(r"\[neglect_gate\] \d+ → (\d+)", line):
+        if m := re.search(r"\[prices\] batch (\d+)/(\d+)", line):
+            s["prices_cur"], s["prices_tot"] = int(m.group(1)), int(m.group(2))
+        if "src.fundamentals: [edgar]" in line or "src.filings:" in line:
+            s["edgar_seen"] = True
+        if m := re.search(r"\[neglect_gate\] \d+ .+ (\d+)", line):
             s["neglect_n"] = int(m.group(1))
         if m := re.search(r"\[lazy_run\] fetching EDGAR gp_assets for (\d+)", line):
             s["edgar_tot"] = int(m.group(1))
@@ -2382,16 +2388,23 @@ def _parse_filing_state(text: str) -> dict:
             s["longs_n"], s["watch_n"] = int(m.group(1)), int(m.group(2))
         if "[output] output/filing_edge_" in line:
             s["output_done"] = True
+    # Fallback: if no shell wrapper marker, extract start time from first log timestamp
+    if s["started_at"] is None and text.strip():
+        first = text.strip().splitlines()[0]
+        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+", first)
+        if m:
+            s["started_at"] = m.group(1)
     return s
 
 
 def _filing_stage(s: dict) -> int:
-    if s["output_done"]:          return 6
-    if s["longs_n"] is not None:  return 5
-    if s["similarity_n"] is not None: return 4
-    if s["filings_cur"] is not None:  return 3
-    if s["edgar_cur"] is not None:    return 2
-    if s["neglect_n"] is not None:    return 1
+    if s["output_done"]:              return 7
+    if s["longs_n"] is not None:      return 6
+    if s["similarity_n"] is not None: return 5
+    if s["filings_cur"] is not None:  return 4
+    if s["edgar_cur"] is not None or s["edgar_tot"] is not None or s["edgar_seen"]: return 3
+    if s["neglect_n"] is not None:    return 2
+    if s["prices_cur"] is not None:   return 1
     if s["started_at"] is not None:   return 0
     return -1
 
@@ -2695,7 +2708,7 @@ def _render_monitor():
             '● LIVE</span>'
         )
 
-    _FE_STAGES = [(0,"INIT"),(1,"NEGLECT"),(2,"EDGAR"),(3,"FILINGS"),(4,"SIMILARITY"),(5,"SCORING"),(6,"OUTPUT")]
+    _FE_STAGES = [(0,"INIT"),(1,"PRICES"),(2,"NEGLECT"),(3,"EDGAR"),(4,"FILINGS"),(5,"SIMILARITY"),(6,"SCORING"),(7,"OUTPUT")]
     fe_cells = []
     for idx, (sid, label) in enumerate(_FE_STAGES):
         if fstage > sid:
@@ -2730,10 +2743,13 @@ def _render_monitor():
         )
 
         fe_prog, fe_label = 1.0, ""
-        if fstage == 2 and fs["edgar_cur"] and fs["edgar_tot"]:
+        if fstage == 1 and fs["prices_cur"] and fs["prices_tot"]:
+            fe_prog = fs["prices_cur"] / fs["prices_tot"]
+            fe_label = f'Prices {fs["prices_cur"]} / {fs["prices_tot"]}'
+        elif fstage == 3 and fs["edgar_cur"] and fs["edgar_tot"]:
             fe_prog = fs["edgar_cur"] / fs["edgar_tot"]
             fe_label = f'EDGAR {fs["edgar_cur"]} / {fs["edgar_tot"]}'
-        elif fstage == 3 and fs["filings_cur"] and fs["filings_tot"]:
+        elif fstage == 4 and fs["filings_cur"] and fs["filings_tot"]:
             fe_prog = fs["filings_cur"] / fs["filings_tot"]
             fe_label = f'Filings {fs["filings_cur"]} / {fs["filings_tot"]}'
         elif fstage == 0:
