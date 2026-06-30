@@ -409,6 +409,97 @@ a:hover { text-decoration: underline !important; }
   letter-spacing: 0.06em;
 }
 
+/* ── Tooltip system ──────────────────────────────────────────────────────── */
+.th-tip {
+  cursor: help;
+  border-bottom: 1px dashed var(--border-hi);
+  padding-bottom: 1px;
+}
+.sig-tip-wrap { cursor: help; }
+#tip-panel {
+  position: fixed;
+  z-index: 99999;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px) scale(0.97);
+  transition: opacity 160ms cubic-bezier(0.16,1,0.3,1),
+              transform 160ms cubic-bezier(0.16,1,0.3,1);
+  width: 280px;
+  background: var(--surface-1);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px 10px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.65), 0 0 0 1px rgba(36,44,66,0.4);
+}
+#tip-panel.tip-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+#tip-panel .tip-title {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 0.6rem;
+  letter-spacing: 0.13em;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+#tip-panel .tip-body {
+  font-family: var(--sans);
+  font-size: 0.71rem;
+  line-height: 1.55;
+  color: var(--muted);
+}
+#tip-panel .tip-hint {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 0.59rem;
+  color: var(--dim);
+  letter-spacing: 0.07em;
+}
+#tip-panel .tip-sig-title {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  margin-bottom: 8px;
+}
+#tip-panel .tip-reasoning {
+  font-family: var(--sans);
+  font-size: 0.72rem;
+  line-height: 1.55;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+}
+#tip-panel .tip-meta {
+  font-family: var(--mono);
+  font-size: 0.59rem;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+#tip-panel .tip-meta b { color: var(--text); }
+#tip-panel::after {
+  content: '';
+  position: absolute;
+  left: var(--caret-x, 50%);
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+}
+#tip-panel.tip-above::after {
+  top: 100%;
+  border-top-color: var(--border-hi);
+}
+#tip-panel.tip-below::after {
+  bottom: 100%;
+  border-bottom-color: var(--border-hi);
+}
+
 /* Conviction dot row */
 .conv-dot-row { display: flex; align-items: center; gap: 4px; }
 .conv-dot {
@@ -906,11 +997,122 @@ P._keyHandler = function(e) {
 };
 P.addEventListener('keydown', P._keyHandler);
 
+// ── 7. Tooltip system ────────────────────────────────────────────────────────
+var _TH_TIPS = {
+  score:  { title: 'COMPOSITE SCORE', body: 'Weighted z-score: 28% 12-mo momentum, 20% analyst revision breadth, 17% earnings surprise, 15% 6-mo RS vs SPY, 10% technical alignment, 5% RS slope, 5% streak bonus.', hint: 'Higher = stronger setup' },
+  conv:   { title: 'CONVICTION 1–10', body: 'Four layers: rank position (top 3 = 3pts), streak ≥7d = 3pts, technical alignment ≥6/8 green = 2pts, fundamental quality — gross profitability, insider buying, short float.', hint: 'Use for position sizing — high conviction = larger starter' },
+  streak: { title: 'STREAK', body: "Consecutive trading days in the screener's top results. 5+ days = proven staying power. 1 day = may be noise.", hint: 'Longer = higher confidence in the setup' },
+  signal: { title: 'NEWS SIGNAL', body: 'AI-analyzed entry signal. CONFIRM = news supports thesis. WAIT = mixed signals. AVOID = news contradicts thesis or negative catalyst detected.', hint: 'Hover the badge for full reasoning' },
+  cat:    { title: 'CATALYST', body: 'Primary news catalyst. EST↑ = analyst estimate raised. EST↓ = estimate cut. Drives institutional accumulation or distribution.', hint: 'Estimate revisions precede price moves' },
+  mom:    { title: 'MOM 12-1 — 12-MONTH MOMENTUM', body: 'Price return over the past year, excluding the most recent month. Skipping the last month removes mean-reversion noise — what remains is slow-moving institutional momentum that persists 3–12 months.', hint: 'Academic consensus: strongest near-term return predictor' },
+  rs:     { title: 'RS 6M — RELATIVE STRENGTH vs SPY', body: 'How much the stock outperformed the S&P 500 over 6 months. +300% = beat the index by 300 percentage points — not a rising tide lift.', hint: 'Positive = beating the market on its own merit' }
+};
+
+function _escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function initTooltips() {
+  var panel = PD.getElementById('tip-panel');
+  if (!panel) {
+    panel = PD.createElement('div');
+    panel.id = 'tip-panel';
+    PD.body.appendChild(panel);
+  }
+  if (P._tipListenersActive) return;
+  P._tipListenersActive = true;
+
+  var _SIG_COLORS = {
+    confirm: { fg: '#22c55e', bg: 'rgba(34,197,94,0.10)', label: 'CONFIRM ENTRY' },
+    wait:    { fg: '#f59e0b', bg: 'rgba(245,158,11,0.10)', label: 'WAIT' },
+    avoid:   { fg: '#ef4444', bg: 'rgba(239,68,68,0.10)', label: 'AVOID' }
+  };
+
+  function showPanel(el) {
+    var key  = el.getAttribute('data-tip-key');
+    var type = el.getAttribute('data-tip-type');
+    var html = '';
+
+    if (key && _TH_TIPS[key]) {
+      var d = _TH_TIPS[key];
+      html = '<div class="tip-title">' + d.title + '</div>' +
+             '<div class="tip-body">'  + d.body  + '</div>' +
+             '<div class="tip-hint">'  + d.hint  + '</div>';
+    } else if (type) {
+      var c = _SIG_COLORS[type] || { fg: '#94a3b8', bg: 'rgba(148,163,184,0.1)', label: type.toUpperCase() };
+      var reasoning = el.getAttribute('data-tip-reasoning') || '';
+      var catalyst  = el.getAttribute('data-tip-catalyst')  || '';
+      var thesis    = el.getAttribute('data-tip-thesis')    || '';
+      var duration  = el.getAttribute('data-tip-duration')  || '';
+      html = '<div class="tip-sig-title" style="color:' + c.fg + '">' + c.label + '</div>';
+      if (reasoning) {
+        html += '<div class="tip-reasoning" style="background:' + c.bg + ';border:1px solid ' + c.fg + '44;color:' + c.fg + '">' + _escHtml(reasoning) + '</div>';
+      } else {
+        html += '<div class="tip-body" style="color:' + c.fg + '99">No news reasoning available.</div>';
+      }
+      var meta = [];
+      if (catalyst && catalyst !== 'nan' && catalyst !== '')  meta.push('<b>CAT</b> ' + _escHtml(catalyst.replace(/_/g,' ').toUpperCase()));
+      if (thesis && thesis !== 'nan' && thesis !== '')        meta.push('<b>THESIS</b> ' + _escHtml(thesis));
+      if (duration && duration !== 'nan' && duration !== '' && duration !== 'noise') meta.push('<b>IMPACT</b> ' + _escHtml(duration));
+      if (meta.length) html += '<div class="tip-meta">' + meta.join(' &nbsp;·&nbsp; ') + '</div>';
+    }
+
+    if (!html) return;
+    panel.innerHTML = html;
+
+    var r  = el.getBoundingClientRect();
+    var cx = r.left + r.width / 2;
+    var W  = 280;
+    var x  = Math.max(8, Math.min(cx - W / 2, P.innerWidth - W - 8));
+    panel.style.left  = x + 'px';
+    panel.style.width = W + 'px';
+    panel.style.setProperty('--caret-x', (cx - x) + 'px');
+
+    if (r.top > 150) {
+      panel.style.top    = '';
+      panel.style.bottom = (P.innerHeight - r.top + 8) + 'px';
+      panel.classList.remove('tip-below');
+      panel.classList.add('tip-above');
+    } else {
+      panel.style.top    = (r.bottom + 8) + 'px';
+      panel.style.bottom = '';
+      panel.classList.remove('tip-above');
+      panel.classList.add('tip-below');
+    }
+    requestAnimationFrame(function() { panel.classList.add('tip-visible'); });
+  }
+
+  function hidePanel() {
+    panel.classList.remove('tip-visible');
+    setTimeout(function() { if (!P._tipEl) panel.innerHTML = ''; }, 200);
+  }
+
+  PD.addEventListener('mouseover', function(e) {
+    if (!e.target || !e.target.closest) return;
+    var el = e.target.closest('[data-tip-key]') || e.target.closest('[data-tip-type]');
+    if (el === P._tipEl) return;
+    clearTimeout(P._tipHideT);
+    P._tipEl = el;
+    if (el) showPanel(el);
+    else hidePanel();
+  });
+
+  PD.addEventListener('mouseout', function(e) {
+    if (!e.target || !e.target.closest) return;
+    var el = e.target.closest('[data-tip-key]') || e.target.closest('[data-tip-type]');
+    if (!el) return;
+    if (e.relatedTarget && el.contains(e.relatedTarget)) return;
+    P._tipEl = null;
+    P._tipHideT = setTimeout(function() { if (!P._tipEl) hidePanel(); }, 50);
+  });
+}
+
 // ── MutationObserver: always replace so callback lives in current realm ────
 function runAll() {
   initTiltCards();
   initSlotScores();
   initConvDots();
+  initTooltips();
   // Boot scan triggered by a hidden span injected by Python on page nav
   var bt = PD.getElementById('x-boot-trigger');
   if (bt) { bt.parentNode && bt.parentNode.removeChild(bt); P._bootFired = false; }
@@ -1129,6 +1331,10 @@ def _top3_card(rank: int, row: pd.Series) -> str:
     conviction = int(row.get("conviction", 0) or 0)
     streak     = int(row.get("streak_consecutive", 0) or 0)
     es         = str(row.get("entry_signal", "") or "")
+    reasoning  = str(row.get("news_reasoning", "") or "")
+    thesis     = str(row.get("thesis_consistency", "") or "")
+    duration   = str(row.get("duration", "") or "")
+    cat_card   = str(row.get("catalyst", "") or "")
 
     rank_str = f"0{rank}" if rank < 10 else str(rank)
 
@@ -1143,13 +1349,21 @@ def _top3_card(rank: int, row: pd.Series) -> str:
     conv_dots = "".join(_dot(i) for i in range(1, 11))
 
     _sig_map = {
-        "confirm_entry": ("CONFIRM", "sig-confirm"),
-        "wait":          ("WAIT",    "sig-wait"),
-        "avoid":         ("AVOID",   "sig-avoid"),
+        "confirm_entry": ("CONFIRM", "sig-confirm", "confirm"),
+        "wait":          ("WAIT",    "sig-wait",    "wait"),
+        "avoid":         ("AVOID",   "sig-avoid",   "avoid"),
     }
     if es in _sig_map:
-        sig_label, sig_cls = _sig_map[es]
-        signal_html = f'<span class="{sig_cls}">{sig_label}</span>'
+        sig_label, sig_cls, tip_type = _sig_map[es]
+        inner_badge = f'<span class="{sig_cls}">{sig_label}</span>'
+        signal_html = (
+            f'<span class="sig-tip-wrap" data-tip-type="{tip_type}"'
+            f' data-tip-reasoning="{_html.escape(reasoning)}"'
+            f' data-tip-catalyst="{_html.escape(cat_card)}"'
+            f' data-tip-thesis="{_html.escape(thesis)}"'
+            f' data-tip-duration="{_html.escape(duration)}">'
+            f'{inner_badge}</span>'
+        )
     else:
         signal_html = ""
 
@@ -1197,11 +1411,11 @@ def _top3_card(rank: int, row: pd.Series) -> str:
   </div>
   <div style="display:flex;gap:18px;margin-bottom:14px">
     <div>
-      <div style="font-family:var(--mono);font-size:0.56rem;color:var(--muted);letter-spacing:0.07em">MOM 12-1</div>
+      <div style="font-family:var(--mono);font-size:0.56rem;color:var(--muted);letter-spacing:0.07em"><span class="th-tip" data-tip-key="mom">MOM 12-1</span></div>
       <div style="font-family:var(--mono);font-size:0.85rem;font-weight:600;color:{_pct_color(mom)}">{_fmt_pct(mom)}</div>
     </div>
     <div>
-      <div style="font-family:var(--mono);font-size:0.56rem;color:var(--muted);letter-spacing:0.07em">RS 6M</div>
+      <div style="font-family:var(--mono);font-size:0.56rem;color:var(--muted);letter-spacing:0.07em"><span class="th-tip" data-tip-key="rs">RS 6M</span></div>
       <div style="font-family:var(--mono);font-size:0.85rem;font-weight:600;color:{_pct_color(rs)}">{_fmt_pct(rs)}</div>
     </div>
     <div>
@@ -1243,6 +1457,9 @@ def _screener_html_table(df: pd.DataFrame) -> str:
         streak    = int(row.get("streak_consecutive", 0) or 0)
         es        = str(row.get("entry_signal", "") or "")
         cat       = str(row.get("catalyst", "") or "")
+        reasoning = str(row.get("news_reasoning", "") or "")
+        thesis    = str(row.get("thesis_consistency", "") or "")
+        duration  = str(row.get("duration", "") or "")
         mom       = row.get("mom_12_1", float("nan"))
         rs        = row.get("rs_6m", float("nan"))
         price     = row.get("price")
@@ -1252,7 +1469,20 @@ def _screener_html_table(df: pd.DataFrame) -> str:
             if pd.isna(v): return "var(--muted)"
             return "var(--bull)" if v > 0 else "var(--bear)"
 
-        sig_html    = _sig_badge.get(es, '<span style="color:var(--dim)">—</span>')
+        _tip_type_map = {"confirm_entry": "confirm", "wait": "wait", "avoid": "avoid"}
+        if es in _sig_badge:
+            _inner = _sig_badge[es]
+            _ttype = _tip_type_map.get(es, "")
+            sig_html = (
+                f'<span class="sig-tip-wrap" data-tip-type="{_ttype}"'
+                f' data-tip-reasoning="{_html.escape(reasoning)}"'
+                f' data-tip-catalyst="{_html.escape(cat)}"'
+                f' data-tip-thesis="{_html.escape(thesis)}"'
+                f' data-tip-duration="{_html.escape(duration)}">'
+                f'{_inner}</span>'
+            )
+        else:
+            sig_html = '<span style="color:var(--dim)">—</span>'
         cat_html    = _cat_badge.get(cat, '<span style="color:var(--dim)">—</span>')
         streak_html = (f'<span style="color:var(--accent);font-family:var(--mono);font-size:0.72rem">{streak}d</span>'
                        if streak >= 2 else '<span style="color:var(--dim)">—</span>')
@@ -1288,8 +1518,14 @@ def _screener_html_table(df: pd.DataFrame) -> str:
 <table class="q-table">
   <thead><tr>
     <th>#</th><th>TICKER</th><th>NAME</th><th>SECTOR</th>
-    <th>SCORE</th><th>CONV</th><th>STREAK</th><th>SIGNAL</th>
-    <th>CAT</th><th>MOM 12-1</th><th>RS 6M</th><th>PRICE</th><th>MCAP</th>
+    <th><span class="th-tip" data-tip-key="score">SCORE</span></th>
+    <th><span class="th-tip" data-tip-key="conv">CONV</span></th>
+    <th><span class="th-tip" data-tip-key="streak">STREAK</span></th>
+    <th><span class="th-tip" data-tip-key="signal">SIGNAL</span></th>
+    <th><span class="th-tip" data-tip-key="cat">CAT</span></th>
+    <th><span class="th-tip" data-tip-key="mom">MOM 12-1</span></th>
+    <th><span class="th-tip" data-tip-key="rs">RS 6M</span></th>
+    <th>PRICE</th><th>MCAP</th>
   </tr></thead>
   <tbody>{"".join(rows)}</tbody>
 </table>
