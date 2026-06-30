@@ -19,8 +19,7 @@ POSITIONS_FILE = SCREENER_DIR / "positions.json"
 DOWNLOAD_DIR   = SCREENER_DIR / "data" / "fidelity"
 LOGIN_TIMEOUT  = 180_000  # ms — 3 minutes to log in + 2FA
 
-FIDELITY_LOGIN     = "https://login.fidelity.com/ftgw/Fidelity/RtlCust/Login/Init"
-FIDELITY_PORTFOLIO = "https://digital.fidelity.com/ftgw/digital/portfolio/positions"
+FIDELITY_LOGIN = "https://login.fidelity.com/ftgw/Fidelity/RtlCust/Login/Init"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -105,7 +104,7 @@ async def run_sync() -> None:
     _notify("Fidelity Sync", "Log in to Fidelity — positions will sync automatically")
 
     async with async_playwright() as pw:
-        # Prefer installed Chrome; fall back to bundled Chromium
+        # Prefer system Chrome (keeps user's profile); fall back to Chromium
         try:
             browser = await pw.chromium.launch(
                 headless=False,
@@ -118,56 +117,103 @@ async def run_sync() -> None:
                 args=["--start-maximized"],
             )
 
-        ctx = await browser.new_context(
-            accept_downloads=True,
-            viewport=None,
-        )
+        ctx = await browser.new_context(accept_downloads=True, viewport=None)
         page = await ctx.new_page()
+
+        # Intercept CSV responses anywhere on the page so we don't have to
+        # find the exact download button — just let the browser handle it
+        intercepted_csv: list[str] = []
+
+        async def _intercept(response) -> None:
+            ct = response.headers.get("content-type", "")
+            if "csv" in ct or "text/plain" in ct or "octet-stream" in ct:
+                try:
+                    text = await response.text()
+                    if "Symbol" in text and "Quantity" in text:
+                        intercepted_csv.append(text)
+                        print(f"Intercepted CSV from {response.url}", flush=True)
+                except Exception:
+                    pass
+
+        page.on("response", _intercept)
 
         # ── Step 1: open login page ───────────────────────────────────────────
         await page.goto(FIDELITY_LOGIN, wait_until="domcontentloaded")
-        print("Waiting for login...", flush=True)
+        print("Waiting for you to log in…", flush=True)
 
-        # ── Step 2: wait for post-login URL ──────────────────────────────────
-        def _is_logged_in(url: str) -> bool:
-            return (
-                "digital.fidelity.com" in url
-                or ("fidelity.com" in url and any(
-                    k in url for k in ["portfolio", "summary", "oltx", "mymoney", "accounts"]
-                ))
+        # ── Step 2: wait for fully authenticated portfolio page ───────────────
+        # Only match FINAL post-login destination; exclude auth/redirect URLs
+        def _is_authenticated(url: str) -> bool:
+            if any(x in url for x in ["login", "user-identity", "authentication", "mfa", "2fa", "challenge"]):
+                return False
+            return "digital.fidelity.com" in url and any(
+                k in url for k in ["/portfolio", "/summary", "/oltx", "/mymoney", "/accounts"]
             )
 
         try:
-            await page.wait_for_url(_is_logged_in, timeout=LOGIN_TIMEOUT)
+            await page.wait_for_url(_is_authenticated, timeout=LOGIN_TIMEOUT)
+            # Extra settle time — let the SPA fully boot before we do anything
+            await page.wait_for_timeout(4_000)
         except PWTimeout:
             _notify("Fidelity Sync", "Login timed out — using last known positions")
             await browser.close()
             sys.exit(0)
 
-        _notify("Fidelity Sync", "Logged in — downloading positions…")
-        print("Login detected, navigating to positions page…", flush=True)
+        _notify("Fidelity Sync", "Logged in — looking for Positions…")
+        print(f"Authenticated. Current URL: {page.url}", flush=True)
 
-        # ── Step 3: navigate to positions ─────────────────────────────────────
-        await page.goto(FIDELITY_PORTFOLIO, wait_until="networkidle", timeout=30_000)
-        await page.wait_for_timeout(3_000)  # let SPA render
+        # ── Step 3: navigate to Positions tab without a hardcoded goto URL ────
+        # Click "Positions" nav link if not already there; avoid goto() which
+        # sends a bare HTTP request that gets S3 Access Denied without cookies
+        if "positions" not in page.url.lower():
+            for sel in [
+                "a:has-text('Positions')",
+                "li:has-text('Positions') a",
+                "[data-testid*='positions' i]",
+                "button:has-text('Positions')",
+            ]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=3_000):
+                        await el.click()
+                        await page.wait_for_timeout(4_000)
+                        print(f"Clicked Positions via: {sel}", flush=True)
+                        break
+                except Exception:
+                    continue
 
-        # ── Step 4: download CSV ──────────────────────────────────────────────
+        # ── Step 4: take diagnostic screenshot AFTER reaching positions ────────
+        diag_dir = DOWNLOAD_DIR / "diag"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        await page.screenshot(path=str(diag_dir / "positions_page.png"), full_page=True)
+        btns = await page.evaluate("""() => {
+            const els = document.querySelectorAll('button, a, [role=button]');
+            return Array.from(els).map(e => ({
+                tag: e.tagName,
+                text: (e.innerText||'').trim().slice(0,80),
+                ariaLabel: e.getAttribute('aria-label')||'',
+                id: e.id||'',
+                href: e.href||'',
+            })).filter(e => e.text||e.ariaLabel);
+        }""")
+        import json as _json
+        (diag_dir / "buttons.json").write_text(_json.dumps(btns, indent=2))
+        print(f"Diagnostic: {len(btns)} elements, screenshot saved", flush=True)
+
+        # ── Step 5: click Download button ────────────────────────────────────
         csv_content = None
         download_path = DOWNLOAD_DIR / f"fidelity_positions_{today}.csv"
 
-        # Try clicking the Download button and catching the file download
-        download_selectors = [
+        for sel in [
             "button:has-text('Download')",
             "a:has-text('Download')",
             "button[aria-label*='Download' i]",
+            "a[aria-label*='Download' i]",
             "[data-testid*='download' i]",
-            ".download-button",
             "button:has-text('Export')",
             "a:has-text('Export')",
-        ]
-
-        download_started = False
-        for sel in download_selectors:
+            "button:has-text('export')",
+        ]:
             try:
                 btn = page.locator(sel).first
                 if await btn.is_visible(timeout=2_000):
@@ -176,34 +222,22 @@ async def run_sync() -> None:
                     dl = await dl_info.value
                     await dl.save_as(str(download_path))
                     csv_content = download_path.read_text()
-                    download_started = True
                     print(f"Downloaded via selector: {sel}", flush=True)
                     break
             except Exception:
                 continue
 
-        # Fallback: try Fidelity's positions download endpoint directly
-        if not download_started:
-            for url in [
-                "https://www.fidelity.com/ftgw/fbc/oftop/portfolio/positions/download",
-                "https://digital.fidelity.com/ftgw/digital/portfolio/positions/download",
-            ]:
-                try:
-                    async with page.expect_download(timeout=10_000) as dl_info:
-                        await page.goto(url)
-                    dl = await dl_info.value
-                    await dl.save_as(str(download_path))
-                    csv_content = download_path.read_text()
-                    print(f"Downloaded via direct URL: {url}", flush=True)
-                    break
-                except Exception:
-                    continue
+        # Fallback: use whatever the response interceptor caught
+        if not csv_content and intercepted_csv:
+            csv_content = intercepted_csv[-1]
+            download_path.write_text(csv_content)
+            print("Used intercepted CSV response", flush=True)
 
         await browser.close()
 
         if not csv_content:
-            _notify("Fidelity Sync", "Could not find download button — check Fidelity page layout")
-            print("ERROR: no CSV downloaded", flush=True)
+            _notify("Fidelity Sync", "Could not download CSV — see data/fidelity/diag/")
+            print("ERROR: no CSV. Check data/fidelity/diag/positions_page.png and buttons.json", flush=True)
             sys.exit(1)
 
         # ── Step 5: parse CSV ─────────────────────────────────────────────────
