@@ -311,8 +311,8 @@ a:hover { text-decoration: underline !important; }
 
 /* Table row stagger slide-in */
 @keyframes rowReveal {
-  from { opacity: 0; transform: translateX(-6px); }
-  to   { opacity: 1; transform: translateX(0); }
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* Conviction dot pop */
@@ -498,26 +498,10 @@ a:hover { text-decoration: underline !important; }
 }
 .q-table tbody tr {
   background: var(--surface-1);
-  position: relative;
   animation: rowReveal 0.3s ease-out both;
 }
 .q-table tbody tr:nth-child(even) { background: var(--surface-2); }
-.q-table tbody tr:hover td { background: rgba(245,158,11,0.04); color: var(--text); }
-.q-table tbody tr { overflow: hidden; }
-.q-table tbody tr::before {
-  content: '';
-  position: absolute;
-  top: 0; bottom: 0;
-  width: 60px;
-  background: linear-gradient(90deg, transparent, rgba(245,158,11,0.18), transparent);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0s;
-}
-.q-table tbody tr:hover::before {
-  opacity: 1;
-  animation: rowScan 0.22s ease-out forwards;
-}
+.q-table tbody tr:hover td { background: rgba(245,158,11,0.06); color: var(--text); }
 .q-table .mono  { font-family: var(--mono); }
 .q-table .dim   { color: var(--muted); font-size: 0.7rem; }
 .q-table .rank  { color: var(--dim); font-size: 0.65rem; letter-spacing: 0.04em; }
