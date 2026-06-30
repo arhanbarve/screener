@@ -226,7 +226,7 @@ Return ONLY JSON:
   "duration": "noise|days|weeks",
   "thesis_consistency": "confirms|neutral|contradicts",
   "conviction_delta": 0,
-  "reasoning": "1 sentence naming a specific screener factor"
+  "reasoning": "2-3 plain-English sentences: what the news actually says, why it matters for this stock right now, and what specific risk or opportunity it creates. Be specific and nuanced but avoid finance jargon — write for a smart investor who does not speak Wall Street."
 }}"""
 
     try:

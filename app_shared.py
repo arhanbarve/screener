@@ -3,6 +3,20 @@ import json
 import math
 import re
 import sys
+
+
+def _nans(v) -> str:
+    """NaN-safe string coerce — returns '' for None, NaN, 'nan', 'None'."""
+    if v is None:
+        return ""
+    try:
+        import math as _m
+        if isinstance(v, float) and _m.isnan(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    s = str(v)
+    return "" if s in ("nan", "None", "none", "NaN") else s
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -1013,20 +1027,29 @@ function _escHtml(s) {
 }
 
 function initTooltips() {
-  var panel = PD.getElementById('tip-panel');
-  if (!panel) {
-    panel = PD.createElement('div');
-    panel.id = 'tip-panel';
-    PD.body.appendChild(panel);
+  // Always ensure panel exists in PD.body (may have been removed by Streamlit nav)
+  if (!PD.getElementById('tip-panel')) {
+    var _tp = PD.createElement('div');
+    _tp.id = 'tip-panel';
+    PD.body.appendChild(_tp);
   }
-  if (P._tipListenersActive) return;
-  P._tipListenersActive = true;
+
+  // Follow existing pattern: remove stale listeners from dead realm, add fresh ones
+  if (P._tipMouseover) PD.removeEventListener('mouseover', P._tipMouseover);
+  if (P._tipMouseout)  PD.removeEventListener('mouseout',  P._tipMouseout);
 
   var _SIG_COLORS = {
     confirm: { fg: '#22c55e', bg: 'rgba(34,197,94,0.10)', label: 'CONFIRM ENTRY' },
     wait:    { fg: '#f59e0b', bg: 'rgba(245,158,11,0.10)', label: 'WAIT' },
     avoid:   { fg: '#ef4444', bg: 'rgba(239,68,68,0.10)', label: 'AVOID' }
   };
+
+  // Always look up panel dynamically — captured ref becomes stale after Streamlit nav
+  function _panel() {
+    var p = PD.getElementById('tip-panel');
+    if (!p) { p = PD.createElement('div'); p.id = 'tip-panel'; PD.body.appendChild(p); }
+    return p;
+  }
 
   function showPanel(el) {
     var key  = el.getAttribute('data-tip-key');
@@ -1048,16 +1071,17 @@ function initTooltips() {
       if (reasoning) {
         html += '<div class="tip-reasoning" style="background:' + c.bg + ';border:1px solid ' + c.fg + '44;color:' + c.fg + '">' + _escHtml(reasoning) + '</div>';
       } else {
-        html += '<div class="tip-body" style="color:' + c.fg + '99">No news reasoning available.</div>';
+        html += '<div class="tip-body" style="color:' + c.fg + '99">No news analysis for this stock.</div>';
       }
       var meta = [];
-      if (catalyst && catalyst !== 'nan' && catalyst !== '')  meta.push('<b>CAT</b> ' + _escHtml(catalyst.replace(/_/g,' ').toUpperCase()));
-      if (thesis && thesis !== 'nan' && thesis !== '')        meta.push('<b>THESIS</b> ' + _escHtml(thesis));
-      if (duration && duration !== 'nan' && duration !== '' && duration !== 'noise') meta.push('<b>IMPACT</b> ' + _escHtml(duration));
+      if (catalyst && catalyst !== '')  meta.push('<b>CAT</b> ' + _escHtml(catalyst.replace(/_/g,' ').toUpperCase()));
+      if (thesis && thesis !== '')      meta.push('<b>THESIS</b> ' + _escHtml(thesis));
+      if (duration && duration !== '' && duration !== 'noise') meta.push('<b>IMPACT</b> ' + _escHtml(duration));
       if (meta.length) html += '<div class="tip-meta">' + meta.join(' &nbsp;·&nbsp; ') + '</div>';
     }
 
     if (!html) return;
+    var panel = _panel();
     panel.innerHTML = html;
 
     var r  = el.getBoundingClientRect();
@@ -1083,11 +1107,12 @@ function initTooltips() {
   }
 
   function hidePanel() {
+    var panel = _panel();
     panel.classList.remove('tip-visible');
     setTimeout(function() { if (!P._tipEl) panel.innerHTML = ''; }, 200);
   }
 
-  PD.addEventListener('mouseover', function(e) {
+  P._tipMouseover = function(e) {
     if (!e.target || !e.target.closest) return;
     var el = e.target.closest('[data-tip-key]') || e.target.closest('[data-tip-type]');
     if (el === P._tipEl) return;
@@ -1095,16 +1120,19 @@ function initTooltips() {
     P._tipEl = el;
     if (el) showPanel(el);
     else hidePanel();
-  });
+  };
 
-  PD.addEventListener('mouseout', function(e) {
+  P._tipMouseout = function(e) {
     if (!e.target || !e.target.closest) return;
     var el = e.target.closest('[data-tip-key]') || e.target.closest('[data-tip-type]');
     if (!el) return;
     if (e.relatedTarget && el.contains(e.relatedTarget)) return;
     P._tipEl = null;
     P._tipHideT = setTimeout(function() { if (!P._tipEl) hidePanel(); }, 50);
-  });
+  };
+
+  PD.addEventListener('mouseover', P._tipMouseover);
+  PD.addEventListener('mouseout',  P._tipMouseout);
 }
 
 // ── MutationObserver: always replace so callback lives in current realm ────
@@ -1331,10 +1359,10 @@ def _top3_card(rank: int, row: pd.Series) -> str:
     conviction = int(row.get("conviction", 0) or 0)
     streak     = int(row.get("streak_consecutive", 0) or 0)
     es         = str(row.get("entry_signal", "") or "")
-    reasoning  = str(row.get("news_reasoning", "") or "")
-    thesis     = str(row.get("thesis_consistency", "") or "")
-    duration   = str(row.get("duration", "") or "")
-    cat_card   = str(row.get("catalyst", "") or "")
+    reasoning  = _nans(row.get("news_reasoning"))
+    thesis     = _nans(row.get("thesis_consistency"))
+    duration   = _nans(row.get("duration"))
+    cat_card   = _nans(row.get("catalyst"))
 
     rank_str = f"0{rank}" if rank < 10 else str(rank)
 
@@ -1457,9 +1485,9 @@ def _screener_html_table(df: pd.DataFrame) -> str:
         streak    = int(row.get("streak_consecutive", 0) or 0)
         es        = str(row.get("entry_signal", "") or "")
         cat       = str(row.get("catalyst", "") or "")
-        reasoning = str(row.get("news_reasoning", "") or "")
-        thesis    = str(row.get("thesis_consistency", "") or "")
-        duration  = str(row.get("duration", "") or "")
+        reasoning = _nans(row.get("news_reasoning"))
+        thesis    = _nans(row.get("thesis_consistency"))
+        duration  = _nans(row.get("duration"))
         mom       = row.get("mom_12_1", float("nan"))
         rs        = row.get("rs_6m", float("nan"))
         price     = row.get("price")
