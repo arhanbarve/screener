@@ -11,13 +11,14 @@ import json
 import os
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
-SCREENER_DIR = Path(__file__).parent.parent
-POSITIONS_FILE = SCREENER_DIR / "positions.json"
-DOWNLOAD_DIR   = SCREENER_DIR / "data" / "fidelity"
-LOGIN_TIMEOUT  = 180_000  # ms — 3 minutes to log in + 2FA
+SCREENER_DIR       = Path(__file__).parent.parent
+POSITIONS_FILE     = SCREENER_DIR / "positions.json"
+FIDELITY_DATA_FILE = SCREENER_DIR / "data" / "fidelity" / "positions_data.json"
+DOWNLOAD_DIR       = SCREENER_DIR / "data" / "fidelity"
+LOGIN_TIMEOUT      = 180_000  # ms — 3 minutes to log in + 2FA
 
 FIDELITY_LOGIN = "https://login.fidelity.com/ftgw/Fidelity/RtlCust/Login/Init"
 
@@ -44,12 +45,20 @@ def _save_positions(positions: list[dict]) -> None:
     os.replace(tmp, POSITIONS_FILE)
 
 
+def _n(s: str) -> float:
+    """Strip currency/sign/percent chars and return float. Handles '62062.06 / BTC'."""
+    s = (s or "").replace("$", "").replace(",", "").replace("+", "").replace("%", "").strip()
+    s = s.split("/")[0].strip()
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
 def _parse_fidelity_csv(content: str) -> list[dict]:
     """
-    Parse Fidelity positions CSV export.
-
-    Fidelity prepends account-info rows before the actual table headers.
-    We scan for the row that contains 'Symbol' to find the real header.
+    Parse Fidelity positions CSV — returns rich dicts with all available fields.
+    Skips cash, money-market, and crypto rows.
     """
     lines = content.splitlines()
     header_idx = None
@@ -65,32 +74,49 @@ def _parse_fidelity_csv(content: str) -> list[dict]:
     reader = csv.DictReader(lines[header_idx:])
     for row in reader:
         symbol = (row.get("Symbol") or "").strip().upper()
-        if not symbol or symbol.startswith("--") or not symbol.replace(".", "").isalpha():
+        if not symbol or symbol.startswith("--"):
             continue
-        # Skip cash / money market positions
-        if any(x in symbol for x in ["FCASH", "FDRXX", "SPAXX", "FZFXX", "FDIC", "PENDING"]):
+        # Skip cash / money market / crypto
+        if any(x in symbol for x in ["FCASH", "FDRXX", "SPAXX", "FZFXX", "FDIC", "PENDING",
+                                       "USD***", "BTC/", "ETH/", "USDC"]):
+            continue
+        if not symbol.replace(".", "").isalpha():
             continue
 
-        try:
-            qty = float((row.get("Quantity") or "0").replace(",", "").replace("$", "") or "0")
-        except ValueError:
-            qty = 0.0
+        qty = _n(row.get("Quantity") or "0")
         if qty <= 0:
             continue
 
-        raw_cost = (
-            row.get("Average Cost Basis")
-            or row.get("Cost Basis Per Share")
-            or "0"
-        ).replace(",", "").replace("$", "").strip()
-        try:
-            avg_cost = float(raw_cost or "0")
-        except ValueError:
-            avg_cost = 0.0
-
-        holdings.append({"ticker": symbol, "avg_cost": avg_cost, "quantity": qty})
+        holdings.append({
+            "ticker":          symbol,
+            "description":     (row.get("Description") or "").strip(),
+            "account":         (row.get("Account Number") or "").strip(),
+            "account_name":    (row.get("Account Name") or "").strip(),
+            "quantity":        qty,
+            "last_price":      _n(row.get("Last Price")),
+            "last_price_chg":  _n(row.get("Last Price Change")),
+            "current_value":   _n(row.get("Current Value")),
+            "today_gl_dollar": _n(row.get("Today's Gain/Loss Dollar")),
+            "today_gl_pct":    _n(row.get("Today's Gain/Loss Percent")) / 100,
+            "total_gl_dollar": _n(row.get("Total Gain/Loss Dollar")),
+            "total_gl_pct":    _n(row.get("Total Gain/Loss Percent")) / 100,
+            "pct_of_account":  _n(row.get("Percent Of Account")) / 100,
+            "cost_basis_total":_n(row.get("Cost Basis Total")),
+            "avg_cost":        _n(row.get("Average Cost Basis")),
+        })
 
     return holdings
+
+
+def _save_fidelity_data(holdings: list[dict]) -> None:
+    FIDELITY_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "synced_at": datetime.now().isoformat(timespec="minutes"),
+        "positions": holdings,
+    }
+    tmp = FIDELITY_DATA_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, FIDELITY_DATA_FILE)
 
 
 # ── main async workflow ───────────────────────────────────────────────────────
@@ -289,6 +315,9 @@ async def run_sync() -> None:
             sys.exit(0)
 
         print(f"Parsed {len(holdings)} holdings from Fidelity", flush=True)
+
+        # Save rich data for the UI to read
+        _save_fidelity_data(holdings)
 
         # ── Step 6: merge into positions.json ────────────────────────────────
         fidelity_tickers  = {h["ticker"] for h in holdings}

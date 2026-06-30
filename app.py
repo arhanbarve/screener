@@ -951,12 +951,10 @@ def _inject_js_animations() -> None:
 
 
 from src.positions import (
-    add_position,
     compute_exit_signals,
     fetch_ohlcv,
     get_current_price,
     load_positions,
-    remove_position,
 )
 from src.spy_analysis import compute_spy_regime
 from src.news import (
@@ -1665,29 +1663,75 @@ def _signal_badge(label: str, triggered: bool | None, val: float | None = None) 
     )
 
 
-def _render_position_card(pos: dict) -> None:
-    ticker      = pos["ticker"]
-    entry_price = pos["entry_price"]
-    entry_date  = pos["entry_date"]
-    signals, current_price = _cached_position_data(ticker)
-    score = signals.get("score", 0)
+def _load_fidelity_data() -> tuple[list[dict], str]:
+    """Load rich Fidelity positions data. Returns (positions, synced_at_str)."""
+    p = Path("data/fidelity/positions_data.json")
+    if not p.exists():
+        return [], ""
+    try:
+        raw = json.loads(p.read_text())
+        return raw.get("positions", []), raw.get("synced_at", "")
+    except Exception:
+        return [], ""
 
-    ticker_safe     = _html.escape(ticker)
-    entry_date_safe = _html.escape(str(entry_date))
 
+def _fmt_gl(dollar: float, pct: float) -> str:
+    sign = "+" if dollar >= 0 else ""
+    return f"{sign}${dollar:,.2f} ({sign}{pct:.1%})"
+
+
+def _render_position_card(pos: dict, fid: dict | None) -> None:
+    ticker  = pos["ticker"]
+    signals, _ = _cached_position_data(ticker)
+    score   = signals.get("score", 0)
+
+    entry_price = pos.get("entry_price", 0)
+    entry_date  = pos.get("entry_date", "")
     try:
         held_days = (date.today() - datetime.strptime(entry_date, "%Y-%m-%d").date()).days
     except Exception:
         held_days = "?"
 
-    if current_price and entry_price:
-        pnl       = (current_price - entry_price) / entry_price
-        pnl_str   = f"+{pnl:.1%}" if pnl >= 0 else f"{pnl:.1%}"
-        pnl_color = "var(--bull)" if pnl >= 0 else "var(--bear)"
+    # Prefer Fidelity live data; fall back to yfinance price
+    if fid:
+        last_price     = fid["last_price"]
+        current_value  = fid["current_value"]
+        today_gl_d     = fid["today_gl_dollar"]
+        today_gl_p     = fid["today_gl_pct"]
+        total_gl_d     = fid["total_gl_dollar"]
+        total_gl_p     = fid["total_gl_pct"]
+        qty            = fid["quantity"]
+        avg_cost       = fid["avg_cost"]
+        pct_acct       = fid["pct_of_account"]
+        desc           = fid.get("description", "")
+        price_str      = f"${last_price:,.2f}"
+        total_pnl_color = "var(--bull)" if total_gl_d >= 0 else "var(--bear)"
+        total_pnl_str   = f"+{total_gl_p:.1%}" if total_gl_d >= 0 else f"{total_gl_p:.1%}"
+        today_color     = "var(--bull)" if today_gl_d >= 0 else "var(--bear)"
+        today_str       = _fmt_gl(today_gl_d, today_gl_p)
+        total_str       = _fmt_gl(total_gl_d, total_gl_p)
+        meta_row = (
+            f'{qty:g} shares · ${avg_cost:,.2f} avg cost · '
+            f'${current_value:,.2f} value · {pct_acct:.1%} of acct'
+        )
+        gl_row = (
+            f'<span style="color:{today_color}">Today {today_str}</span>'
+            f'<span style="color:var(--muted)"> · </span>'
+            f'<span style="color:{total_pnl_color}">Total {total_str}</span>'
+        )
+        desc_html = f'<div style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);margin-top:1px">{_html.escape(desc)}</div>' if desc else ""
     else:
-        pnl_str, pnl_color = "—", "var(--muted)"
-
-    price_str = f"${current_price:,.2f}" if current_price else "—"
+        _, current_price = _cached_position_data(ticker)
+        price_str = f"${current_price:,.2f}" if current_price else "—"
+        if current_price and entry_price:
+            pnl = (current_price - entry_price) / entry_price
+            total_pnl_str   = f"+{pnl:.1%}" if pnl >= 0 else f"{pnl:.1%}"
+            total_pnl_color = "var(--bull)" if pnl >= 0 else "var(--bear)"
+        else:
+            total_pnl_str, total_pnl_color = "—", "var(--muted)"
+        meta_row = f"${entry_price:,.2f} avg cost" if entry_price else ""
+        gl_row   = ""
+        desc_html = ""
 
     top_c = "var(--bear)" if score >= 3 else ("var(--wait)" if score >= 1 else "var(--bull)")
 
@@ -1717,31 +1761,27 @@ def _render_position_card(pos: dict) -> None:
     card_html = f"""
 <div class="tilt-card" style="{card_s}">
   <div class="card-shine"></div>
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
     <div>
-      <div style="font-family:var(--mono);font-size:1.35rem;font-weight:700;color:var(--text)">{ticker_safe}</div>
-      <div style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);margin-top:3px;letter-spacing:0.04em">
-        {entry_date_safe} · {held_days}d held · ${entry_price:,.2f} entry
+      <div style="font-family:var(--mono);font-size:1.35rem;font-weight:700;color:var(--text)">{_html.escape(ticker)}</div>
+      {desc_html}
+      <div style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);margin-top:4px;letter-spacing:0.04em">
+        {_html.escape(entry_date)} · {held_days}d held
       </div>
     </div>
     <div style="text-align:right">
-      <div style="font-family:var(--mono);font-size:1.5rem;font-weight:700;color:{pnl_color}">{pnl_str}</div>
+      <div style="font-family:var(--mono);font-size:1.5rem;font-weight:700;color:{total_pnl_color}">{total_pnl_str}</div>
       <div style="font-family:var(--mono);font-size:0.62rem;color:var(--muted)">{price_str} now</div>
     </div>
   </div>
+  <div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);margin-bottom:6px">{_html.escape(meta_row)}</div>
+  <div style="font-family:var(--mono);font-size:0.6rem;margin-bottom:10px">{gl_row}</div>
   <div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);letter-spacing:0.09em;margin-bottom:8px">EXIT SIGNALS {score}/5</div>
   <div style="display:flex;flex-wrap:wrap;gap:6px">{badges}</div>
   {exit_html}
 </div>"""
 
-    col_card, col_btn = st.columns([11, 1])
-    with col_card:
-        st.markdown(card_html, unsafe_allow_html=True)
-    with col_btn:
-        st.markdown("<div style='margin-top:18px'></div>", unsafe_allow_html=True)
-        if st.button("✕", key=f"close_{ticker}", help=f"Close {ticker} position"):
-            remove_position(ticker)
-            st.rerun()
+    st.markdown(card_html, unsafe_allow_html=True)
 
 
 def _render_positions() -> None:
@@ -1751,34 +1791,23 @@ def _render_positions() -> None:
         unsafe_allow_html=True,
     )
 
-    with st.form("add_position_form", clear_on_submit=True):
-        c1, c2, c3 = st.columns([3, 3, 1])
-        with c1:
-            ticker_input = st.text_input("Ticker", placeholder="AAPL").strip().upper()
-        with c2:
-            entry_date_input = st.date_input("Entry date", value=date.today())
-        with c3:
-            st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-            submitted = st.form_submit_button("+ Add", use_container_width=True)
+    fid_positions, synced_at = _load_fidelity_data()
+    fid_by_ticker = {f["ticker"]: f for f in fid_positions}
 
-    if submitted:
-        if not ticker_input:
-            st.error("Ticker required")
-        else:
-            with st.spinner(f"Fetching {ticker_input} close price on {entry_date_input}…"):
-                try:
-                    price_used = add_position(ticker_input, str(entry_date_input))
-                    st.success(
-                        f"Added {ticker_input} — entry price ${price_used:,.2f} "
-                        f"(close on {entry_date_input})"
-                    )
-                    st.rerun()
-                except ValueError as e:
-                    st.error(str(e))
+    if synced_at:
+        try:
+            ts = datetime.fromisoformat(synced_at).strftime("%-I:%M %p")
+        except Exception:
+            ts = synced_at
+        st.markdown(
+            f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);'
+            f'margin-bottom:0.75rem">FIDELITY SYNC · {ts}</div>',
+            unsafe_allow_html=True,
+        )
 
     positions = load_positions()
     if not positions:
-        st.info("No open positions. Add one above.")
+        st.info("No positions synced yet — run Fidelity sync to populate.")
         return
 
     enriched = []
@@ -1789,11 +1818,33 @@ def _render_positions() -> None:
 
     exits = sum(1 for e in enriched if e["_score"] >= 3)
     exit_cls = "bear" if exits > 0 else ""
+
+    # Portfolio totals from Fidelity data
+    total_value   = sum(f["current_value"]  for f in fid_positions)
+    total_today   = sum(f["today_gl_dollar"] for f in fid_positions)
+    total_overall = sum(f["total_gl_dollar"] for f in fid_positions)
+    today_sign    = "+" if total_today >= 0 else ""
+    overall_sign  = "+" if total_overall >= 0 else ""
+    today_cls     = "bull" if total_today >= 0 else "bear"
+    overall_cls   = "bull" if total_overall >= 0 else "bear"
+
     st.markdown(f"""
 <div class="summary-strip">
   <div class="summary-cell">
     <div class="summary-label">POSITIONS</div>
     <div class="summary-value">{len(enriched)}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">PORTFOLIO VALUE</div>
+    <div class="summary-value">${total_value:,.0f}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">TODAY</div>
+    <div class="summary-value {today_cls}">{today_sign}${total_today:,.2f}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">TOTAL G/L</div>
+    <div class="summary-value {overall_cls}">{overall_sign}${total_overall:,.2f}</div>
   </div>
   <div class="summary-cell">
     <div class="summary-label">EXIT ALERTS</div>
@@ -1803,7 +1854,7 @@ def _render_positions() -> None:
 """, unsafe_allow_html=True)
 
     for pos in enriched:
-        _render_position_card(pos)
+        _render_position_card(pos, fid_by_ticker.get(pos["ticker"]))
 
 
 # ── Filing Edge page ─────────────────────────────────────────────────────────
