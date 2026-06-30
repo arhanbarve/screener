@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 import requests
@@ -15,6 +16,10 @@ from src.cache import (
     get_prices, put_prices, get_market_cap, get_market_cap_stale, put_market_cap,
     put_failed_ticker, is_failed_ticker,
 )
+
+
+_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+yf.set_tz_cache_location(_DATA_DIR)
 
 
 class _TimeoutAdapter(HTTPAdapter):
