@@ -104,20 +104,42 @@ async def run_sync() -> None:
     _notify("Fidelity Sync", "Log in to Fidelity — positions will sync automatically")
 
     async with async_playwright() as pw:
-        # Prefer system Chrome (keeps user's profile); fall back to Chromium
+        stealth_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--start-maximized",
+            "--no-first-run",
+            "--no-service-autorun",
+            "--password-store=basic",
+        ]
+        # Removing "--enable-automation" prevents Fidelity's bot detection from
+        # seeing the automation flag that Playwright injects by default.
         try:
             browser = await pw.chromium.launch(
                 headless=False,
                 channel="chrome",
-                args=["--start-maximized"],
+                args=stealth_args,
+                ignore_default_args=["--enable-automation"],
             )
         except Exception:
             browser = await pw.chromium.launch(
                 headless=False,
-                args=["--start-maximized"],
+                args=stealth_args,
+                ignore_default_args=["--enable-automation"],
             )
 
-        ctx = await browser.new_context(accept_downloads=True, viewport=None)
+        ctx = await browser.new_context(
+            accept_downloads=True,
+            viewport=None,
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/137.0.0.0 Safari/537.36"
+            ),
+        )
+        # Patch navigator.webdriver so JS-based bot detection sees undefined
+        await ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
         page = await ctx.new_page()
 
         # Intercept CSV responses anywhere on the page so we don't have to
@@ -162,25 +184,35 @@ async def run_sync() -> None:
         _notify("Fidelity Sync", "Logged in — looking for Positions…")
         print(f"Authenticated. Current URL: {page.url}", flush=True)
 
-        # ── Step 3: navigate to Positions tab without a hardcoded goto URL ────
-        # Click "Positions" nav link if not already there; avoid goto() which
-        # sends a bare HTTP request that gets S3 Access Denied without cookies
+        # ── Step 3: navigate to Positions page ───────────────────────────────
+        # We are authenticated — session cookies exist in this browser context,
+        # so page.goto() will carry them and NOT trigger S3 Access Denied.
+        POSITIONS_URL = "https://digital.fidelity.com/ftgw/digital/portfolio/positions"
         if "positions" not in page.url.lower():
+            # Try clicking the nav link first (cleanest SPA navigation)
+            clicked = False
             for sel in [
+                "a[href*='/portfolio/positions']",
                 "a:has-text('Positions')",
-                "li:has-text('Positions') a",
-                "[data-testid*='positions' i]",
-                "button:has-text('Positions')",
+                "a:has-text('Account Positions')",
             ]:
                 try:
                     el = page.locator(sel).first
                     if await el.is_visible(timeout=3_000):
                         await el.click()
-                        await page.wait_for_timeout(4_000)
-                        print(f"Clicked Positions via: {sel}", flush=True)
+                        await page.wait_for_timeout(6_000)
+                        print(f"Clicked Positions via: {sel}, now at: {page.url}", flush=True)
+                        clicked = True
                         break
                 except Exception:
                     continue
+
+            # Fallback: direct goto (works fine once authenticated)
+            if not clicked or "positions" not in page.url.lower():
+                print(f"Nav click failed or URL wrong ({page.url}), using goto", flush=True)
+                await page.goto(POSITIONS_URL, wait_until="load", timeout=30_000)
+                await page.wait_for_timeout(8_000)  # SPA render time
+                print(f"After goto: {page.url}", flush=True)
 
         # ── Step 4: take diagnostic screenshot AFTER reaching positions ────────
         diag_dir = DOWNLOAD_DIR / "diag"
@@ -200,19 +232,28 @@ async def run_sync() -> None:
         (diag_dir / "buttons.json").write_text(_json.dumps(btns, indent=2))
         print(f"Diagnostic: {len(btns)} elements, screenshot saved", flush=True)
 
-        # ── Step 5: click Download button ────────────────────────────────────
+        # ── Step 5: open kebab menu then click Download ───────────────────────
         csv_content = None
         download_path = DOWNLOAD_DIR / f"fidelity_positions_{today}.csv"
 
+        # The Download button lives inside the "Available Actions" kebab menu.
+        # Open it first, then click the menu item.
+        try:
+            kebab = page.locator("#button-984246106365, button:has-text('Available Actions')").first
+            if await kebab.is_visible(timeout=3_000):
+                await kebab.click()
+                await page.wait_for_timeout(1_000)
+                print("Opened Available Actions menu", flush=True)
+        except Exception as e:
+            print(f"Could not open kebab menu: {e}", flush=True)
+
         for sel in [
+            "#kebabmenuitem-download",
             "button:has-text('Download')",
             "a:has-text('Download')",
             "button[aria-label*='Download' i]",
-            "a[aria-label*='Download' i]",
             "[data-testid*='download' i]",
             "button:has-text('Export')",
-            "a:has-text('Export')",
-            "button:has-text('export')",
         ]:
             try:
                 btn = page.locator(sel).first
