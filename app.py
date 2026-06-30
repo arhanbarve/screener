@@ -2323,6 +2323,23 @@ def _find_todays_log() -> "Path | None":
     return manual[0] if manual else None
 
 
+def _find_todays_filing_log() -> "Path | None":
+    """Find filing-edge log: manual lazy_run log, or fall back to main log if it
+    has filing-edge markers (cron case where lazy_run runs in the same file)."""
+    today = date.today().strftime("%Y-%m-%d")
+    # Manual run writes to manual_lazy_run_{date}.log
+    manual = sorted(Path("logs").glob(f"manual_lazy_run_{today}*.log"), reverse=True)
+    if manual:
+        return manual[0]
+    # Cron case: filing edge appended to main log after screener finishes
+    main = _find_todays_log()
+    if main:
+        text = main.read_text(errors="replace")
+        if "Filing-edge run started:" in text:
+            return main
+    return None
+
+
 def _last_run_text(text: str) -> str:
     """Return only the portion of the log file belonging to the most recent run."""
     marker = "=== Screener run started:"
@@ -2643,7 +2660,18 @@ def _render_monitor():
         unsafe_allow_html=True,
     )
 
-    fs = _parse_filing_state(text)
+    fe_log_path = _find_todays_filing_log()
+    fe_text = ""
+    if fe_log_path:
+        raw_fe = fe_log_path.read_text(errors="replace")
+        # For main log: extract only the filing-edge portion
+        if fe_log_path == log_path:
+            idx = raw_fe.find("=== Filing-edge run started:")
+            fe_text = raw_fe[idx:] if idx != -1 else ""
+        else:
+            fe_text = raw_fe
+
+    fs = _parse_filing_state(fe_text)
     fstage = _filing_stage(fs)
 
     # Latest filing edge output freshness (independent of today's log)
@@ -2727,6 +2755,32 @@ def _render_monitor():
                 f'<span style="color:var(--border)"> · </span>'
                 f'<span style="color:var(--accent)">{fs["watch_n"]} watch</span>'
                 f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        # Live log tail for filing edge
+        if fe_text:
+            st.markdown(
+                '<div style="font-family:var(--mono);font-size:0.6rem;font-weight:700;'
+                'letter-spacing:0.1em;color:var(--muted);margin:0.8rem 0 0.4rem">FILING LOG TAIL</div>',
+                unsafe_allow_html=True,
+            )
+            fe_lines = [l for l in fe_text.splitlines() if l.strip()][-8:]
+            fe_colored = []
+            for ln in fe_lines:
+                if " ERROR " in ln or " WARNING " in ln:
+                    c = "var(--bear)"
+                elif " INFO " in ln:
+                    c = "var(--text)"
+                else:
+                    c = "var(--accent)"
+                fe_colored.append(f'<span style="color:{c}">{_html.escape(ln)}</span>')
+            st.markdown(
+                f'<pre style="font-family:var(--mono);font-size:0.6rem;line-height:1.6;'
+                f'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);'
+                f'padding:0.8rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all;margin:0;'
+                f'animation:log-refresh 0.6s ease-out">'
+                f'{"<br>".join(fe_colored)}</pre>',
                 unsafe_allow_html=True,
             )
 
