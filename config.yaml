@@ -76,14 +76,30 @@ lazy_prices:
   max_market_cap: 2000000000    # $2B ceiling (below institutional capacity threshold)
   min_avg_dollar_vol_20d: 200000 # $200K tradeable floor (risk control)
   # Filing similarity
-  similarity_threshold: 0.85   # below this → trigger Claude change-characterization (Phase 3)
+  similarity_threshold: 0.85   # below this → trigger Claude change-characterization
   filing_form: "10-K"
+  filing_forms: ["10-K", "10-Q"]  # run both; annual + latest quarter (recency)
   filing_ttl_hours: 24
+  # Text-similarity engine
+  use_stopwords: true          # drop common English stopwords before cosine (widen dynamic range)
+  jaccard_blend: 0.5           # section sim = blend*bigram_jaccard + (1-blend)*cosine
+  # Parse-failure guard: a section similarity is treated as an extraction failure
+  # (and ignored, falling back to doc-level sim) when the section sim is implausibly
+  # low while the whole-document sim is near-identical.
+  parse_fail_section_sim: 0.30
+  parse_fail_doc_floor: 0.98
+  # Filing recency: the "Lazy Prices" drift is an event signal anchored to filing date.
+  max_filing_age_days: 120     # names filed longer ago than this are excluded from longs
+  recency_halflife_days: 90    # exponential decay applied to composite as the filing ages
+  # 8-K veto
+  enable_8k_classifier: true   # scan recent 8-K items for material negative events
+  eight_k_lookback_days: 180
   # Standalone composite weights (must sum to 1.0)
   weights:
-    text_stability: 0.55   # primary "Lazy Prices" signal
-    gp_assets: 0.25        # quality gate (avoid value traps)
-    neglect_score: 0.20    # tilt toward less-covered names
+    text_stability: 0.50   # primary "Lazy Prices" signal
+    gp_assets: 0.20        # quality gate (avoid value traps)
+    neglect_score: 0.15    # tilt toward less-covered names
+    risk_growth: 0.15      # penalize risk-section word-count GROWTH (added risks = bearish)
   winsorize_pct: 0.02
   min_factor_coverage: 0.30
   # Output

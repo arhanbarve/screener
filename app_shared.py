@@ -3430,3 +3430,61 @@ def _render_monitor():
         f'<div style="display:flex;gap:6px">{"".join(cells_conf)}</div>',
         unsafe_allow_html=True,
     )
+
+    # ── Filing red flags (veto overlay) ───────────────────────────────────────
+    st.markdown('<div style="height:1.2rem"></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.65rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.8rem">FILING RED FLAGS</div>',
+        unsafe_allow_html=True,
+    )
+    try:
+        from src.filing_veto import build_veto_report
+
+        veto = build_veto_report()
+        if veto.empty:
+            st.markdown(
+                '<div style="font-family:var(--mono);font-size:0.8rem;color:var(--muted)">'
+                '— NO FILING CONFLICTS</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            veto_cells = []
+            for _, vr in veto.iterrows():
+                held = bool(vr.get("in_positions"))
+                badge_label = "HELD" if held else "SCREENED"
+                badge_color = "var(--bear)" if held else "var(--accent)"
+                stab = vr.get("text_stability")
+                try:
+                    stab_str = f"{float(stab):.3f}"
+                except (TypeError, ValueError):
+                    stab_str = "—"
+                reason = vr.get("change_reason")
+                if reason is None or (isinstance(reason, float)) or str(reason).strip() in ("", "nan"):
+                    reason = vr.get("red_flags")
+                reason_str = "" if reason is None else str(reason).strip()
+                if reason_str in ("", "nan"):
+                    reason_str = "—"
+                veto_cells.append(
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;'
+                    f'font-family:var(--mono);font-size:0.75rem;padding:0.5rem 0.8rem;'
+                    f'background:var(--surface-2);border:1px solid var(--border);'
+                    f'border-radius:var(--radius);margin-bottom:0.4rem">'
+                    f'<span style="display:flex;align-items:center;gap:8px">'
+                    f'<span style="font-weight:700;color:var(--text)">{_html.escape(str(vr.get("ticker", "")))}</span>'
+                    f'<span style="font-size:0.55rem;font-weight:700;letter-spacing:0.08em;'
+                    f'padding:0.1rem 0.4rem;border-radius:3px;color:{badge_color};'
+                    f'border:1px solid {badge_color}">{badge_label}</span>'
+                    f'</span>'
+                    f'<span style="color:var(--dim);font-size:0.65rem;flex:1;text-align:left;'
+                    f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{_html.escape(reason_str)}</span>'
+                    f'<span style="color:var(--muted);font-size:0.65rem">STAB {stab_str}</span>'
+                    f'</div>'
+                )
+            st.markdown("".join(veto_cells), unsafe_allow_html=True)
+    except Exception:
+        st.markdown(
+            '<div style="font-family:var(--mono);font-size:0.8rem;color:var(--muted)">'
+            '— FILING RED FLAGS UNAVAILABLE</div>',
+            unsafe_allow_html=True,
+        )

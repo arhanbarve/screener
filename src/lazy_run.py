@@ -29,7 +29,7 @@ from src.prices import fetch_all_prices
 from src.fundamentals import fetch_edgar
 from src.filings import compute_filing_similarity
 from src.lazy_compose import build_lazy_composite
-from src.filing_analysis import attach_filing_analysis
+from src.filing_analysis import attach_filing_analysis, attach_8k_analysis
 from src.output import write_filing_edge_csv, write_filing_edge_markdown
 
 logging.basicConfig(
@@ -121,30 +121,45 @@ def run(force_universe: bool = False, limit: int | None = None):
         merged.drop(columns=["gp_assets_edgar"], inplace=True)
 
     # --- Stage 4: Filing similarity ---
-    filing_form = lp.get("filing_form", "10-K")
+    # Run every configured form (10-K + 10-Q) and keep the MOST RECENT filing per
+    # ticker. compute_filing_similarity caches per accession, so the extra form is
+    # cheap on repeat runs and reuses the same (cached) submissions fetch.
+    filing_forms = lp.get("filing_forms") or [lp.get("filing_form", "10-K")]
     filing_ttl  = lp.get("filing_ttl_hours", 24)
     filing_rows = []
-    logger.info(f"[lazy_run] fetching {filing_form} similarities for {len(merged)} tickers")
+    logger.info(f"[lazy_run] fetching {filing_forms} similarities for {len(merged)} tickers")
     total = len(merged)
     for i, (_, row) in enumerate(merged.iterrows()):
         ticker = row["ticker"]
         cik = str(row.get("cik", "")) if pd.notna(row.get("cik")) else ""
-        result = None
+        best = None
+        best_key = ""
         if cik:
-            try:
-                result = compute_filing_similarity(cik, DB_PATH, form=filing_form,
-                                                   ttl_hours=filing_ttl)
-            except Exception as e:
-                logger.warning(f"[lazy_run] filing similarity failed for {ticker}: {e}")
-        if result:
-            filing_rows.append({"ticker": ticker, **result})
+            for form in filing_forms:
+                try:
+                    result = compute_filing_similarity(cik, DB_PATH, form=form,
+                                                       ttl_hours=filing_ttl)
+                except Exception as e:
+                    logger.warning(f"[lazy_run] filing similarity failed for {ticker} {form}: {e}")
+                    result = None
+                if not result:
+                    continue
+                # Pick the latest filing; filing_date preferred, report_date fallback.
+                key = str(result.get("filing_date") or result.get("report_date") or "")
+                if best is None or key > best_key:
+                    best = result
+                    best_key = key
+        if best:
+            filing_rows.append({"ticker": ticker, **best})
         else:
             filing_rows.append({"ticker": ticker, "text_stability": float("nan")})
         if (i + 1) % 25 == 0:
             logger.info(f"[lazy_run] filings {i+1}/{total}")
 
     filing_df = pd.DataFrame(filing_rows)
-    # Drop heavy text columns before merge (too large for CSV)
+    # Drop heavy text columns before merge (too large for CSV). filing_date and
+    # risk_growth are non-text scalar keys and are deliberately KEPT so they flow
+    # through onto full_df for the downstream composite/recency layers.
     text_cols = ["risk_text", "prior_risk_text", "mda_text", "prior_mda_text"]
     filing_df.drop(columns=[c for c in text_cols if c in filing_df.columns], inplace=True)
     full_df = merged.merge(filing_df, on="ticker", how="left")
@@ -168,6 +183,11 @@ def run(force_universe: bool = False, limit: int | None = None):
     else:
         logger.info("[lazy_run] ANTHROPIC_API_KEY not set — skipping Claude change characterization")
         full_df["change_direction"] = 0
+
+    # --- Stage 4.75: 8-K veto layer (recent material negative events) ---
+    # Populates eight_k_penalty + red_flags. No-ops (0 / []) when the classifier
+    # is disabled or ANTHROPIC_API_KEY is absent.
+    full_df = attach_8k_analysis(full_df, cfg, DB_PATH)
 
     # --- Stage 5: Composite ---
     longs_df, watch_df = build_lazy_composite(full_df, cfg)

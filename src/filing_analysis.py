@@ -16,16 +16,19 @@ text-stability score is below the threshold (actual language changers):
 Cost control: both classifiers are gated by similarity_threshold so Claude
 spend scales with the (small) fraction of real changers, not with universe size.
 """
+import os
 import json
 import re
 import threading
 import time
 import logging
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
 from src.cache import get_filing_analysis, put_filing_analysis
+from src.filings import fetch_submissions, parse_submissions
 from src.news import _ThreadSafeTokenBucket, _parse_json, _claude
 
 logger = logging.getLogger(__name__)
@@ -176,6 +179,102 @@ def classify_8k(ticker: str, eight_k_items: list[dict]) -> dict:
     except Exception as e:
         logger.warning(f"[filing_analysis] 8-K classifier failed for {ticker}: {e}")
     return {"red_flags": [], "eight_k_penalty": 0}
+
+
+def extract_recent_8k_items(submissions_data: dict, lookback_days: int) -> list[dict]:
+    """Flatten recent 8-K item codes from an EDGAR submissions payload.
+
+    Reads the raw filings.recent arrays (form / items / filingDate /
+    primaryDocDescription) directly — parse_submissions drops the `items` and
+    description fields we need here. Keeps only 8-K filings within lookback_days
+    of today and emits ONE entry per comma-separated item code
+    (e.g. "5.02,9.01" → two entries).
+
+    Returns list of {"item": "5.02", "headline": <desc>, "date": <filingDate>}.
+    """
+    recent = (submissions_data or {}).get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    items_arr = recent.get("items", [])
+    fdates = recent.get("filingDate", [])
+    descs = recent.get("primaryDocDescription", [])
+    cutoff = datetime.utcnow().date() - timedelta(days=lookback_days)
+
+    out: list[dict] = []
+    for i in range(len(forms)):
+        if forms[i] != "8-K":
+            continue
+        fdate = fdates[i] if i < len(fdates) else ""
+        try:
+            filed = datetime.strptime(fdate, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        if filed < cutoff:
+            continue
+        raw_items = items_arr[i] if i < len(items_arr) else ""
+        headline = descs[i] if i < len(descs) else ""
+        for code in str(raw_items).split(","):
+            code = code.strip()
+            if not code:
+                continue
+            out.append({"item": code, "headline": headline or "", "date": fdate})
+    return out
+
+
+def _classify_8k_worker(args: tuple) -> tuple[str, dict]:
+    ticker, items = args
+    _get_bucket().consume()
+    return ticker, classify_8k(ticker, items)
+
+
+def attach_8k_analysis(df: pd.DataFrame, cfg: dict, db_path: str) -> pd.DataFrame:
+    """Populate eight_k_penalty (int, -1/0) and red_flags (list) for every row.
+
+    Gated by lazy_prices.enable_8k_classifier AND ANTHROPIC_API_KEY; otherwise
+    every row gets eight_k_penalty=0, red_flags=[]. Builds each ticker's recent
+    8-K item list from the (cached) EDGAR submissions payload and runs classify_8k
+    on the shared token bucket.
+    """
+    lp = cfg.get("lazy_prices", {})
+    enabled = lp.get("enable_8k_classifier", False)
+    lookback = int(lp.get("eight_k_lookback_days", 180))
+    ttl = int(lp.get("filing_ttl_hours", 24))
+
+    df = df.copy()
+    if not enabled or not os.environ.get("ANTHROPIC_API_KEY"):
+        df["eight_k_penalty"] = 0
+        df["red_flags"] = [[] for _ in range(len(df))]
+        return df
+
+    # Gather per-ticker 8-K item lists (sequential; submissions are cached).
+    work: list[tuple[str, list[dict]]] = []
+    for _, row in df.iterrows():
+        ticker = str(row["ticker"])
+        cik = str(row.get("cik", "")) if pd.notna(row.get("cik")) else ""
+        if not cik:
+            continue
+        data = fetch_submissions(cik, db_path, ttl_hours=ttl)
+        items = extract_recent_8k_items(data, lookback) if data else []
+        if items:
+            work.append((ticker, items))
+
+    print(f"[filing_analysis] {len(work)}/{len(df)} tickers have recent 8-K items → Claude 8-K veto")
+
+    penalties: dict[str, int] = {}
+    red_flags: dict[str, list] = {}
+    if work:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {pool.submit(_classify_8k_worker, w): w[0] for w in work}
+            for fut in as_completed(futures):
+                try:
+                    ticker, res = fut.result()
+                    penalties[ticker] = int(res.get("eight_k_penalty", 0) or 0)
+                    red_flags[ticker] = res.get("red_flags", []) or []
+                except Exception as e:
+                    logger.warning(f"[filing_analysis] 8-K worker failed: {e}")
+
+    df["eight_k_penalty"] = df["ticker"].map(lambda t: penalties.get(str(t), 0))
+    df["red_flags"] = df["ticker"].map(lambda t: red_flags.get(str(t), []))
+    return df
 
 
 # ── Per-row worker ────────────────────────────────────────────────────────────

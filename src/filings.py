@@ -39,6 +39,24 @@ _REQUEST_SLEEP = 0.12
 # similarity reflects *language* change, not boilerplate numeric churn).
 _WORD_RE = re.compile(r"[a-z]+")
 
+# Common English stopwords. Dropping these before scoring widens the dynamic
+# range of the cosine / Jaccard similarity: filings are dominated by function
+# words, so leaving them in compresses all scores toward 1.0 and hides the
+# language change that the "Lazy Prices" signal is trying to detect.
+_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "of", "to", "in", "for", "is", "are",
+    "was", "were", "be", "been", "being", "as", "at", "by", "with", "that",
+    "this", "these", "those", "it", "its", "on", "from", "we", "our", "us",
+    "their", "them", "they", "which", "such", "any", "all", "may", "will",
+    "shall", "would", "could", "should", "also", "than", "then", "other",
+    "including", "etc", "but", "not", "no", "if", "into", "out", "up", "down",
+    "over", "under", "about", "after", "before", "between", "during", "each",
+    "more", "most", "some", "so", "only", "own", "same", "very", "can", "do",
+    "does", "did", "has", "have", "had", "he", "she", "his", "her", "you",
+    "your", "i", "me", "my", "who", "whom", "whose", "what", "when", "where",
+    "why", "how",
+})
+
 # Section boundary markers in 10-K filings. Anchored to section TITLES (not bare
 # item numbers) so that in-prose cross-references like "...see Part II, Item 8 of
 # this Form 10-K..." don't prematurely terminate a section. The real body span is
@@ -57,15 +75,23 @@ def _sec_headers() -> dict:
 # Pure functions (no network) — unit tested
 # --------------------------------------------------------------------------
 
-def normalize_tokens(text: str) -> list[str]:
-    """Lowercase, keep alphabetic words only."""
-    return _WORD_RE.findall(text.lower())
+def normalize_tokens(text: str, use_stopwords: bool = True) -> list[str]:
+    """Lowercase, keep alphabetic words only.
+
+    When `use_stopwords` is True (default) common English stopwords are dropped
+    so that similarity reflects substantive language change, not function-word
+    boilerplate.
+    """
+    toks = _WORD_RE.findall(text.lower())
+    if use_stopwords:
+        toks = [t for t in toks if t not in _STOPWORDS]
+    return toks
 
 
-def cosine_similarity(text_a: str, text_b: str) -> float:
+def cosine_similarity(text_a: str, text_b: str, use_stopwords: bool = True) -> float:
     """Term-frequency cosine similarity between two documents in [0, 1]."""
-    a = Counter(normalize_tokens(text_a))
-    b = Counter(normalize_tokens(text_b))
+    a = Counter(normalize_tokens(text_a, use_stopwords=use_stopwords))
+    b = Counter(normalize_tokens(text_b, use_stopwords=use_stopwords))
     if not a or not b:
         return 0.0
     common = set(a) & set(b)
@@ -75,6 +101,39 @@ def cosine_similarity(text_a: str, text_b: str) -> float:
     norm_a = math.sqrt(sum(v * v for v in a.values()))
     norm_b = math.sqrt(sum(v * v for v in b.values()))
     return dot / (norm_a * norm_b)
+
+
+def bigram_jaccard(text_a: str, text_b: str, use_stopwords: bool = True) -> float:
+    """Jaccard similarity of adjacent word-bigram sets in [0, 1].
+
+    Bigrams capture local phrasing / word ORDER that a bag-of-words cosine
+    misses, so a blend of the two is more sensitive to real edits (e.g.
+    reordered or reworded risk language). Returns 0.0 if either side has no
+    bigrams.
+    """
+    ta = normalize_tokens(text_a, use_stopwords=use_stopwords)
+    tb = normalize_tokens(text_b, use_stopwords=use_stopwords)
+    bg_a = {(ta[i], ta[i + 1]) for i in range(len(ta) - 1)}
+    bg_b = {(tb[i], tb[i + 1]) for i in range(len(tb) - 1)}
+    if not bg_a or not bg_b:
+        return 0.0
+    inter = len(bg_a & bg_b)
+    union = len(bg_a | bg_b)
+    if union == 0:
+        return 0.0
+    return inter / union
+
+
+def section_similarity(a: str, b: str, jaccard_blend: float = 0.5,
+                       use_stopwords: bool = True) -> float:
+    """Blended section similarity: blend*bigram_jaccard + (1-blend)*cosine.
+
+    Used for the discriminating Risk-Factors / MD&A sections; document-level
+    similarity stays pure cosine as a robust floor.
+    """
+    jac = bigram_jaccard(a, b, use_stopwords=use_stopwords)
+    cos = cosine_similarity(a, b, use_stopwords=use_stopwords)
+    return jaccard_blend * jac + (1.0 - jaccard_blend) * cos
 
 
 def _slice_section(text: str, start_re: re.Pattern, end_re: re.Pattern) -> str:
@@ -223,14 +282,36 @@ def fetch_filing_doc(cik, accession: str, primary_doc: str, db_path: str) -> Opt
         return None
 
 
+def _risk_metrics(risk_text: str, prior_risk_text: str,
+                  use_stopwords: bool = True) -> tuple[int, int, float]:
+    """Word counts of the current / prior Risk-Factors sections and their growth.
+
+    Positive `risk_growth` = added risk language vs the prior comparable, which
+    the "Lazy Prices" reading treats as bearish.
+    """
+    risk_len = len(normalize_tokens(risk_text or "", use_stopwords=use_stopwords))
+    prior_risk_len = len(normalize_tokens(prior_risk_text or "", use_stopwords=use_stopwords))
+    if prior_risk_len == 0:
+        risk_growth = 0.0
+    else:
+        risk_growth = (risk_len - prior_risk_len) / max(prior_risk_len, 1)
+    return risk_len, prior_risk_len, risk_growth
+
+
 def compute_filing_similarity(cik, db_path: str, form: str = "10-K",
-                              ttl_hours: int = 24) -> Optional[dict]:
+                              ttl_hours: int = 24,
+                              parse_fail_section_sim: float = 0.30,
+                              parse_fail_doc_floor: float = 0.98,
+                              jaccard_blend: float = 0.5,
+                              use_stopwords: bool = True) -> Optional[dict]:
     """End-to-end text-stability for one company's latest `form` filing.
 
-    Returns {text_stability, risk_sim, mda_sim, accession, prior_accession,
-    report_date, form, risk_text, mda_text} or None if no comparable pair.
-    `risk_text`/`mda_text` carry the current sections so the (conditional)
-    Claude layer can diff them without re-fetching.
+    Returns {text_stability, doc_sim, risk_sim, mda_sim, sections_used,
+    accession, prior_accession, report_date, form, filing_date, risk_len,
+    prior_risk_len, risk_growth, risk_text, prior_risk_text, mda_text,
+    prior_mda_text} or None if no comparable pair. The section texts carry the
+    current/prior sections so the (conditional) Claude layer can diff them
+    without re-fetching.
     """
     data = fetch_submissions(cik, db_path, ttl_hours=ttl_hours)
     if data is None:
@@ -243,6 +324,18 @@ def compute_filing_similarity(cik, db_path: str, form: str = "10-K",
     # Memoized by the current accession (immutable filing pair).
     cached = get_filing_similarity(db_path, current["accession"])
     if cached is not None:
+        # Backfill keys added after this payload was first cached, without
+        # forcing a full re-fetch of the (immutable) filing pair.
+        if "filing_date" not in cached:
+            cached["filing_date"] = current.get("filing_date", "")
+        if not {"risk_len", "prior_risk_len", "risk_growth"}.issubset(cached):
+            rl, prl, rg = _risk_metrics(
+                cached.get("risk_text", ""), cached.get("prior_risk_text", ""),
+                use_stopwords=use_stopwords,
+            )
+            cached["risk_len"] = rl
+            cached["prior_risk_len"] = prl
+            cached["risk_growth"] = rg
         return cached
 
     cur_html = fetch_filing_doc(cik, current["accession"], current["primary_doc"], db_path)
@@ -255,10 +348,13 @@ def compute_filing_similarity(cik, db_path: str, form: str = "10-K",
     cur_sec = extract_sections(cur_html)
     prior_sec = extract_sections(prior_html)
 
-    # Document-level similarity: robust, paper-faithful, computed for every filer.
-    doc_sim = cosine_similarity(cur_text, prior_text)
-    risk_sim = cosine_similarity(cur_sec["risk_factors"], prior_sec["risk_factors"])
-    mda_sim = cosine_similarity(cur_sec["mda"], prior_sec["mda"])
+    # Document-level similarity: robust, paper-faithful, pure cosine floor.
+    doc_sim = cosine_similarity(cur_text, prior_text, use_stopwords=use_stopwords)
+    # Sections: blended bigram-Jaccard + cosine (more discriminating).
+    risk_sim = section_similarity(cur_sec["risk_factors"], prior_sec["risk_factors"],
+                                  jaccard_blend=jaccard_blend, use_stopwords=use_stopwords)
+    mda_sim = section_similarity(cur_sec["mda"], prior_sec["mda"],
+                                 jaccard_blend=jaccard_blend, use_stopwords=use_stopwords)
 
     # Use a section's similarity only when BOTH sides cleanly extracted (length
     # guard rejects TOC fragments / styling artifacts). Sections are more
@@ -266,12 +362,22 @@ def compute_filing_similarity(cik, db_path: str, form: str = "10-K",
     def _valid(a, b):
         return len(a) >= MIN_SECTION_CHARS and len(b) >= MIN_SECTION_CHARS
 
+    # Parse-failure guard: an implausibly low section sim alongside a near-
+    # identical document sim signals an extraction failure, not a real edit.
+    # Such a section is ignored so text_stability falls back toward doc_sim.
+    def _failed(section_sim):
+        return section_sim < parse_fail_section_sim and doc_sim > parse_fail_doc_floor
+
     sims = []
-    if _valid(cur_sec["risk_factors"], prior_sec["risk_factors"]):
+    if _valid(cur_sec["risk_factors"], prior_sec["risk_factors"]) and not _failed(risk_sim):
         sims.append(risk_sim)
-    if _valid(cur_sec["mda"], prior_sec["mda"]):
+    if _valid(cur_sec["mda"], prior_sec["mda"]) and not _failed(mda_sim):
         sims.append(mda_sim)
     text_stability = sum(sims) / len(sims) if sims else doc_sim
+
+    risk_len, prior_risk_len, risk_growth = _risk_metrics(
+        cur_sec["risk_factors"], prior_sec["risk_factors"], use_stopwords=use_stopwords,
+    )
 
     result = {
         "text_stability": text_stability,
@@ -283,6 +389,10 @@ def compute_filing_similarity(cik, db_path: str, form: str = "10-K",
         "prior_accession": prior["accession"],
         "report_date": current.get("report_date", ""),
         "form": form,
+        "filing_date": current.get("filing_date", ""),
+        "risk_len": risk_len,
+        "prior_risk_len": prior_risk_len,
+        "risk_growth": risk_growth,
         "risk_text": cur_sec["risk_factors"],
         "prior_risk_text": prior_sec["risk_factors"],
         "mda_text": cur_sec["mda"],

@@ -3,9 +3,12 @@ import pytest
 from src.filings import (
     normalize_tokens,
     cosine_similarity,
+    bigram_jaccard,
+    section_similarity,
     extract_sections,
     select_comparable,
     parse_submissions,
+    _risk_metrics,
 )
 
 
@@ -41,6 +44,71 @@ def test_cosine_partial_between_zero_and_one():
 def test_cosine_empty_is_zero():
     assert cosine_similarity("", "anything") == 0.0
     assert cosine_similarity("", "") == 0.0
+
+
+# ---- stopwords, bigram jaccard & blended section similarity ----------------
+
+def test_normalize_tokens_drops_stopwords_by_default():
+    toks = normalize_tokens("the company and its risks are here")
+    # substantive words kept
+    assert "company" in toks
+    assert "risks" in toks
+    # common stopwords dropped
+    assert "the" not in toks
+    assert "and" not in toks
+    assert "are" not in toks
+
+
+def test_normalize_tokens_keeps_stopwords_when_disabled():
+    toks = normalize_tokens("the company and its risks", use_stopwords=False)
+    assert "the" in toks
+    assert "and" in toks
+
+
+def test_bigram_jaccard_identical_is_one():
+    a = "competition regulation litigation supply chain"
+    assert abs(bigram_jaccard(a, a) - 1.0) < 1e-9
+
+
+def test_bigram_jaccard_disjoint_is_zero():
+    a = "alpha beta gamma delta"
+    b = "epsilon zeta eta theta"
+    assert bigram_jaccard(a, b) == 0.0
+
+
+def test_bigram_jaccard_empty_is_zero():
+    assert bigram_jaccard("", "anything else here") == 0.0
+    assert bigram_jaccard("one", "two") == 0.0  # no bigrams (single tokens)
+
+
+def test_section_similarity_blends_jaccard_and_cosine():
+    a = "competition regulation litigation supply chain risk"
+    b = "competition regulation new cybersecurity risk emerged"
+    jac = bigram_jaccard(a, b)
+    cos = cosine_similarity(a, b)
+    blended = section_similarity(a, b, jaccard_blend=0.5)
+    assert abs(blended - (0.5 * jac + 0.5 * cos)) < 1e-9
+    # blend endpoints
+    assert abs(section_similarity(a, b, jaccard_blend=0.0) - cos) < 1e-9
+    assert abs(section_similarity(a, b, jaccard_blend=1.0) - jac) < 1e-9
+
+
+# ---- risk-section growth ---------------------------------------------------
+
+def test_risk_metrics_positive_growth():
+    prior = "competition regulation"
+    cur = "competition regulation litigation cybersecurity"
+    risk_len, prior_risk_len, growth = _risk_metrics(cur, prior)
+    assert risk_len == 4
+    assert prior_risk_len == 2
+    assert abs(growth - 1.0) < 1e-9
+
+
+def test_risk_metrics_zero_prior_gives_zero_growth():
+    risk_len, prior_risk_len, growth = _risk_metrics("competition regulation", "")
+    assert risk_len == 2
+    assert prior_risk_len == 0
+    assert growth == 0.0
 
 
 # ---- section extraction ----------------------------------------------------

@@ -10,6 +10,7 @@ Three-factor model:
 All factors z-scored cross-sectionally. Reuses helpers from compose.py.
 """
 import logging
+from datetime import date
 import numpy as np
 import pandas as pd
 from src.compose import (
@@ -21,7 +22,24 @@ from src.compose import (
 
 logger = logging.getLogger(__name__)
 
-FILING_FACTORS = ["text_stability", "gp_assets", "neglect_score"]
+FILING_FACTORS = ["text_stability", "gp_assets", "neglect_score", "risk_growth"]
+
+
+def _compute_filing_age_days(df: pd.DataFrame) -> pd.Series:
+    """Days between filing_date (ISO) and today. Unparseable/missing → 9999."""
+    today = date.today()
+
+    def _age(val) -> int:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return 9999
+        try:
+            return (today - date.fromisoformat(str(val)[:10])).days
+        except (ValueError, TypeError):
+            return 9999
+
+    if "filing_date" not in df.columns:
+        return pd.Series([9999] * len(df), index=df.index)
+    return df["filing_date"].apply(_age)
 
 
 def _apply_neglect_quality_gate(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -66,6 +84,8 @@ def build_lazy_composite(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.
     min_coverage = lp.get("min_factor_coverage", 0.30)
     top_n = lp.get("top_n", 30)
     watch_n = lp.get("watch_list_n", 20)
+    max_filing_age_days = lp.get("max_filing_age_days", 9999)
+    recency_halflife_days = lp.get("recency_halflife_days", 30)
 
     df = df.copy()
     df = _apply_neglect_quality_gate(df, cfg)
@@ -95,8 +115,13 @@ def build_lazy_composite(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.
             df[f"z_{f}"] = 0.0
             continue
         s = df[f].astype(float)
-        fill = s.mean()
-        s = s.fillna(0.0 if pd.isna(fill) else fill)
+        if f == "risk_growth":
+            # Negative economic direction: higher risk_growth = worse.
+            # Negate before winsorize/z so positive weight penalizes it.
+            s = -s.fillna(0.0)
+        else:
+            fill = s.mean()
+            s = s.fillna(0.0 if pd.isna(fill) else fill)
         s = winsorize_series(s, pct=winsorize_pct)
         z = z_score_series(s)
         df[f"z_{f}"] = z
@@ -105,24 +130,49 @@ def build_lazy_composite(df: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.
     df["composite"] = composite
     df = df.sort_values("composite", ascending=False).reset_index(drop=True)
 
-    # Conviction: simpler 1-5 scale for the filing screen (no streak / news yet)
-    def _conviction(pos: int, text_stability: float) -> int:
+    # Recency: age-decayed composite for long ranking (raw composite kept intact).
+    df["filing_age_days"] = _compute_filing_age_days(df)
+    hl = max(recency_halflife_days, 1e-9)
+    df["composite_decayed"] = df["composite"] * np.power(0.5, df["filing_age_days"] / hl)
+
+    # Conviction: cross-sectional percentile of text_stability (1-5 scale)
+    stab_col = df.get("text_stability", pd.Series(np.zeros(len(df)), index=df.index))
+    stab_pct = stab_col.rank(pct=True)
+
+    def _conviction(pos: int, pct: float) -> int:
         rank_pts = 3 if pos < 3 else (2 if pos < 8 else (1 if pos < 15 else 0))
-        stab_pts = 2 if text_stability >= 0.98 else (1 if text_stability >= 0.93 else 0)
+        stab_pts = 2 if pct >= 0.80 else (1 if pct >= 0.50 else 0)
         return max(1, min(5, rank_pts + stab_pts))
 
-    stab_col = df.get("text_stability", pd.Series(np.zeros(len(df)), index=df.index))
     df["conviction"] = [
-        _conviction(i, float(stab_col.iloc[i]) if pd.notna(stab_col.iloc[i]) else 0.0)
+        _conviction(i, float(stab_pct.iloc[i]) if pd.notna(stab_pct.iloc[i]) else 0.0)
         for i in range(len(df))
     ]
 
-    ranked_longs = df.head(top_n).reset_index(drop=True)
+    # Long selection: exclude negative changers and 8-K red flags, gate stale
+    # filings, then rank by age-decayed composite.
+    change_dir = df.get("change_direction", pd.Series([0] * len(df), index=df.index)).fillna(0)
+    eight_k = df.get("eight_k_penalty", pd.Series([0] * len(df), index=df.index)).fillna(0)
+    long_mask = (
+        (change_dir != -1)
+        & (eight_k != -1)
+        & (df["filing_age_days"] <= max_filing_age_days)
+    )
+    ranked_longs = (
+        df[long_mask]
+        .sort_values("composite_decayed", ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
 
-    # Watch list: lowest text_stability names (deteriorating language)
+    # Watch list (not age-gated): confirmed negative changers first, then lowest
+    # text_stability. sort key = (change_direction != -1, text_stability) asc.
+    watch = df[df["text_stability"].notna()].copy()
+    watch_cd = watch.get("change_direction", pd.Series([0] * len(watch), index=watch.index)).fillna(0)
+    watch["_cd_not_neg"] = (watch_cd != -1).astype(int)
     watch_list = (
-        df[df["text_stability"].notna()]
-        .sort_values("text_stability", ascending=True)
+        watch.sort_values(["_cd_not_neg", "text_stability"], ascending=[True, True])
+        .drop(columns=["_cd_not_neg"])
         .head(watch_n)
         .reset_index(drop=True)
     )

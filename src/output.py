@@ -158,6 +158,8 @@ FILING_EDGE_CSV_COLUMNS = [
     "gp_assets", "neglect_score", "avg_dollar_vol_20d", "market_cap",
     "accession", "prior_accession", "report_date", "form",
     "change_direction",  # Claude precision layer (Phase 3); NaN until then
+    "change_type", "change_reason", "filing_date", "filing_age_days",
+    "risk_growth", "eight_k_penalty", "red_flags",
 ]
 
 
@@ -190,20 +192,78 @@ def write_filing_edge_markdown(
     lines = [
         f"# Filing-Edge Screen — {date_str}",
         "",
-        "> Strategy: stable 10-K/10-Q language (Cohen-Malloy-Nguyen 2020 'Lazy Prices')",
-        "> in neglected small/micro caps ($50M–$2B) where arbitrage can't reach.",
-        "> High `text_stability` = language unchanged vs prior comparable filing = bullish.",
+        "> Strategy (Cohen-Malloy-Nguyen 2020 'Lazy Prices') in neglected small/micro caps",
+        "> ($50M–$2B) where arbitrage can't reach. The paper's alpha lives in the SHORT/avoid",
+        "> leg: names that CHANGED their 10-K/10-Q language most tend to underperform.",
+        "> Primary signal = the deteriorating-language watch list below. The stable-filing",
+        "> longs are a secondary research list (the weak, quality-tilted leg of the anomaly).",
         "",
-        "## Stable-Filing Longs",
+        "## Deteriorating-Language Watch List (Primary Signal)",
         "",
-        "| Rank | Ticker | Name | Sector | Composite | Conv | Stability | Doc Sim | Mkt Cap ($M) | ADV ($K) |",
-        "|------|--------|------|--------|-----------|------|-----------|---------|--------------|---------|",
+        "> These names changed their filing language most vs prior year — on average bearish per the paper.",
+        "> Use as an avoid/short-watch list. Claude change classification and 8-K red flags surfaced where available.",
+        "",
+        "| Rank | Ticker | Name | Sector | Change | Stability | Doc Sim | Risk Sim | Risk Δ | MDA Sim | Sections | 8-K | Reason |",
+        "|------|--------|------|--------|--------|-----------|---------|----------|--------|---------|----------|-----|--------|",
+    ]
+
+    def _chg_badge(row):
+        cd = row.get("change_direction")
+        if cd != cd or cd is None:
+            return "—"
+        cd = int(cd)
+        return {-1: "🔻 neg", 0: "• neutral", 1: "🔺 pos"}.get(cd, "—")
+
+    for i, (_, row) in enumerate(watch_df.iterrows(), 1):
+        name   = str(row.get("name", ""))[:28]
+        sector = str(row.get("sector", ""))[:18]
+        chg    = _chg_badge(row)
+        stab   = row.get("text_stability")
+        stab_s = f"{stab:.4f}" if stab == stab and stab is not None else "—"
+        doc    = row.get("doc_sim")
+        doc_s  = f"{doc:.4f}" if doc == doc and doc is not None else "—"
+        risk   = row.get("risk_sim")
+        risk_s = f"{risk:.4f}" if risk == risk and risk is not None else "—"
+        rg     = row.get("risk_growth")
+        rg_s   = f"{rg:+.1%}" if rg == rg and rg is not None else "—"
+        mda    = row.get("mda_sim")
+        mda_s  = f"{mda:.4f}" if mda == mda and mda is not None else "—"
+        sec_n  = int(row.get("sections_used", 0) or 0)
+        ek     = row.get("eight_k_penalty")
+        ek_s   = "🚩" if ek == ek and ek is not None and int(ek) == -1 else ""
+        reason = str(row.get("change_reason", "") or "")[:50]
+        flags  = row.get("red_flags")
+        if isinstance(flags, (list, tuple)):
+            flags_s = ", ".join(str(x) for x in flags)
+        elif flags == flags and flags is not None:
+            flags_s = str(flags)
+        else:
+            flags_s = ""
+        reason_cell = reason
+        if flags_s:
+            reason_cell = f"{reason} [{flags_s}]" if reason else f"[{flags_s}]"
+        if not reason_cell:
+            reason_cell = "—"
+        lines.append(
+            f"| {i} | {row['ticker']} | {name} | {sector} | {chg} | {stab_s} | {doc_s} | {risk_s} | {rg_s} | {mda_s} | {sec_n} | {ek_s} | {reason_cell} |"
+        )
+
+    lines += [
+        "",
+        "## Stable-Filing Longs (Secondary / Research)",
+        "",
+        "> Weak leg of the anomaly; treat as watch/quality tilt, not standalone buys.",
+        "> High `text_stability` = language unchanged vs prior comparable filing.",
+        "",
+        "| Rank | Ticker | Name | Sector | Composite | Conv | Chg | Stability | Doc Sim | Mkt Cap ($M) | ADV ($K) | Filed |",
+        "|------|--------|------|--------|-----------|------|-----|-----------|---------|--------------|----------|-------|",
     ]
     for i, (_, row) in enumerate(longs_df.iterrows(), 1):
         name   = str(row.get("name", ""))[:28]
         sector = str(row.get("sector", ""))[:18]
         comp   = f"{row.get('composite', 0):+.3f}"
         conv   = int(row.get("conviction", 0) or 0)
+        chg    = _chg_badge(row)
         stab   = row.get("text_stability")
         stab_s = f"{stab:.4f}" if stab == stab and stab is not None else "—"
         doc    = row.get("doc_sim")
@@ -212,34 +272,16 @@ def write_filing_edge_markdown(
         mcap_s = f"{mcap/1e6:.0f}" if mcap == mcap and mcap else "—"
         adv    = row.get("avg_dollar_vol_20d")
         adv_s  = f"{adv/1e3:.0f}" if adv == adv and adv else "—"
+        fdate  = row.get("filing_date")
+        age    = row.get("filing_age_days")
+        if fdate == fdate and fdate is not None and str(fdate):
+            filed_s = str(fdate)
+        elif age == age and age is not None:
+            filed_s = f"{int(age)}d"
+        else:
+            filed_s = "—"
         lines.append(
-            f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {conv}/5 | {stab_s} | {doc_s} | {mcap_s} | {adv_s} |"
-        )
-
-    lines += [
-        "",
-        "## Deteriorating-Language Watch List",
-        "",
-        "> These names changed their filing language most vs prior year — on average bearish per the paper.",
-        "> Use as an avoid/short-watch list, or trigger the Claude precision layer to characterize the change.",
-        "",
-        "| Rank | Ticker | Name | Sector | Stability | Doc Sim | Risk Sim | MDA Sim | Sections |",
-        "|------|--------|------|--------|-----------|---------|----------|---------|----------|",
-    ]
-    for i, (_, row) in enumerate(watch_df.iterrows(), 1):
-        name   = str(row.get("name", ""))[:28]
-        sector = str(row.get("sector", ""))[:18]
-        stab   = row.get("text_stability")
-        stab_s = f"{stab:.4f}" if stab == stab and stab is not None else "—"
-        doc    = row.get("doc_sim")
-        doc_s  = f"{doc:.4f}" if doc == doc and doc is not None else "—"
-        risk   = row.get("risk_sim")
-        risk_s = f"{risk:.4f}" if risk == risk and risk is not None else "—"
-        mda    = row.get("mda_sim")
-        mda_s  = f"{mda:.4f}" if mda == mda and mda is not None else "—"
-        sec_n  = int(row.get("sections_used", 0) or 0)
-        lines.append(
-            f"| {i} | {row['ticker']} | {name} | {sector} | {stab_s} | {doc_s} | {risk_s} | {mda_s} | {sec_n} |"
+            f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {conv}/5 | {chg} | {stab_s} | {doc_s} | {mcap_s} | {adv_s} | {filed_s} |"
         )
 
     lines += ["", "---", "*Research tool only. Not investment advice.*"]
