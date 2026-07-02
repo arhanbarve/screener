@@ -125,13 +125,20 @@ def fetch_ohlcv(ticker: str, days: int = 60) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def get_current_price(ticker: str) -> float | None:
-    """Fetch latest price via yfinance fast_info. Returns None on failure."""
+def get_live_quote(ticker: str) -> tuple[float | None, float | None]:
+    """Fetch latest price and previous close via yfinance fast_info. (None, None) on failure."""
     try:
         info = yf.Ticker(ticker).fast_info
-        return float(info.last_price)
+        last = float(info.last_price)
+        try:
+            prev = float(info.previous_close)
+        except Exception:
+            prev = None
+        return last, prev
     except Exception:
-        return None
+        return None, None
+
+
 
 
 def compute_exit_signals(df: pd.DataFrame) -> dict:

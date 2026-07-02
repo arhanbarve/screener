@@ -1172,10 +1172,11 @@ def _inject_js_animations() -> None:
 from src.positions import (
     compute_exit_signals,
     fetch_ohlcv,
-    get_current_price,
+    get_live_quote,
     load_positions,
 )
 from src.spy_analysis import compute_spy_regime
+from src.filing_streak import load_filing_streak
 from src.news import (
     get_market_news,
     get_stock_news,
@@ -1258,30 +1259,33 @@ def setup_page(page_id: str, title: str = "Screener") -> None:
 # ── Cached data loaders ───────────────────────────────────────────────────────
 
 @st.cache_data(ttl=900)
-def _cached_position_data(ticker: str) -> tuple[dict, float | None]:
+def _cached_position_data(ticker: str) -> tuple[dict, float | None, float | None]:
     df = fetch_ohlcv(ticker, days=60)
     signals = compute_exit_signals(df)
-    price = get_current_price(ticker)
-    return signals, price
+    price, prev_close = get_live_quote(ticker)
+    return signals, price, prev_close
 
 
 @st.cache_data(ttl=900)
-def _batch_position_data(tickers: tuple[str, ...]) -> dict[str, tuple[dict, float | None]]:
+def _batch_position_data(tickers: tuple[str, ...]) -> tuple[dict[str, tuple[dict, float | None, float | None]], datetime]:
     import concurrent.futures
 
-    def _fetch_one(ticker: str) -> tuple[str, tuple[dict, float | None]]:
+    def _fetch_one(ticker: str) -> tuple[str, tuple[dict, float | None, float | None]]:
         try:
             df = fetch_ohlcv(ticker, days=60)
             signals = compute_exit_signals(df)
-            price = get_current_price(ticker)
-            return ticker, (signals, price)
-        except Exception:
-            return ticker, ({}, None)
+            price, prev_close = get_live_quote(ticker)
+            if price is None:
+                print(f"[positions] live quote fetch returned no price for {ticker} — falling back to Fidelity snapshot", flush=True)
+            return ticker, (signals, price, prev_close)
+        except Exception as e:
+            print(f"[positions] live quote fetch failed for {ticker}: {e!r}", flush=True)
+            return ticker, ({}, None, None)
 
     workers = min(len(tickers), 10)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(_fetch_one, tickers))
-    return dict(results)
+    return dict(results), datetime.now()
 
 
 @st.cache_data(ttl=64800)  # 18h — recompute once per trading day
@@ -1785,6 +1789,44 @@ def _render_regime() -> None:
 </div>
 """, unsafe_allow_html=True)
 
+    # ── Playbook: what to actually do with this rating ────────────────────────
+    _playbook = {
+        "BULL": {
+            "action": "HOLD & ADD",
+            "detail": "Trend and breadth support staying long. Hold existing positions. New capital can be "
+                      "deployed on pullbacks (don't chase extended names). Momentum/growth setups get a tailwind.",
+            "horizon": "Weeks–months (swing/position). Re-check weekly — regimes like this don't flip overnight.",
+        },
+        "CAUTION": {
+            "action": "HOLD, DON'T ADD",
+            "detail": "Signals are split. Hold what you already own; new entries should be limited to names that "
+                      "already clear your full checklist — avoid speculative adds. Consider trimming your weakest "
+                      "or most-extended positions.",
+            "horizon": "Days–weeks. Re-check every few days — this regime can tip either direction quickly.",
+        },
+        "BEAR": {
+            "action": "REDUCE / HEDGE",
+            "detail": "Trend and risk signals have broken down. Trim or hedge long exposure, raise cash, avoid new "
+                      "longs. If you must hold, keep only your highest-conviction, most defensive names.",
+            "horizon": "Reassess daily until the regime turns. This is risk-off, not a buy-the-dip signal.",
+        },
+    }
+    _pb = _playbook.get(regime, _playbook["CAUTION"])
+    st.markdown(f"""
+<div style="background:var(--surface-1);border:1px solid var(--border);border-left:3px solid {r_color};
+            border-radius:var(--radius-lg);padding:16px 20px;margin-bottom:1rem">
+  <div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);letter-spacing:0.1em;margin-bottom:8px">WHAT TO DO WITH THIS</div>
+  <div style="font-family:var(--mono);font-size:1.05rem;font-weight:700;color:{r_color};margin-bottom:6px">{_pb['action']}</div>
+  <div style="font-size:0.8rem;color:var(--text);margin-bottom:10px;line-height:1.5">{_pb['detail']}</div>
+  <div style="font-size:0.7rem;color:var(--muted)"><b>Horizon:</b> {_pb['horizon']}</div>
+  <div style="font-size:0.68rem;color:var(--dim);margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
+    This is a market-wide (SPY) regime, not a per-ticker buy/sell call — internally it scales how many names the
+    screener surfaces (full size in BULL, top-10 only in CAUTION, screen skipped in BEAR/stress). Pair it with each
+    stock's own Entry Timing / Confluence signal for individual decisions.
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
     # ── Key metrics strip ─────────────────────────────────────────────────────
     vix_sig = next((s for s in signals if s["name"] == "vix"),          None)
     yld_sig = next((s for s in signals if s["name"] == "yield_curve"),  None)
@@ -1953,9 +1995,45 @@ def _fmt_gl(dollar: float, pct: float) -> str:
     return f"{sign}${dollar:,.2f} ({sign}{pct:.1%})"
 
 
-def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float | None] | None = None) -> None:
+def _live_fid_metrics(fid: dict, live_price: float | None, prev_close: float | None) -> dict:
+    """Recompute a Fidelity position's price/value/G-L from a live yfinance quote.
+
+    Fidelity supplies qty/avg_cost (stable, only change on trades); price/value/G-L
+    are recomputed live so they don't go stale between Fidelity syncs. Falls back
+    to the Fidelity snapshot if the live quote fetch fails.
+    """
+    qty      = fid["quantity"]
+    avg_cost = fid["avg_cost"]
+
+    if live_price is None:
+        return {
+            "last_price": fid["last_price"],
+            "current_value": fid["current_value"],
+            "today_gl_d": fid["today_gl_dollar"],
+            "today_gl_p": fid["today_gl_pct"],
+            "total_gl_d": fid["total_gl_dollar"],
+            "total_gl_p": fid["total_gl_pct"],
+        }
+
+    total_gl_d = qty * (live_price - avg_cost)
+    if prev_close:
+        today_gl_d = qty * (live_price - prev_close)
+        today_gl_p = (live_price - prev_close) / prev_close
+    else:
+        today_gl_d, today_gl_p = fid["today_gl_dollar"], fid["today_gl_pct"]
+    return {
+        "last_price": live_price,
+        "current_value": qty * live_price,
+        "today_gl_d": today_gl_d,
+        "today_gl_p": today_gl_p,
+        "total_gl_d": total_gl_d,
+        "total_gl_p": (live_price - avg_cost) / avg_cost if avg_cost else 0.0,
+    }
+
+
+def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float | None, float | None] | None = None) -> None:
     ticker  = pos["ticker"]
-    signals, _ = cached if cached is not None else _cached_position_data(ticker)
+    signals, live_price, prev_close = cached if cached is not None else _cached_position_data(ticker)
     score   = signals.get("score", 0)
 
     entry_price = pos.get("entry_price", 0)
@@ -1965,18 +2043,20 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
     except Exception:
         held_days = "?"
 
-    # Prefer Fidelity live data; fall back to yfinance price
     if fid:
-        last_price     = fid["last_price"]
-        current_value  = fid["current_value"]
-        today_gl_d     = fid["today_gl_dollar"]
-        today_gl_p     = fid["today_gl_pct"]
-        total_gl_d     = fid["total_gl_dollar"]
-        total_gl_p     = fid["total_gl_pct"]
         qty            = fid["quantity"]
         avg_cost       = fid["avg_cost"]
         pct_acct       = fid["pct_of_account"]
         desc           = fid.get("description", "")
+
+        m = _live_fid_metrics(fid, live_price, prev_close)
+        last_price     = m["last_price"]
+        current_value  = m["current_value"]
+        today_gl_d     = m["today_gl_d"]
+        today_gl_p     = m["today_gl_p"]
+        total_gl_d     = m["total_gl_d"]
+        total_gl_p     = m["total_gl_p"]
+
         price_str      = f"${last_price:,.2f}"
         total_pnl_color = "var(--bull)" if total_gl_d >= 0 else "var(--bear)"
         total_pnl_str   = f"+{total_gl_p:.1%}" if total_gl_d >= 0 else f"{total_gl_p:.1%}"
@@ -1993,8 +2073,10 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
             f'<span style="color:{total_pnl_color}">Total {total_str}</span>'
         )
         desc_html = f'<div style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);margin-top:1px">{_html.escape(desc)}</div>' if desc else ""
+        price_src = "live" if live_price is not None else "fidelity snapshot"
     else:
-        _, current_price = cached if cached is not None else _cached_position_data(ticker)
+        current_price = live_price
+        price_src = "live" if current_price is not None else "—"
         price_str = f"${current_price:,.2f}" if current_price else "—"
         if current_price and entry_price:
             pnl = (current_price - entry_price) / entry_price
@@ -2042,7 +2124,7 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
         f'</div>'
         f'<div style="text-align:right">'
         f'<div style="font-family:var(--mono);font-size:1.5rem;font-weight:700;color:{total_pnl_color}">{total_pnl_str}</div>'
-        f'<div style="font-family:var(--mono);font-size:0.62rem;color:var(--muted)">{price_str} now</div>'
+        f'<div style="font-family:var(--mono);font-size:0.62rem;color:var(--muted)">{price_str} · {price_src}</div>'
         f'</div>'
         f'</div>'
         f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);margin-bottom:6px">{_html.escape(meta_row)}</div>'
@@ -2092,21 +2174,35 @@ def _render_positions() -> None:
 
     tickers = tuple(sorted(p["ticker"] for p in positions))
     with st.spinner(f"Fetching live data for {len(tickers)} position{'s' if len(tickers) != 1 else ''}…"):
-        batch = _batch_position_data(tickers)
+        batch, batch_fetched_at = _batch_position_data(tickers)
+
+    live_count = sum(1 for v in batch.values() if v[1] is not None)
+    quote_ts = batch_fetched_at.strftime("%-I:%M:%S %p")
+    quote_color = "var(--muted)" if live_count == len(tickers) else "var(--bear)"
+    quote_note = "" if live_count == len(tickers) else " (rest showing Fidelity snapshot — yfinance fetch failed)"
+    st.markdown(
+        f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);margin-top:-6px;margin-bottom:4px">'
+        f'LIVE QUOTES · {quote_ts} · <span style="color:{quote_color}">{live_count}/{len(tickers)} live{quote_note}</span></div>',
+        unsafe_allow_html=True,
+    )
 
     enriched = []
     for p in positions:
-        signals, _ = batch.get(p["ticker"], ({}, None))
+        signals, _, _ = batch.get(p["ticker"], ({}, None, None))
         enriched.append({**p, "_score": signals.get("score", 0)})
     enriched.sort(key=lambda x: x["_score"], reverse=True)
 
     exits = sum(1 for e in enriched if e["_score"] >= 3)
     exit_cls = "bear" if exits > 0 else ""
 
-    # Portfolio totals from Fidelity data
-    total_value   = sum(f["current_value"]  for f in fid_positions)
-    total_today   = sum(f["today_gl_dollar"] for f in fid_positions)
-    total_overall = sum(f["total_gl_dollar"] for f in fid_positions)
+    # Portfolio totals recomputed from live quotes (falls back to Fidelity snapshot per-position)
+    total_value = total_today = total_overall = 0.0
+    for f in fid_positions:
+        _, live_price, prev_close = batch.get(f["ticker"], ({}, None, None))
+        m = _live_fid_metrics(f, live_price, prev_close)
+        total_value   += m["current_value"]
+        total_today   += m["today_gl_d"]
+        total_overall += m["total_gl_d"]
     today_sign    = "+" if total_today >= 0 else ""
     overall_sign  = "+" if total_overall >= 0 else ""
     today_cls     = "bull" if total_today >= 0 else "bear"
@@ -2247,6 +2343,12 @@ def _render_filing_edge():
             st.code("python -m src.lazy_run --limit 200  # quick test\npython -m src.lazy_run         # full run")
         return
 
+    fe_streak = load_filing_streak("output")
+
+    def _fe_streak_badge(ticker: str, list_type: str) -> str:
+        cons = fe_streak.get((ticker, list_type), {}).get("consecutive", 0)
+        return f"🔥{cons}d" if cons >= 2 else "—"
+
     avg_stab = float(longs["text_stability"].mean()) if "text_stability" in longs.columns and longs["text_stability"].notna().any() else 0.0
 
     # ── Summary strip ─────────────────────────────────────────────────────────
@@ -2291,6 +2393,11 @@ def _render_filing_edge():
                 cd_html = '<span style="font-family:var(--mono);font-size:0.6rem;color:var(--bull)">&#8593; IMPROVING</span>'
             elif cd_int == -1:
                 cd_html = '<span style="font-family:var(--mono);font-size:0.6rem;color:var(--bear)">&#8595; DETERIORATING</span>'
+            _cons = fe_streak.get((str(row["ticker"]), "long"), {}).get("consecutive", 0)
+            streak_html = (
+                f'<span style="font-family:var(--mono);font-size:0.6rem;color:var(--accent)">🔥 {_cons}d STREAK</span>'
+                if _cons >= 2 else ""
+            )
 
             def _fd(j: int) -> str:
                 if j > conv: return '<span class="conv-dot empty"></span>'
@@ -2322,7 +2429,7 @@ def _render_filing_edge():
   <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
     <div><div style="font-family:var(--mono);font-size:0.52rem;color:var(--muted);letter-spacing:0.06em">SECTOR</div><div style="font-family:var(--mono);font-size:0.68rem;color:var(--text)">{_html.escape(("—" if pd.isna(row.get("sector","")) or not str(row.get("sector","")).strip() else str(row.get("sector",""))[:14]))}</div></div>
     <div><div style="font-family:var(--mono);font-size:0.52rem;color:var(--muted);letter-spacing:0.06em">MKT CAP</div><div style="font-family:var(--mono);font-size:0.68rem;color:var(--text)">{mcap_s}</div></div>
-    {f"<div>{cd_html}</div>" if cd_html else ""}
+    {f"<div>{cd_html}</div>" if cd_html else ""}{f"<div>{streak_html}</div>" if streak_html else ""}
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -2342,6 +2449,7 @@ def _render_filing_edge():
     display["Sector"] = longs.get("sector", "").fillna("—").str[:18]
     display["Score"] = longs.get("composite", pd.Series(dtype=float))
     display["Conv"] = longs.get("conviction", pd.Series(dtype=float)).fillna(0).astype(int).astype(str) + "/5"
+    display["Streak"] = longs["ticker"].apply(lambda t: _fe_streak_badge(t, "long"))
     display["Stability"] = longs.get("text_stability", pd.Series(dtype=float)).apply(
         lambda v: _stab_badge(v) if pd.notna(v) else "—"
     )
@@ -2386,6 +2494,7 @@ def _render_filing_edge():
         wdisplay["Ticker"] = watch["ticker"]
         wdisplay["Name"] = watch.get("name", "").str[:25]
         wdisplay["Sector"] = watch.get("sector", "").fillna("—").str[:18]
+        wdisplay["Streak"] = watch["ticker"].apply(lambda t: _fe_streak_badge(t, "watch"))
         wdisplay["Stability"] = watch.get("text_stability", pd.Series(dtype=float)).apply(
             lambda v: _stab_badge(v) if pd.notna(v) else "—"
         )
@@ -2465,6 +2574,7 @@ def _render_confluence() -> None:
         st.info("No filing-edge data. Run `python -m src.lazy_run` first.")
         return
 
+    cf_streak = load_filing_streak("output")
     tickers = tuple(longs["ticker"].tolist())
 
     with st.spinner(f"Fetching momentum for {len(tickers)} tickers…"):
@@ -2492,6 +2602,7 @@ def _render_confluence() -> None:
             "above_200": md.get("above_200"),
             "mom_score": mom_score,
             "combined":  combined,
+            "streak":    cf_streak.get((t, "long"), {}).get("consecutive", 0),
         })
 
     df = pd.DataFrame(rows).sort_values("combined", ascending=False).reset_index(drop=True)
@@ -2586,6 +2697,7 @@ def _render_confluence() -> None:
         comb_pct = min(r["combined"] * 100, 100)
         r3c = "var(--bull)" if r["ret_3m"] and r["ret_3m"] > 0 else ("var(--bear)" if r["ret_3m"] is not None else "var(--muted)")
         a50 = '<span style="color:var(--bull)">YES</span>' if r["above_50"] is True else ('<span style="color:var(--bear)">NO</span>' if r["above_50"] is False else '<span style="color:var(--dim)">—</span>')
+        streak_s = f"🔥{r['streak']}d" if r["streak"] >= 2 else "—"
         cf_rows.append(
             f'<tr style="animation-delay:{i*14}ms">'
             f'<td class="rank">#{i+1:02d}</td>'
@@ -2599,13 +2711,14 @@ def _render_confluence() -> None:
             f'<td style="font-family:var(--mono);font-size:0.75rem;color:{r3c}">{_fmt_chg(r["rs_3m"])}</td>'
             f'<td style="text-align:center">{a50}</td>'
             f'<td style="font-family:var(--mono);font-size:0.72rem;color:var(--text)">{r["mom_score"]}/4</td>'
+            f'<td style="font-family:var(--mono);font-size:0.72rem;color:var(--accent)">{streak_s}</td>'
             f'</tr>'
         )
 
     st.markdown(f"""
 <div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:1rem">
 <table class="q-table">
-  <thead><tr><th>#</th><th>TICKER</th><th>NAME</th><th>TIER</th><th>COMBINED</th><th>STABILITY</th><th>3M RET</th><th>RS SPY</th><th>ABOVE 50</th><th>MOM</th></tr></thead>
+  <thead><tr><th>#</th><th>TICKER</th><th>NAME</th><th>TIER</th><th>COMBINED</th><th>STABILITY</th><th>3M RET</th><th>RS SPY</th><th>ABOVE 50</th><th>MOM</th><th>STREAK</th></tr></thead>
   <tbody>{"".join(cf_rows)}</tbody>
 </table>
 </div>""", unsafe_allow_html=True)
@@ -2802,6 +2915,137 @@ def _current_stage(s: dict) -> int:
     return -1
 
 
+def _run_history(limit: int = 10) -> list[dict]:
+    """Chronological summary of the most recent screener runs (cron + manual)."""
+    logs_dir = Path("logs")
+    dates: set[str] = set()
+    for f in logs_dir.glob("run_*.log"):
+        m = re.match(r"run_(\d{4}-\d{2}-\d{2})\.log$", f.name)
+        if m: dates.add(m.group(1))
+    for f in logs_dir.glob("manual_run_*.log"):
+        m = re.match(r"manual_run_(\d{4}-\d{2}-\d{2})_", f.name)
+        if m: dates.add(m.group(1))
+
+    history: list[dict] = []
+    for d in sorted(dates, reverse=True)[:limit]:
+        cron = logs_dir / f"run_{d}.log"
+        if cron.exists():
+            log_file = cron
+        else:
+            manual = sorted(logs_dir.glob(f"manual_run_{d}_*.log"), reverse=True)
+            log_file = manual[0] if manual else None
+        if log_file is None:
+            continue
+
+        text = _last_run_text(log_file.read_text(errors="replace"))
+        s = _parse_run_state(text)
+        if s["finished_at"]:
+            status = "COMPLETE"
+        elif s["started_at"]:
+            status = "INCOMPLETE"
+        else:
+            status = "NO DATA"
+
+        duration = "—"
+        if s["started_at"] and s["finished_at"]:
+            try:
+                def _pt(raw: str) -> datetime:
+                    cleaned = re.sub(r" [A-Z]{2,4} ", " ", raw)
+                    return datetime.strptime(cleaned, "%a %b %d %H:%M:%S %Y")
+                secs = int((_pt(s["finished_at"]) - _pt(s["started_at"])).total_seconds())
+                duration = f"{secs//3600:02d}:{(secs%3600)//60:02d}:{secs%60:02d}"
+            except Exception:
+                duration = "—"
+
+        history.append({
+            "date": d, "status": status, "duration": duration,
+            "selected": s["compose_top"],
+        })
+    return history
+
+
+def _render_fidelity_and_history_status() -> None:
+    """Always-visible Fidelity sync fallback + run history — independent of whether
+    today's main screener run has happened, so a quiet day still surfaces state."""
+    today_str = date.today().isoformat()
+
+    # ── Fidelity sync status ──────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.65rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.6rem">FIDELITY SYNC</div>',
+        unsafe_allow_html=True,
+    )
+    _fid_status_path = Path("logs/fidelity_sync_status.json")
+    _fid: dict = {}
+    if _fid_status_path.exists():
+        try:
+            _fid = json.loads(_fid_status_path.read_text())
+        except Exception:
+            _fid = {}
+
+    _fid_date   = _fid.get("date")
+    _fid_result = _fid.get("result")
+    _fid_msg    = str(_fid.get("message") or "")
+    _now_hour   = datetime.now().hour
+
+    if _fid_date == today_str and _fid_result in ("success", "no_change"):
+        fid_html = (f'<span style="color:var(--bull);font-weight:700">✓ SYNCED</span> '
+                    f'<span style="color:var(--dim);font-size:0.7rem">{_html.escape(_fid_msg)}</span>')
+    elif _fid_date == today_str and _fid_result == "attempted":
+        fid_html = ('<span style="color:var(--accent);font-weight:700;'
+                    'animation:pulse 1.4s ease-in-out infinite">● WAITING FOR LOGIN</span>')
+    elif _fid_date == today_str:
+        fid_html = (f'<span style="color:var(--bear);font-weight:700">⚠ '
+                    f'{_html.escape(str(_fid_result or "UNKNOWN").upper())}</span> '
+                    f'<span style="color:var(--dim);font-size:0.7rem">{_html.escape(_fid_msg)}</span>')
+    elif _now_hour < 9:
+        fid_html = (f'<span style="color:var(--muted)">— NOT RUN YET TODAY</span> '
+                    f'<span style="color:var(--dim);font-size:0.7rem">(last: {_html.escape(str(_fid_date or "never"))})</span>')
+    else:
+        fid_html = (f'<span style="color:var(--bear);font-weight:700">⚠ HASN&#39;T LAUNCHED TODAY</span> '
+                    f'<span style="color:var(--dim);font-size:0.7rem">(last: {_html.escape(str(_fid_date or "never"))})</span>')
+
+    st.markdown(
+        f'<div style="font-family:var(--mono);font-size:0.8rem;padding:0.6rem 1rem;'
+        f'background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius);'
+        f'margin-bottom:1.2rem">{fid_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Run history ────────────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.65rem;font-weight:700;'
+        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.6rem">RUN HISTORY</div>',
+        unsafe_allow_html=True,
+    )
+    history = _run_history(10)
+    if not history:
+        st.markdown(
+            '<div style="font-family:var(--mono);font-size:0.7rem;color:var(--muted);margin-bottom:1.2rem">'
+            'No run history found.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        _hist_color = {"COMPLETE": "var(--bull)", "INCOMPLETE": "var(--accent)", "NO DATA": "var(--muted)"}
+        hist_rows = []
+        for h in history:
+            color = _hist_color.get(h["status"], "var(--muted)")
+            selected = h["selected"] if h["selected"] is not None else "—"
+            hist_rows.append(
+                f'<tr><td style="font-family:var(--mono);font-size:0.7rem;color:var(--text)">{h["date"]}</td>'
+                f'<td style="font-family:var(--mono);font-size:0.7rem;color:{color};font-weight:600">{h["status"]}</td>'
+                f'<td style="font-family:var(--mono);font-size:0.7rem;color:var(--muted)">{h["duration"]}</td>'
+                f'<td style="font-family:var(--mono);font-size:0.7rem;color:var(--muted)">{selected}</td></tr>'
+            )
+        st.markdown(
+            f'<div style="overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;'
+            f'margin-bottom:1.2rem">'
+            f'<table class="q-table"><thead><tr><th>DATE</th><th>STATUS</th><th>DURATION</th><th>SELECTED</th></tr></thead>'
+            f'<tbody>{"".join(hist_rows)}</tbody></table></div>',
+            unsafe_allow_html=True,
+        )
+
+
 @st.fragment(run_every="5s")
 def _render_monitor():
     log_path = _find_todays_log()
@@ -2812,6 +3056,8 @@ def _render_monitor():
         'letter-spacing:0.12em;color:var(--muted);margin-bottom:1.2rem">RUN MONITOR</div>',
         unsafe_allow_html=True,
     )
+
+    _render_fidelity_and_history_status()
 
     if log_path is None:
         st.markdown(

@@ -22,6 +22,22 @@ LOGIN_TIMEOUT      = 180_000  # ms — 3 minutes to log in + 2FA
 
 FIDELITY_LOGIN = "https://login.fidelity.com/ftgw/Fidelity/RtlCust/Login/Init"
 
+STATUS_FILE = SCREENER_DIR / "logs" / "fidelity_sync_status.json"
+
+
+def _write_status(result: str, message: str, positions_synced: int | None = None) -> None:
+    STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "date": date.today().isoformat(),
+        "attempted_at": datetime.now().isoformat(timespec="minutes"),
+        "result": result,
+        "message": message,
+        "positions_synced": positions_synced,
+    }
+    tmp = STATUS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    os.replace(tmp, STATUS_FILE)
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -128,6 +144,7 @@ async def run_sync() -> None:
     today = date.today().isoformat()
 
     _notify("Fidelity Sync", "Log in to Fidelity — positions will sync automatically")
+    _write_status("attempted", "Waiting for login")
 
     async with async_playwright() as pw:
         stealth_args = [
@@ -204,6 +221,7 @@ async def run_sync() -> None:
             await page.wait_for_timeout(4_000)
         except PWTimeout:
             _notify("Fidelity Sync", "Login timed out — using last known positions")
+            _write_status("timeout", "Login timed out — using last known positions")
             await browser.close()
             sys.exit(0)
 
@@ -305,6 +323,7 @@ async def run_sync() -> None:
         if not csv_content:
             _notify("Fidelity Sync", "Could not download CSV — see data/fidelity/diag/")
             print("ERROR: no CSV. Check data/fidelity/diag/positions_page.png and buttons.json", flush=True)
+            _write_status("no_csv", "Could not download CSV")
             sys.exit(1)
 
         # ── Step 5: parse CSV ─────────────────────────────────────────────────
@@ -312,6 +331,7 @@ async def run_sync() -> None:
         if not holdings:
             _notify("Fidelity Sync", "No equity holdings found in CSV")
             print("WARNING: parsed 0 holdings", flush=True)
+            _write_status("no_holdings", "No equity holdings found in CSV")
             sys.exit(0)
 
         print(f"Parsed {len(holdings)} holdings from Fidelity", flush=True)
@@ -356,10 +376,18 @@ async def run_sync() -> None:
         msg = " · ".join(parts)
         _notify("Fidelity Sync", msg)
         print(msg, flush=True)
+        result = "no_change" if not added and not removed else "success"
+        _write_status(result, msg, positions_synced=len(updated))
 
 
 def main() -> None:
-    asyncio.run(run_sync())
+    try:
+        asyncio.run(run_sync())
+    except SystemExit:
+        raise
+    except Exception as e:
+        _write_status("failed", str(e))
+        raise
 
 
 if __name__ == "__main__":
