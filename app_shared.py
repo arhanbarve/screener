@@ -2330,10 +2330,11 @@ def _render_filing_edge():
     )
     st.markdown(
         '<div style="font-size:0.74rem;color:var(--muted);margin-bottom:1rem;padding-left:12px;'
-        'border-left:2px solid var(--border-hi)">Stable 10-K/10-Q language vs prior year '
-        '(Cohen, Malloy &amp; Nguyen 2020). High <code style="color:var(--accent);'
-        'background:transparent">text_stability</code> = language unchanged = bullish in '
-        'neglected small/micro caps ($50M–$2B).</div>',
+        'border-left:2px solid var(--border-hi)">Filing-language change (Cohen, Malloy &amp; Nguyen 2020) '
+        'in neglected small/micro caps ($50M–$2B). The paper\'s edge sits in the <b>short/avoid leg</b>: '
+        'firms that <b>rewrite</b> their 10-K/10-Q underperform. The '
+        '<span style="color:var(--bear)">deteriorating-language watch list is the primary signal</span>; '
+        'stable-language longs are a secondary quality tilt, not standalone buys.</div>',
         unsafe_allow_html=True,
     )
 
@@ -2349,7 +2350,19 @@ def _render_filing_edge():
         cons = fe_streak.get((ticker, list_type), {}).get("consecutive", 0)
         return f"🔥{cons}d" if cons >= 2 else "—"
 
-    avg_stab = float(longs["text_stability"].mean()) if "text_stability" in longs.columns and longs["text_stability"].notna().any() else 0.0
+    # Confirmed-negative changers (Claude layer) and 8-K red flags, if populated
+    def _count_neg(df: pd.DataFrame) -> int:
+        if "change_direction" not in df.columns:
+            return 0
+        return int((pd.to_numeric(df["change_direction"], errors="coerce") == -1).sum())
+
+    def _count_flags(df: pd.DataFrame) -> int:
+        if "eight_k_penalty" not in df.columns:
+            return 0
+        return int((pd.to_numeric(df["eight_k_penalty"], errors="coerce") == -1).sum())
+
+    neg_changers = _count_neg(watch)
+    red_flags = _count_flags(watch) + _count_flags(longs)
 
     # ── Summary strip ─────────────────────────────────────────────────────────
     st.markdown(f"""
@@ -2359,19 +2372,74 @@ def _render_filing_edge():
     <div class="summary-value accent">{_html.escape(date_str)}</div>
   </div>
   <div class="summary-cell">
-    <div class="summary-label">STABLE LONGS</div>
-    <div class="summary-value bull">{len(longs)}</div>
-  </div>
-  <div class="summary-cell">
-    <div class="summary-label">WATCH LIST</div>
+    <div class="summary-label">WATCH (PRIMARY)</div>
     <div class="summary-value bear">{len(watch)}</div>
   </div>
   <div class="summary-cell">
-    <div class="summary-label">AVG STABILITY</div>
-    <div class="summary-value">{avg_stab:.4f}</div>
+    <div class="summary-label">NEG CHANGERS</div>
+    <div class="summary-value bear">{neg_changers}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">8-K FLAGS</div>
+    <div class="summary-value bear">{red_flags}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">STABLE LONGS</div>
+    <div class="summary-value bull">{len(longs)}</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+    # ── PRIMARY: Deteriorating-language watch list ───────────────────────────
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:var(--bear);margin-bottom:0.5rem">▼ DETERIORATING-LANGUAGE WATCH LIST · PRIMARY SIGNAL</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Names that changed filing language most vs the prior comparable. This is the paper's short/avoid leg. Claude-confirmed negatives lead, then lowest stability. Use as an avoid signal (these names cannot be shorted at size).")
+    if watch.empty:
+        st.info("No watch-list data.")
+    else:
+        wdisplay = pd.DataFrame()
+        wdisplay["#"] = range(1, len(watch) + 1)
+        wdisplay["Ticker"] = watch["ticker"]
+        wdisplay["Name"] = watch.get("name", "").str[:22]
+        wdisplay["Sector"] = watch.get("sector", "").fillna("—").str[:16]
+        if "change_direction" in watch.columns:
+            wdisplay["Change"] = watch["change_direction"].apply(
+                lambda v: {1: "🔺 pos", 0: "• neutral", -1: "🔻 NEG"}.get(int(v) if pd.notna(v) else 0, "—")
+            )
+        wdisplay["Stability"] = watch.get("text_stability", pd.Series(dtype=float)).apply(
+            lambda v: _stab_badge(v) if pd.notna(v) else "—"
+        )
+        if "risk_growth" in watch.columns:
+            wdisplay["Risk Δ"] = watch["risk_growth"].apply(
+                lambda v: (f"+{v:.0%}" if v >= 0 else f"{v:.0%}") if pd.notna(v) else "—"
+            )
+        if "eight_k_penalty" in watch.columns:
+            wdisplay["8-K"] = watch["eight_k_penalty"].apply(
+                lambda v: "🚩" if pd.notna(v) and int(v) == -1 else ""
+            )
+        wdisplay["Doc Sim"] = watch.get("doc_sim", pd.Series(dtype=float)).apply(
+            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
+        )
+        wdisplay["Risk Sim"] = watch.get("risk_sim", pd.Series(dtype=float)).apply(
+            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
+        )
+        if "change_reason" in watch.columns and watch["change_reason"].notna().any():
+            wdisplay["Reason"] = watch["change_reason"].apply(
+                lambda v: (str(v)[:60] + "…") if pd.notna(v) and str(v).strip() and len(str(v)) > 60
+                else (str(v) if pd.notna(v) and str(v).strip() else "—")
+            )
+        st.dataframe(wdisplay, use_container_width=True, hide_index=True)
+
+    st.markdown('<div style="height:1px;background:var(--border);margin:1.5rem 0"></div>', unsafe_allow_html=True)
+
+    # ── SECONDARY: Stable-filing longs (research / quality tilt) ─────────────
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">STABLE-FILING LONGS · SECONDARY / RESEARCH</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Weak leg of the anomaly; treat as a quality/watch tilt, not standalone buys. Ranked recency-decayed: text_stability×0.50 + gp_assets×0.20 + neglect×0.15 + risk_growth×0.15.")
 
     # ── Top-3 cards ──────────────────────────────────────────────────────────
     top3 = longs.head(3)
@@ -2433,14 +2501,7 @@ def _render_filing_edge():
   </div>
 </div>""", unsafe_allow_html=True)
 
-    st.markdown('<div style="height:1px;background:var(--border);margin:1.5rem 0"></div>', unsafe_allow_html=True)
-
-    # ── Stable-filing longs table ────────────────────────────────────────────
-    st.markdown(
-        '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">STABLE-FILING LONGS</div>',
-        unsafe_allow_html=True,
-    )
-    st.caption("Ranked: text_stability × 0.55 + gp_assets × 0.25 + neglect × 0.20")
+    st.markdown('<div style="height:0.5rem"></div>', unsafe_allow_html=True)
 
     display = pd.DataFrame()
     display["#"] = range(1, len(longs) + 1)
@@ -2462,9 +2523,17 @@ def _render_filing_edge():
     display["ADV"] = longs.get("avg_dollar_vol_20d", pd.Series(dtype=float)).apply(
         lambda v: f"${v/1e3:.0f}K" if pd.notna(v) and v else "—"
     )
+    if "filing_age_days" in longs.columns:
+        display["Filed"] = longs["filing_age_days"].apply(
+            lambda v: f"{int(v)}d ago" if pd.notna(v) and v < 9000 else "—"
+        )
+    elif "filing_date" in longs.columns:
+        display["Filed"] = longs["filing_date"].apply(
+            lambda v: str(v) if pd.notna(v) and str(v).strip() else "—"
+        )
     if "change_direction" in longs.columns:
         display["Change"] = longs["change_direction"].apply(
-            lambda v: {1: "UP", 0: "—", -1: "DN"}.get(int(v) if pd.notna(v) else 0, "—")
+            lambda v: {1: "🔺", 0: "—", -1: "🔻"}.get(int(v) if pd.notna(v) else 0, "—")
         )
     st.dataframe(display, use_container_width=True, hide_index=True)
 
@@ -2477,41 +2546,6 @@ def _render_filing_edge():
                 ct = str(row.get("change_type", ""))
                 cr = str(row.get("change_reason", ""))
                 st.markdown(f"**{row['ticker']}** {icon} `{ct}` — {cr}")
-
-    st.markdown('<div style="height:1px;background:var(--border);margin:1.5rem 0"></div>', unsafe_allow_html=True)
-
-    # ── Deteriorating-language watch list ────────────────────────────────────
-    st.markdown(
-        '<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:var(--muted);margin-bottom:0.5rem">DETERIORATING-LANGUAGE WATCH LIST</div>',
-        unsafe_allow_html=True,
-    )
-    st.caption("Lowest text_stability — language changed most vs prior year. Treat as avoid/short-watch signal.")
-    if watch.empty:
-        st.info("No watch-list data.")
-    else:
-        wdisplay = pd.DataFrame()
-        wdisplay["#"] = range(1, len(watch) + 1)
-        wdisplay["Ticker"] = watch["ticker"]
-        wdisplay["Name"] = watch.get("name", "").str[:25]
-        wdisplay["Sector"] = watch.get("sector", "").fillna("—").str[:18]
-        wdisplay["Streak"] = watch["ticker"].apply(lambda t: _fe_streak_badge(t, "watch"))
-        wdisplay["Stability"] = watch.get("text_stability", pd.Series(dtype=float)).apply(
-            lambda v: _stab_badge(v) if pd.notna(v) else "—"
-        )
-        wdisplay["Doc Sim"] = watch.get("doc_sim", pd.Series(dtype=float)).apply(
-            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
-        )
-        wdisplay["Risk Sim"] = watch.get("risk_sim", pd.Series(dtype=float)).apply(
-            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
-        )
-        wdisplay["MDA Sim"] = watch.get("mda_sim", pd.Series(dtype=float)).apply(
-            lambda v: f"{v:.4f}" if pd.notna(v) else "—"
-        )
-        if "change_direction" in watch.columns:
-            wdisplay["Change"] = watch["change_direction"].apply(
-                lambda v: {1: "UP", 0: "—", -1: "DN"}.get(int(v) if pd.notna(v) else 0, "—")
-            )
-        st.dataframe(wdisplay, use_container_width=True, hide_index=True)
 
     # ── Methodology expander ─────────────────────────────────────────────────
     with st.expander("Methodology & edge rationale"):
@@ -2529,22 +2563,34 @@ already computes. This screen exploits two structural moats large funds *cannot*
 **The anomaly (Cohen, Malloy & Nguyen 2020):**
 Firms that materially *change* the language of their 10-K/10-Q (Risk Factors + MD&A) vs the
 prior comparable filing subsequently **underperform**; stable-language "non-changers"
-**outperform**. The effect is strongest in small caps with low analyst coverage — exactly this universe.
+**outperform**. The spread is asymmetric — most of it is the *short/avoid* leg (changers), which is
+why the deteriorating-language watch list is the primary product and the stable longs are a secondary tilt.
 
-**Score components:**
-- `text_stability` (55%) — cosine similarity of current vs prior comparable filing sections
-- `gp_assets` (25%) — gross profitability quality gate (avoid value traps)
-- `neglect_score` (20%) — inverse dollar-volume rank (more neglected = more potential edge)
+**Similarity engine:** stopwords removed, then per section `0.5 × bigram_Jaccard + 0.5 × cosine`.
+A parse-failure guard drops a section similarity when it is implausibly low (<0.30) while the
+whole-document similarity is near-identical (>0.98).
+
+**Score components (recency-decayed composite):**
+- `text_stability` (50%) — blended similarity of current vs prior comparable filing sections
+- `gp_assets` (20%) — gross profitability quality gate (avoid value traps)
+- `neglect_score` (15%) — inverse dollar-volume rank (more neglected = more potential edge)
+- `risk_growth` (15%) — penalizes risk-section word-count growth (added risks = bearish)
+
+**Recency:** the drift is anchored to the filing date. Longs older than 120 days are excluded;
+composite decays with a 90-day half-life so fresh filings rank first. Both 10-K and 10-Q are run
+and the freshest is used.
 
 **Claude precision layer** (when `ANTHROPIC_API_KEY` is set):
-Runs only on names *below* the similarity threshold — the small subset that actually changed.
-Classifies whether the change is positive (+1), neutral (0), or negative (-1) to lift precision
-over the raw deterministic signal.
+Runs only on names *below* the similarity threshold. Classifies each change positive (+1), neutral (0),
+or negative (-1); confirmed negatives are excluded from longs and lead the watch list. A Haiku 8-K
+scan flags material events (auditor change, exec departure, covenant breach, impairment) which veto
+a name from the longs.
 
 **Risk controls:**
 - Tradeable floor: ≥$200K ADV (must be exitable)
 - Quality gate: gp_assets ≥ Q25 of universe (avoid structurally unprofitable names)
 - No leverage, no shorts recommended — use watch list as *avoid* signal only
+- No trade sizing until `scripts/validate_filing_edge.py` clears its predefined bar
         """)
 
 
