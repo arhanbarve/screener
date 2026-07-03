@@ -399,17 +399,18 @@ def _forward_return(prices: pd.DataFrame, event_date: str, horizon: int) -> floa
 
 
 def compute_abnormal_returns(events_df: pd.DataFrame, db_path: str,
-                             horizons: tuple = HORIZONS) -> pd.DataFrame:
+                             horizons: tuple = HORIZONS,
+                             benchmark: str = BENCHMARK) -> pd.DataFrame:
     if events_df.empty:
         return events_df
     start = (pd.Timestamp(events_df["event_date"].min()) - pd.Timedelta(days=10)).date().isoformat()
     end = (pd.Timestamp(events_df["event_date"].max()) + pd.Timedelta(days=120)).date().isoformat()
 
     tickers = list(events_df["ticker"].unique())
-    price_cache = get_history_bulk([*tickers, BENCHMARK], db_path, start, end)
-    bench = price_cache.get(BENCHMARK)
+    price_cache = get_history_bulk([*tickers, benchmark], db_path, start, end)
+    bench = price_cache.get(benchmark)
     if bench is None:
-        raise RuntimeError(f"Failed to fetch benchmark {BENCHMARK} history — cannot compute abnormal returns")
+        raise RuntimeError(f"Failed to fetch benchmark {benchmark} history — cannot compute abnormal returns")
 
     rows = []
     for _, ev in events_df.iterrows():
