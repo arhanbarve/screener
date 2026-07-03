@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from src.cache import (
     init_db, put_prices, get_prices, put_fundamentals, get_fundamentals, put_edgar, get_edgar,
     archive_universe_snapshot, put_backtest_prices, get_backtest_prices,
+    get_ticker_profile, put_ticker_profile,
 )
 
 def make_tmp_db():
@@ -117,4 +118,20 @@ def test_archive_universe_snapshot_nan_cik():
     conn.close()
     assert rows[0] == ("AAPL", "")
     assert rows[1] == ("MSFT", "0000789019")
+    os.unlink(db)
+
+def test_ticker_profile_roundtrip():
+    db = make_tmp_db()
+    init_db(db)
+    assert get_ticker_profile(db, "AAA") is None
+    put_ticker_profile(db, "AAA", "Technology", "Semiconductors")
+    prof = get_ticker_profile(db, "AAA")
+    assert prof == {"sector": "Technology", "industry": "Semiconductors"}
+    os.unlink(db)
+
+def test_ticker_profile_stores_empty_strings():
+    db = make_tmp_db()
+    init_db(db)
+    put_ticker_profile(db, "BBB", None, None)  # failed lookups cache as empty
+    assert get_ticker_profile(db, "BBB") == {"sector": "", "industry": ""}
     os.unlink(db)

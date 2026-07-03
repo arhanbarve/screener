@@ -138,6 +138,14 @@ def init_db(db_path: str):
             ticker TEXT PRIMARY KEY, payload TEXT, fetched_at TEXT
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS ticker_profile_cache (
+            ticker TEXT PRIMARY KEY,
+            sector TEXT,
+            industry TEXT,
+            fetched_at TEXT
+        )
+    """)
     conn.commit()
 
 
@@ -284,6 +292,31 @@ def get_market_cap(db_path: str, ticker: str, ttl_hours: int) -> float | None:
     )
     row = c.fetchone()
     return row[0] if row else None
+
+
+def put_ticker_profile(db_path: str, ticker: str, sector, industry):
+    conn = _get_conn(db_path)
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR REPLACE INTO ticker_profile_cache VALUES (?,?,?,?)",
+        (ticker, _str_or_empty(sector), _str_or_empty(industry), _now_iso()),
+    )
+    conn.commit()
+
+
+def get_ticker_profile(db_path: str, ticker: str) -> dict | None:
+    """No TTL: sector/industry are effectively static. None = never fetched;
+    empty strings = fetched but yfinance had no data (don't refetch)."""
+    conn = _get_conn(db_path)
+    c = conn.cursor()
+    c.execute(
+        "SELECT sector, industry FROM ticker_profile_cache WHERE ticker=?",
+        (ticker,),
+    )
+    row = c.fetchone()
+    if row is None:
+        return None
+    return {"sector": row[0], "industry": row[1]}
 
 
 def get_market_cap_stale(db_path: str, ticker: str) -> float | None:
