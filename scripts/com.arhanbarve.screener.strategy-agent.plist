@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.arhanbarve.screener.strategy-agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/arhanbarve/Code/screener/scripts/strategy_agent.sh</string>
+    </array>
+
+    <!-- Nightly at 21:07 ET; launchd fires on next wake if machine was asleep -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>21</integer>
+        <key>Minute</key><integer>7</integer>
+    </dict>
+
+    <!-- Same fd-limit fix as com.arhanbarve.screener: yfinance threaded downloads -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/arhanbarve/Code/screener/logs/strategy_agent_launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/arhanbarve/Code/screener/logs/strategy_agent_launchd.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
