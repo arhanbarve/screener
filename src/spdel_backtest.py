@@ -84,7 +84,8 @@ def parse_changes(raw: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     effective_date (Timestamp), event_date (iso str, effective + 1 day),
     reason, category (sp500_deletion for non-M&A removals, sp500_addition
     for all additions)."""
-    dates = pd.to_datetime(raw[("Date", "Date")], format="%B %d, %Y", errors="coerce")
+    dates = pd.to_datetime(raw[("Effective Date", "Effective Date")],
+                           format="%B %d, %Y", errors="coerce")
     start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
     rows = []
     for i in range(len(raw)):

@@ -6,7 +6,7 @@ from src.spdel_backtest import is_ma_reason, parse_changes
 def _raw(rows):
     """Build a frame shaped like Wikipedia's changes table (MultiIndex cols)."""
     cols = pd.MultiIndex.from_tuples([
-        ("Date", "Date"), ("Added", "Ticker"), ("Added", "Security"),
+        ("Effective Date", "Effective Date"), ("Added", "Ticker"), ("Added", "Security"),
         ("Removed", "Ticker"), ("Removed", "Security"), ("Reason", "Reason"),
     ])
     return pd.DataFrame(rows, columns=cols)
