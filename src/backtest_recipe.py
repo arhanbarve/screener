@@ -74,3 +74,88 @@ def load_earnings_for_tickers(tickers: set, db_path: str) -> pd.DataFrame:
         con, params=list(tickers))
     con.close()
     return df
+
+
+def split_by_earnings(events: pd.DataFrame, earnings: pd.DataFrame,
+                      window_days: int = 3,
+                      date_col: str = "event_date") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Like drop_earnings_contamination, but returns BOTH sides:
+    (clean, contaminated). Reversal-family ideas use the contaminated rows
+    as a control category instead of discarding them."""
+    if events.empty:
+        return events, events
+    if earnings.empty:
+        return events.reset_index(drop=True), events.iloc[0:0]
+    ann_by_ticker = {}
+    for ticker, g in earnings.groupby("ticker"):
+        ann_by_ticker[ticker] = pd.to_datetime(g["announce_date"]).tolist()
+    contaminated_mask = []
+    for _, row in events.iterrows():
+        dates = ann_by_ticker.get(row["ticker"], [])
+        ev_ts = pd.Timestamp(row[date_col])
+        contaminated_mask.append(
+            any(abs((ev_ts - d).days) <= window_days for d in dates))
+    mask = pd.Series(contaminated_mask, index=events.index)
+    return (events[~mask].reset_index(drop=True),
+            events[mask].reset_index(drop=True))
+
+
+def split_by_news(events: pd.DataFrame, filing_dates_by_ticker: dict,
+                  days_before: int = 3, days_after: int = 1,
+                  date_col: str = "trigger_date") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(no_news, news) split: an event is 'news' if the ticker filed
+    anything in filing_dates_by_ticker within [date - days_before,
+    date + days_after]. Tickers absent from the dict count as no-news
+    (their filings were checked and none matched, or they have no CIK —
+    callers must pass an entry per ticker they actually resolved)."""
+    if events.empty:
+        return events, events
+    news_mask = []
+    for _, row in events.iterrows():
+        dates = filing_dates_by_ticker.get(row["ticker"], [])
+        ev_ts = pd.Timestamp(row[date_col])
+        news_mask.append(any(
+            -days_before <= (d - ev_ts).days <= days_after for d in dates))
+    mask = pd.Series(news_mask, index=events.index)
+    return (events[~mask].reset_index(drop=True),
+            events[mask].reset_index(drop=True))
+
+
+def attach_cap_proxy(events: pd.DataFrame, uni: pd.DataFrame,
+                     price_cache: dict,
+                     date_col: str = "event_date") -> pd.DataFrame:
+    """cap_proxy = current market_cap x price_at_event / current_price.
+    Pre-registered survivorship mitigation (registry IDEA BANK 2 preamble):
+    reversal-family signals must not admit events that were sub-$2.5B when
+    they happened just because the name later grew into the universe.
+    Rows with no usable price history get NaN (caller filters + logs)."""
+    if events.empty:
+        events = events.copy()
+        events["cap_proxy"] = pd.Series(dtype=float)
+        return events
+    caps_now = dict(zip(uni["ticker"], uni["market_cap"]))
+    vals = []
+    for _, row in events.iterrows():
+        p = price_cache.get(row["ticker"])
+        cap_now = caps_now.get(row["ticker"])
+        if p is None or p.empty or cap_now is None:
+            vals.append(float("nan"))
+            continue
+        ts = pd.Timestamp(row[date_col])
+        upto = p.loc[p.index <= ts, "close"]
+        p_now = float(p["close"].iloc[-1])
+        if upto.empty or p_now == 0:
+            vals.append(float("nan"))
+            continue
+        vals.append(float(cap_now) * float(upto.iloc[-1]) / p_now)
+    events = events.copy()
+    events["cap_proxy"] = vals
+    return events
+
+
+def filter_cap_proxy(events: pd.DataFrame, min_cap: float = 2.5e9) -> pd.DataFrame:
+    """Keep rows whose cap_proxy is present and >= min_cap."""
+    if events.empty:
+        return events
+    return events[events["cap_proxy"].notna()
+                  & (events["cap_proxy"] >= min_cap)].reset_index(drop=True)
