@@ -174,12 +174,19 @@ def search(phrase: str, forms: str, start: str, end: str,
                 names = s.get("display_names") or []
                 if not ciks:
                     continue
+                # hit["_id"] is "{accession}:{primary_doc_filename}" — the
+                # only place the primary document's filename is exposed;
+                # needed to fetch actual filing text (no snippet field
+                # exists on the hit itself, see module docstring point 2).
+                _id = h.get("_id", "")
+                primary_doc = _id.split(":", 1)[1] if ":" in _id else None
                 rows.append({
                     "cik": str(ciks[0]).zfill(10),
                     "ticker_hint": parse_ticker_hint(names[0]) if names else None,
                     "file_date": s.get("file_date"),
                     "adsh": s.get("adsh"),
                     "form": s.get("form"),
+                    "primary_doc": primary_doc,
                 })
             from_offset += len(hits)
             if len(hits) == 0 or from_offset >= min(total, MAX_FROM):
