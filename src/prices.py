@@ -38,18 +38,27 @@ BATCH_SIZE = 200
 HISTORY_DAYS = 420
 
 
-def _fetch_batch_yfinance(tickers: list[str]) -> dict[str, pd.DataFrame]:
+def _fetch_batch_yfinance(tickers: list[str], start: str | None = None, end: str | None = None) -> dict[str, pd.DataFrame]:
+    """Batched yfinance download. Defaults to the rolling 420-day window used by
+    the live screener; pass start/end for an explicit historical range (e.g.
+    multi-year backtests) instead."""
     joined = " ".join(tickers)
     try:
-        raw = yf.download(
-            joined,
-            period="420d",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            group_by="ticker",
-            threads=True,
-        )
+        if start is not None:
+            raw = yf.download(
+                joined, start=start, end=end, interval="1d",
+                auto_adjust=True, progress=False, group_by="ticker", threads=True,
+            )
+        else:
+            raw = yf.download(
+                joined,
+                period="420d",
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                group_by="ticker",
+                threads=True,
+            )
     except Exception as e:
         logger.warning(f"yfinance batch failed: {e}")
         return {}

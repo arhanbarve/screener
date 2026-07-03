@@ -130,6 +130,14 @@ def init_db(db_path: str):
             ticker TEXT PRIMARY KEY, reason TEXT, fetched_at TEXT
         )
     """)
+    # Multi-year OHLCV history for event-backtest forward returns. Separate
+    # from `prices` (which holds only a rolling ~420-day window keyed to the
+    # live screener's TTL) so backtest fetches never collide with it.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS event_backtest_prices (
+            ticker TEXT PRIMARY KEY, payload TEXT, fetched_at TEXT
+        )
+    """)
     conn.commit()
 
 
@@ -200,6 +208,37 @@ def get_prices(db_path: str, ticker: str, ttl_hours: int) -> pd.DataFrame | None
     df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date")
     return df
+
+def put_backtest_prices(db_path: str, ticker: str, df: pd.DataFrame):
+    """Full-history OHLCV for one ticker, stored as a JSON payload (not row-per-day
+    like `prices`) since the backtest wants years of history, not a rolling window."""
+    conn = _get_conn(db_path)
+    payload = df.reset_index().rename(columns={df.index.name or "index": "date"})
+    payload["date"] = payload["date"].astype(str)
+    conn.execute(
+        "INSERT OR REPLACE INTO event_backtest_prices VALUES (?,?,?)",
+        (ticker, payload.to_json(orient="records"), _now_iso()),
+    )
+    conn.commit()
+
+
+def get_backtest_prices(db_path: str, ticker: str, ttl_days: int = 30) -> pd.DataFrame | None:
+    cutoff = (datetime.utcnow() - timedelta(days=ttl_days)).isoformat()
+    conn = _get_conn(db_path)
+    c = conn.cursor()
+    c.execute(
+        "SELECT payload FROM event_backtest_prices WHERE ticker=? AND fetched_at > ?",
+        (ticker, cutoff),
+    )
+    row = c.fetchone()
+    if row is None:
+        return None
+    df = pd.DataFrame(json.loads(row[0]))
+    if df.empty:
+        return None
+    df["date"] = pd.to_datetime(df["date"])
+    return df.set_index("date").sort_index()
+
 
 def put_fundamentals(db_path: str, ticker: str, payload: dict):
     conn = _get_conn(db_path)

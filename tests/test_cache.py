@@ -5,7 +5,10 @@ import math
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from src.cache import init_db, put_prices, get_prices, put_fundamentals, get_fundamentals, put_edgar, get_edgar, archive_universe_snapshot
+from src.cache import (
+    init_db, put_prices, get_prices, put_fundamentals, get_fundamentals, put_edgar, get_edgar,
+    archive_universe_snapshot, put_backtest_prices, get_backtest_prices,
+)
 
 def make_tmp_db():
     f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -51,6 +54,34 @@ def test_prices_expired_returns_none():
     put_prices(db, "AAPL", df)
     # TTL of 0 hours means immediately expired
     result = get_prices(db, "AAPL", ttl_hours=0)
+    assert result is None
+    os.unlink(db)
+
+def test_backtest_prices_roundtrip():
+    db = make_tmp_db()
+    init_db(db)
+    df = pd.DataFrame({
+        "open": [10.0, 10.5], "high": [10.2, 10.8], "low": [9.9, 10.4],
+        "close": [10.1, 10.6], "volume": [50000, 60000]
+    }, index=pd.to_datetime(["2024-01-02", "2024-01-03"]))
+    df.index.name = "date"
+    put_backtest_prices(db, "SMCP", df)
+    result = get_backtest_prices(db, "SMCP", ttl_days=30)
+    assert result is not None
+    assert len(result) == 2
+    assert abs(result["close"].iloc[1] - 10.6) < 1e-6
+    os.unlink(db)
+
+def test_backtest_prices_expired_returns_none():
+    db = make_tmp_db()
+    init_db(db)
+    df = pd.DataFrame({
+        "open": [10.0], "high": [10.2], "low": [9.9],
+        "close": [10.1], "volume": [50000]
+    }, index=pd.to_datetime(["2024-01-02"]))
+    df.index.name = "date"
+    put_backtest_prices(db, "SMCP", df)
+    result = get_backtest_prices(db, "SMCP", ttl_days=0)
     assert result is None
     os.unlink(db)
 

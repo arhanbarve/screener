@@ -43,8 +43,15 @@ UNIVERSE_PATH = "data/universe.parquet"
 OUTPUT_DIR    = "output"
 
 
-def _apply_neglect_gate(factors_df: pd.DataFrame, lp_cfg: dict) -> pd.DataFrame:
-    """Apply the filing-edge universe gate (replaces main screen's liquidity gate)."""
+def _apply_neglect_gate(factors_df: pd.DataFrame, lp_cfg: dict, min_price: float = 0.0) -> pd.DataFrame:
+    """Apply the filing-edge universe gate (replaces main screen's liquidity gate).
+
+    `min_price` (config: universe.min_price) was declared in config.yaml but
+    never actually enforced anywhere — sub-penny microcaps with high share
+    counts can clear the $50M-$2B market-cap band and $200K ADV floor on
+    volume alone, and their extreme % price swings (reverse splits, thin-float
+    pumps) dominate any downstream return statistics. Enforced here.
+    """
     min_cap = lp_cfg["min_market_cap"]
     max_cap = lp_cfg["max_market_cap"]
     min_vol = lp_cfg["min_avg_dollar_vol_20d"]
@@ -52,9 +59,10 @@ def _apply_neglect_gate(factors_df: pd.DataFrame, lp_cfg: dict) -> pd.DataFrame:
     result = factors_df[
         (factors_df["market_cap"] >= min_cap) &
         (factors_df["market_cap"] <= max_cap) &
-        (factors_df["avg_dollar_vol_20d"] >= min_vol)
+        (factors_df["avg_dollar_vol_20d"] >= min_vol) &
+        (factors_df["price"] >= min_price)
     ].reset_index(drop=True)
-    logger.info(f"[neglect_gate] {before} → {len(result)} in $50M–$2B band (ADV≥$200K)")
+    logger.info(f"[neglect_gate] {before} → {len(result)} in $50M–$2B band (ADV≥$200K, price≥${min_price})")
     return result
 
 
@@ -86,7 +94,7 @@ def run(force_universe: bool = False, limit: int | None = None):
         },
     }
     _, factors_df = fetch_all_prices(universe_df, price_cfg, DB_PATH)
-    neglect_df = _apply_neglect_gate(factors_df, lp)
+    neglect_df = _apply_neglect_gate(factors_df, lp, min_price=cfg["universe"].get("min_price", 0.0))
 
     if len(neglect_df) == 0:
         logger.info("[lazy_run] No survivors after neglect gate — aborting")
