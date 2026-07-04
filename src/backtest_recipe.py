@@ -224,3 +224,12 @@ def attach_net_returns(events: pd.DataFrame, horizons: tuple) -> pd.DataFrame:
     for h in horizons:
         events[f"abn_ret_net_{h}d"] = events[f"abn_ret_{h}d"] - costs
     return events
+
+
+def as_net_frame(events: pd.DataFrame, horizons: tuple) -> pd.DataFrame:
+    """Frame whose abn_ret_{h}d columns hold NET values, so summarize()
+    gates on net-of-cost returns without modification."""
+    net = events.copy()
+    for h in horizons:
+        net[f"abn_ret_{h}d"] = net[f"abn_ret_net_{h}d"]
+    return net

@@ -36,6 +36,7 @@ import pandas as pd
 from scipy.stats import ttest_ind
 
 from src.backtest_recipe import (
+    as_net_frame,
     attach_cap_proxy,
     attach_dollar_vol,
     attach_net_returns,
@@ -67,10 +68,7 @@ CONTROL_CATEGORY = "pead_miss"
 def _as_net_frame(events: pd.DataFrame, horizons: tuple = HORIZONS) -> pd.DataFrame:
     """Frame whose abn_ret_{h}d columns hold NET values, so summarize()
     gates on net without modification."""
-    net = events.copy()
-    for h in horizons:
-        net[f"abn_ret_{h}d"] = net[f"abn_ret_net_{h}d"]
-    return net
+    return as_net_frame(events, horizons)
 
 
 def beat_vs_miss_spread(events: pd.DataFrame, horizons: tuple = HORIZONS) -> pd.DataFrame:
