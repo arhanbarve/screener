@@ -1171,6 +1171,7 @@ def _inject_js_animations() -> None:
 
 from src.positions import (
     compute_exit_signals,
+    days_to_next_earnings,
     fetch_ohlcv,
     get_live_quote,
     load_positions,
@@ -1260,8 +1261,11 @@ def setup_page(page_id: str, title: str = "Screener") -> None:
 
 @st.cache_data(ttl=900)
 def _cached_position_data(ticker: str) -> tuple[dict, float | None, float | None]:
-    df = fetch_ohlcv(ticker, days=60)
-    signals = compute_exit_signals(df)
+    df = fetch_ohlcv(ticker, days=300)
+    spy_df = fetch_ohlcv("SPY", days=300)
+    spy_close = spy_df["close"] if not spy_df.empty and "close" in spy_df.columns else None
+    signals = compute_exit_signals(df, spy_close=spy_close,
+                                   days_to_earn=days_to_next_earnings(ticker))
     price, prev_close = get_live_quote(ticker)
     return signals, price, prev_close
 
@@ -1270,10 +1274,14 @@ def _cached_position_data(ticker: str) -> tuple[dict, float | None, float | None
 def _batch_position_data(tickers: tuple[str, ...]) -> tuple[dict[str, tuple[dict, float | None, float | None]], datetime]:
     import concurrent.futures
 
+    spy_df = fetch_ohlcv("SPY", days=300)
+    spy_close = spy_df["close"] if not spy_df.empty and "close" in spy_df.columns else None
+
     def _fetch_one(ticker: str) -> tuple[str, tuple[dict, float | None, float | None]]:
         try:
-            df = fetch_ohlcv(ticker, days=60)
-            signals = compute_exit_signals(df)
+            df = fetch_ohlcv(ticker, days=300)
+            signals = compute_exit_signals(df, spy_close=spy_close,
+                                           days_to_earn=days_to_next_earnings(ticker))
             price, prev_close = get_live_quote(ticker)
             if price is None:
                 print(f"[positions] live quote fetch returned no price for {ticker} — falling back to Fidelity snapshot", flush=True)
@@ -1677,10 +1685,16 @@ the stock's own historical surprise volatility. Consistently beating = durable e
 | **RSI (14)** | Momentum — overbought/oversold on 0–100 scale | 40–65 (not stretched) | >70 + declining |
 | **MACD** | Trend direction via 12/26 EMA crossover | Bullish cross | Bearish cross |
 | **Stochastic %K/%D** | Short-term price position in recent range | %K < 70, above %D | %K > 80 then crosses below %D |
-| **ADX (14)** | Trend *strength* (not direction) — >25 = real trend | >20 | Peaked, then drops >5 pts |
+| **ADX / DMI (14)** | Trend *strength* + direction | >20 | Weakening >5 pts AND −DI > +DI |
 | **MFI (14)** | Volume-weighted RSI — tracks smart money flow | 40–65 | <50 (money leaving) |
+| **OBV / SMA20-50-200** | Volume accumulation + trend structure | OBV rising, price > MAs | OBV distribution, close < SMA |
+| **Chandelier / ATR stop** | Volatility-scaled trailing stop | — | close < high(22) − 3·ATR |
 
-Exit rule: **3 or more of 5 signals triggered = exit**.
+**Exit tiers** (mirrors the entry grade's veto + scored-points design):
+- **HARD EXIT** (any one → sell, overrides everything; both require *close < SMA200* so they never fire in a healthy uptrend):
+  **①** ATR trailing-stop breach below the 200-day  **②** death-cross regime (close < SMA200 and SMA50 < SMA200).
+- **SOFT** (weighted points, max 12): MACD, SMA50/SMA20 breaks, RSI, Stoch, MFI, OBV distribution, ADX+DMI, Bollinger blow-off, RS-vs-SPY decay → **STRONG EXIT** ≥7 · **TRIM** 4–6 · **WATCH** 2–3 · **HOLD** <2.
+- **EARN Nd** chip = earnings within 14 days (risk flag only, not counted in the score).
         """)
 
     # ── News Entry Signals — top picks ────────────────────────────────────────
@@ -2034,7 +2048,11 @@ def _live_fid_metrics(fid: dict, live_price: float | None, prev_close: float | N
 def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float | None, float | None] | None = None) -> None:
     ticker  = pos["ticker"]
     signals, live_price, prev_close = cached if cached is not None else _cached_position_data(ticker)
-    score   = signals.get("score", 0)
+    grade      = signals.get("grade", "HOLD")
+    soft_score = signals.get("soft_score", 0)
+    soft_max   = signals.get("soft_max", 12)
+    hard_exit  = bool(signals.get("hard_exit"))
+    hard_reasons = signals.get("hard_reasons") or []
 
     entry_price = pos.get("entry_price", 0)
     entry_date  = pos.get("entry_date", "")
@@ -2088,24 +2106,62 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
         gl_row   = ""
         desc_html = ""
 
-    top_c = "var(--bear)" if score >= 3 else ("var(--wait)" if score >= 1 else "var(--bull)")
+    top_c = {
+        "STRONG EXIT": "var(--bear)", "TRIM": "var(--wait)",
+        "WATCH": "var(--muted)", "HOLD": "var(--bull)",
+    }.get(grade, "var(--bull)")
 
-    badges = (
-        _signal_badge("RSI",   signals.get("rsi"),   signals.get("rsi_val"))
-        + " " + _signal_badge("MACD",  signals.get("macd"))
+    # Hard-tier badges (trend-confirmed vol stop, death-cross regime) shown
+    # first, then the weighted soft signals.
+    hard_badges = (
+        _signal_badge("STOP",  signals.get("chandelier"))
+        + " " + _signal_badge("DEATH✗", signals.get("death_cross"))
+    )
+    soft_badges = (
+        _signal_badge("MACD",  signals.get("macd"))
+        + " " + _signal_badge("SMA50", signals.get("sma50_break"))
+        + " " + _signal_badge("SMA20", signals.get("sma20_break"))
+        + " " + _signal_badge("RSI",   signals.get("rsi"),   signals.get("rsi_val"))
         + " " + _signal_badge("Stoch", signals.get("stoch"), signals.get("stoch_k"))
-        + " " + _signal_badge("ADX",   signals.get("adx"),   signals.get("adx_val"))
         + " " + _signal_badge("MFI",   signals.get("mfi"),   signals.get("mfi_val"))
+        + " " + _signal_badge("OBV",   signals.get("obv_dist"))
+        + " " + _signal_badge("ADX",   signals.get("adx"),   signals.get("adx_val"))
+        + " " + _signal_badge("BB",    signals.get("bb_blowoff"))
+        + " " + _signal_badge("RS",    signals.get("rs_decay"))
     )
 
+    # Earnings-proximity risk chip — informational, NOT part of the sell score.
+    dte = signals.get("days_to_earnings")
+    earn_chip = ""
+    if isinstance(dte, (int, float)) and 0 <= dte <= 14:
+        earn_chip = (
+            f'<span style="display:inline-flex;align-items:center;gap:5px;'
+            f'padding:5px 10px;border-radius:var(--radius-sm);'
+            f'background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.35)">'
+            f'<span style="width:7px;height:7px;border-radius:50%;background:var(--wait);flex-shrink:0"></span>'
+            f'<span style="font-family:var(--mono);font-size:0.65rem;color:var(--wait)">EARN {int(dte)}d</span>'
+            f'</span>'
+        )
+
+    badges = hard_badges + " " + soft_badges + (" " + earn_chip if earn_chip else "")
+
     exit_html = ""
-    if score >= 3:
+    if hard_exit or grade == "STRONG EXIT":
+        detail = "; ".join(hard_reasons) if hard_reasons else f"soft score {soft_score}/{soft_max}"
         exit_html = (
             f'<div style="margin-top:12px;padding:10px 14px;background:var(--bear-dim);'
             f'border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-sm);'
             f'animation:shockwave 0.55s ease-out 0.25s 1 both">'
             f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
-            f'color:var(--bear);letter-spacing:0.08em">EXIT SIGNAL — {score}/5 triggered</span>'
+            f'color:var(--bear);letter-spacing:0.08em">STRONG EXIT — {_html.escape(detail)}</span>'
+            f'</div>'
+        )
+    elif grade == "TRIM":
+        exit_html = (
+            f'<div style="margin-top:12px;padding:10px 14px;background:rgba(245,158,11,0.08);'
+            f'border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius-sm)">'
+            f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
+            f'color:var(--wait);letter-spacing:0.08em">TRIM — soft score {soft_score}/{soft_max}</span>'
             f'</div>'
         )
 
@@ -2129,7 +2185,7 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
         f'</div>'
         f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);margin-bottom:6px">{_html.escape(meta_row)}</div>'
         f'<div style="font-family:var(--mono);font-size:0.6rem;margin-bottom:10px">{gl_row}</div>'
-        f'<div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);letter-spacing:0.09em;margin-bottom:8px">EXIT SIGNALS {score}/5</div>'
+        f'<div style="font-family:var(--mono);font-size:0.55rem;color:{top_c};letter-spacing:0.09em;margin-bottom:8px">EXIT {_html.escape(grade)} · soft {soft_score}/{soft_max}</div>'
         f'<div style="display:flex;flex-wrap:wrap;gap:6px">{badges}</div>'
         f'{exit_html}'
         f'</div>'
@@ -2189,10 +2245,12 @@ def _render_positions() -> None:
     enriched = []
     for p in positions:
         signals, _, _ = batch.get(p["ticker"], ({}, None, None))
-        enriched.append({**p, "_score": signals.get("score", 0)})
+        # Rank: hard exits float to the top, then by weighted soft score.
+        rank = (100 if signals.get("hard_exit") else 0) + signals.get("soft_score", 0)
+        enriched.append({**p, "_score": rank, "_grade": signals.get("grade", "HOLD")})
     enriched.sort(key=lambda x: x["_score"], reverse=True)
 
-    exits = sum(1 for e in enriched if e["_score"] >= 3)
+    exits = sum(1 for e in enriched if e["_grade"] == "STRONG EXIT")
     exit_cls = "bear" if exits > 0 else ""
 
     # Portfolio totals recomputed from live quotes (falls back to Fidelity snapshot per-position)

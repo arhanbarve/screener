@@ -12,6 +12,7 @@ from src.factors import (
     pct_from_52w_high, breakout_flag, avg_dollar_vol,
     rsi_14, macd_state, vol_surge_ratio, entry_grade,
     stochastic, bollinger_pct_b, adx_14, mfi_14,
+    obv_slope, parabolic_sar,
 )
 from src.cache import (
     get_prices, put_prices, get_market_cap, get_market_cap_stale, put_market_cap,
@@ -159,6 +160,8 @@ def compute_price_factors(
         bb_pct_b, bb_width            = bollinger_pct_b(close)
         adx_val                       = adx_14(high, low, close)
         mfi_val                       = mfi_14(high, low, close, volume)
+        obv_slope_val                 = obv_slope(close, volume)
+        _, sar_bullish, _             = parabolic_sar(high, low)
 
         return {
             "ticker": ticker,
@@ -191,6 +194,7 @@ def compute_price_factors(
             "entry": entry_grade(
                 rsi_val, macd, vol_ratio, above_sma20,
                 adx_val, stoch_k, stoch_d, stoch_cross, bb_pct_b, mfi_val,
+                obv_slope_val, sar_bullish,
             ),
             "close_series": close,
         }

@@ -87,9 +87,17 @@ def test_remove_position_noop_if_missing(tmp_path, monkeypatch):
 
 # ── compute_exit_signals tests ────────────────────────────────────────────────
 
+_SOFT_FLAGS = ("macd", "sma50_break", "sma20_break", "rsi", "stoch",
+               "mfi", "obv_dist", "adx", "bb_blowoff", "rs_decay")
+_GRADES = {"HOLD", "WATCH", "TRIM", "STRONG EXIT"}
+
+
 def test_exit_signals_empty_df():
     result = compute_exit_signals(pd.DataFrame())
     assert result["score"] == 0
+    assert result["soft_score"] == 0
+    assert result["grade"] == "HOLD"
+    assert result["hard_exit"] is False
     assert result["rsi"] is None
     assert result["macd"] is None
 
@@ -98,27 +106,65 @@ def test_exit_signals_too_short():
     df = _make_ohlcv(n=35)
     result = compute_exit_signals(df)
     assert result["score"] == 0
+    assert result["grade"] == "HOLD"
+    assert result["hard_exit"] is False
 
 
 def test_exit_signals_returns_expected_keys():
     df = _make_ohlcv(n=60)
     result = compute_exit_signals(df)
-    expected_keys = {"rsi", "macd", "stoch", "adx", "mfi", "score",
-                     "rsi_val", "adx_val", "mfi_val", "stoch_k", "stoch_d", "macd_state"}
-    assert expected_keys == set(result.keys())
+    # Legacy display keys still present (UI backward-compat) plus new tiered keys.
+    expected = {
+        "rsi", "macd", "stoch", "adx", "mfi", "score",
+        "rsi_val", "adx_val", "mfi_val", "stoch_k", "stoch_d", "macd_state",
+        "hard_exit", "hard_reasons", "chandelier", "death_cross",
+        "sma20_break", "sma50_break", "obv_dist", "bb_blowoff", "rs_decay",
+        "soft_score", "soft_max", "grade", "days_to_earnings",
+    }
+    assert expected.issubset(set(result.keys()))
 
 
-def test_exit_signals_score_is_count_of_true():
+def test_exit_signals_score_is_weighted_soft_sum():
     df = _make_ohlcv(n=60)
     result = compute_exit_signals(df)
-    true_count = sum(1 for k in ("rsi", "macd", "stoch", "adx", "mfi") if result[k] is True)
-    assert result["score"] == true_count
+    # score is a legacy alias for the weighted soft score, not a count of flags.
+    assert result["score"] == result["soft_score"]
 
 
-def test_exit_signals_score_bounded():
+def test_exit_signals_soft_score_bounded():
     df = _make_ohlcv(n=60)
     result = compute_exit_signals(df)
-    assert 0 <= result["score"] <= 5
+    assert 0 <= result["soft_score"] <= result["soft_max"]
+    assert result["soft_max"] == 12
+
+
+def test_exit_signals_grade_valid():
+    for trend in ("up", "down"):
+        result = compute_exit_signals(_make_ohlcv(n=260, trend=trend))
+        assert result["grade"] in _GRADES
+
+
+def test_exit_signals_hard_tier_needs_long_history():
+    # < 210 bars: hard tier cannot be evaluated (no SMA200).
+    result = compute_exit_signals(_make_ohlcv(n=60, trend="down"))
+    assert result["hard_exit"] is False
+    assert result["chandelier"] is None
+    assert result["death_cross"] is None
+
+
+def test_exit_signals_hard_exit_fires_in_downtrend():
+    # Sustained downtrend with enough history: price below SMA200 + 50<200.
+    result = compute_exit_signals(_make_ohlcv(n=260, trend="down"))
+    assert result["hard_exit"] is True
+    assert result["death_cross"] is True
+    assert result["grade"] == "STRONG EXIT"
+
+
+def test_exit_signals_hard_exit_quiet_in_uptrend():
+    # Clean uptrend above the 200-day must never trigger a hard exit.
+    result = compute_exit_signals(_make_ohlcv(n=260, trend="up"))
+    assert result["hard_exit"] is False
+    assert result["death_cross"] is False
 
 
 def test_exit_signals_rsi_val_is_float_or_none():
@@ -140,4 +186,5 @@ def test_exit_signals_missing_columns():
     df = pd.DataFrame({"close": [100.0] * 50})  # missing high/low/volume
     result = compute_exit_signals(df)
     assert result["score"] == 0
+    assert result["grade"] == "HOLD"
     assert result["rsi"] is None

@@ -240,6 +240,153 @@ def vol_surge_ratio(volume: pd.Series) -> float:
     return avg5 / avg20
 
 
+# ── Exit / trend-structure indicators ────────────────────────────────────────
+# Added for the tiered exit engine. Kept as pure functions so they can be
+# hand-verified on historical data independently of positions.py.
+
+def sma(close: pd.Series, window: int) -> float:
+    """Latest simple moving average, or NaN if insufficient history."""
+    if len(close) < window:
+        return float("nan")
+    return float(close.iloc[-window:].mean())
+
+
+def atr_series(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14
+) -> pd.Series:
+    """Wilder's Average True Range as a series (same smoothing as adx_14)."""
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(com=window - 1, min_periods=window).mean()
+
+
+def atr_14(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14
+) -> float:
+    """Latest ATR value."""
+    if len(close) < window + 1:
+        return float("nan")
+    return float(atr_series(high, low, close, window).iloc[-1])
+
+
+def chandelier_stop_long(
+    high: pd.Series, low: pd.Series, close: pd.Series,
+    lookback: int = 22, mult: float = 3.0, atr_window: int = 14,
+) -> float:
+    """
+    Chandelier exit level for a long: highest-high(lookback) - mult*ATR.
+    Snapshot approximation of a ratcheting trailing stop (recomputed each bar,
+    not carried statefully). Exit when close falls below this level.
+    """
+    if len(close) < max(lookback, atr_window) + 1:
+        return float("nan")
+    atr = atr_series(high, low, close, atr_window)
+    hh  = high.rolling(lookback).max()
+    return float((hh - mult * atr).iloc[-1])
+
+
+def obv_series(close: pd.Series, volume: pd.Series) -> pd.Series:
+    """On-Balance Volume. Cumulative signed volume by daily price direction."""
+    direction = np.sign(close.diff().fillna(0.0))
+    return (direction * volume).cumsum()
+
+
+def obv_slope(close: pd.Series, volume: pd.Series, window: int = 20) -> float:
+    """
+    Slope of OBV over `window` bars, normalized by average volume so it is
+    comparable across tickers. Negative = net distribution over the window.
+    """
+    if len(close) < window or len(volume) < window:
+        return float("nan")
+    o = obv_series(close, volume).iloc[-window:]
+    x = np.arange(len(o), dtype=float)
+    slope, *_ = scipy_stats.linregress(x, o.values)
+    avg_vol = float(volume.iloc[-window:].mean())
+    if avg_vol < 1:
+        return float("nan")
+    return float(slope / avg_vol)
+
+
+def directional_indicators(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14
+) -> tuple[float, float, float]:
+    """Latest (ADX, +DI, -DI). Shares Wilder math with adx_14."""
+    if len(close) < window * 2:
+        return float("nan"), float("nan"), float("nan")
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    up_move   = high - high.shift(1)
+    down_move = low.shift(1) - low
+    plus_dm  = np.where((up_move > down_move) & (up_move > 0),   up_move,   0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    plus_dm_s  = pd.Series(plus_dm,  index=high.index)
+    minus_dm_s = pd.Series(minus_dm, index=high.index)
+    atr_s    = tr.ewm(com=window - 1, min_periods=window).mean()
+    plus_di  = 100.0 * plus_dm_s.ewm(com=window - 1, min_periods=window).mean()  / atr_s
+    minus_di = 100.0 * minus_dm_s.ewm(com=window - 1, min_periods=window).mean() / atr_s
+    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-12)
+    adx_val = dx.ewm(com=window - 1, min_periods=window).mean()
+    return float(adx_val.iloc[-1]), float(plus_di.iloc[-1]), float(minus_di.iloc[-1])
+
+
+def parabolic_sar(
+    high: pd.Series, low: pd.Series,
+    af_step: float = 0.02, af_max: float = 0.20,
+) -> tuple[float, bool, bool]:
+    """
+    Parabolic SAR. Returns (sar_now, is_uptrend_now, flipped_to_bear_this_bar).
+    Standard Wilder iterative construction.
+    """
+    n = len(high)
+    if n < 5:
+        return float("nan"), False, False
+    h = high.values
+    l = low.values
+    # Seed: assume uptrend, SAR = first low, EP = first high
+    up = True
+    sar = l[0]
+    ep = h[0]
+    af = af_step
+    trend = [up]
+    for i in range(1, n):
+        prev_sar = sar
+        sar = prev_sar + af * (ep - prev_sar)
+        if up:
+            # SAR cannot exceed the prior two lows
+            sar = min(sar, l[i - 1], l[i - 2] if i >= 2 else l[i - 1])
+            if l[i] < sar:               # flip to downtrend
+                up = False
+                sar = ep                 # SAR resets to prior EP
+                ep = l[i]
+                af = af_step
+            else:
+                if h[i] > ep:
+                    ep = h[i]
+                    af = min(af + af_step, af_max)
+        else:
+            sar = max(sar, h[i - 1], h[i - 2] if i >= 2 else h[i - 1])
+            if h[i] > sar:               # flip to uptrend
+                up = True
+                sar = ep
+                ep = h[i]
+                af = af_step
+            else:
+                if l[i] < ep:
+                    ep = l[i]
+                    af = min(af + af_step, af_max)
+        trend.append(up)
+    flipped_to_bear = (trend[-2] is True) and (trend[-1] is False)
+    return float(sar), bool(trend[-1]), bool(flipped_to_bear)
+
+
 def trend_signal_score(row: pd.Series) -> int:
     """Trend persistence cluster (0-5): ADX + MACD + SMA50. Trend signals persist."""
     score = 0
@@ -340,12 +487,16 @@ def entry_grade(
     stoch_cross: bool = False,
     bb_pct_b: float = float("nan"),
     mfi_val: float = float("nan"),
+    obv_slope_val: float = float("nan"),
+    sar_bullish: bool = False,
 ) -> str:
     """
     Short-term entry timing grade. Only uses signals NOT already captured
     in the composite technical scores (trend_score, momo_osc_score, volume_score).
     ADX, BB %B, vol_surge are in the composite — removed from here to avoid
-    double-counting. Hard vetoes remain unchanged.
+    double-counting. OBV slope and Parabolic SAR are new families (not in the
+    composite) added as accumulation / trend-flip confirmations. Hard vetoes
+    remain unchanged.
     """
     def _ok(v: float) -> bool:
         return not np.isnan(v)
@@ -380,8 +531,16 @@ def entry_grade(
     if _ok(stoch_k) and _ok(stoch_d) and stoch_k > stoch_d and stoch_k < 70.0:
         score += 2 if stoch_cross else 1
 
-    # Max score = 6 (MACD_cross=2 + RSI=1 + MFI=1 + Stoch_cross=2)
-    if score >= 5:
+    # OBV accumulation — volume flowing in (new family, not in composite)
+    if _ok(obv_slope_val) and obv_slope_val > 0:
+        score += 1
+
+    # Parabolic SAR in an uptrend (new family, not in composite)
+    if sar_bullish:
+        score += 1
+
+    # Max score = 8 (MACD_cross=2 + RSI=1 + MFI=1 + Stoch_cross=2 + OBV=1 + SAR=1)
+    if score >= 6:
         return "STRONG"
     if score >= 3:
         return "OK"
