@@ -153,9 +153,74 @@ def attach_cap_proxy(events: pd.DataFrame, uni: pd.DataFrame,
     return events
 
 
-def filter_cap_proxy(events: pd.DataFrame, min_cap: float = 2.5e9) -> pd.DataFrame:
-    """Keep rows whose cap_proxy is present and >= min_cap."""
+def filter_cap_proxy(events: pd.DataFrame, min_cap: float = 2.5e9,
+                     max_cap: float | None = None) -> pd.DataFrame:
+    """Keep rows whose cap_proxy is present and >= min_cap (and < max_cap
+    when given — idea bank 3 gates on a $500M-$2.5B band, not a floor)."""
     if events.empty:
         return events
-    return events[events["cap_proxy"].notna()
-                  & (events["cap_proxy"] >= min_cap)].reset_index(drop=True)
+    mask = events["cap_proxy"].notna() & (events["cap_proxy"] >= min_cap)
+    if max_cap is not None:
+        mask &= events["cap_proxy"] < max_cap
+    return events[mask].reset_index(drop=True)
+
+
+def attach_dollar_vol(events: pd.DataFrame, price_cache: dict,
+                      window: int = 20,
+                      date_col: str = "event_date") -> pd.DataFrame:
+    """20-day median dollar volume (close x volume) over the trading days
+    strictly BEFORE the event date. FIT-2026-07-03-v2.md liquidity leg:
+    fill-ability is enforced here, not via market cap. NaN when history is
+    missing or shorter than the window (caller filters + logs)."""
+    if events.empty:
+        events = events.copy()
+        events["dollar_vol_20d"] = pd.Series(dtype=float)
+        return events
+    vals = []
+    for _, row in events.iterrows():
+        p = price_cache.get(row["ticker"])
+        if p is None or p.empty or "volume" not in p.columns:
+            vals.append(float("nan"))
+            continue
+        upto = p.loc[p.index < pd.Timestamp(row[date_col])]
+        if len(upto) < window:
+            vals.append(float("nan"))
+            continue
+        tail = upto.tail(window)
+        vals.append(float((tail["close"] * tail["volume"]).median()))
+    events = events.copy()
+    events["dollar_vol_20d"] = vals
+    return events
+
+
+def filter_dollar_vol(events: pd.DataFrame, min_dollar_vol: float = 2e6) -> pd.DataFrame:
+    """Keep rows whose pre-event 20d median dollar volume clears the floor."""
+    if events.empty:
+        return events
+    return events[events["dollar_vol_20d"].notna()
+                  & (events["dollar_vol_20d"] >= min_dollar_vol)].reset_index(drop=True)
+
+
+# Pre-registered round-trip cost model (FIT-2026-07-03-v2.md — fixed before
+# any bank-3 result was seen; do not tune after runs).
+COST_BANDS = ((1e9, 0.0040), (2.5e9, 0.0025), (float("inf"), 0.0015))
+
+
+def band_cost(cap_proxy: float) -> float:
+    if pd.isna(cap_proxy):
+        return float("nan")
+    for hi, cost in COST_BANDS:
+        if cap_proxy < hi:
+            return cost
+    return COST_BANDS[-1][1]
+
+
+def attach_net_returns(events: pd.DataFrame, horizons: tuple) -> pd.DataFrame:
+    """abn_ret_net_{h}d = abn_ret_{h}d - band cost for the event's cap_proxy.
+    The v2 gate runs on these columns (>= 1.0% net); gross columns are kept
+    for comparability with bank 1-2 results."""
+    events = events.copy()
+    costs = events["cap_proxy"].map(band_cost)
+    for h in horizons:
+        events[f"abn_ret_net_{h}d"] = events[f"abn_ret_{h}d"] - costs
+    return events
