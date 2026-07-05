@@ -11,6 +11,9 @@ positions.json
 data/
 logs/
 
+# Handoff docs (local-only, read via filesystem not git)
+docs/handoffs/
+
 # Python
 __pycache__/
 *.pyc
@@ -29,3 +32,12 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# Node
+node_modules/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Nested repo (cloned separately, not a submodule)
+agent-skills/
