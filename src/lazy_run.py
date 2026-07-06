@@ -16,7 +16,6 @@ Run as:
 """
 import logging
 import os
-import time
 import argparse
 from datetime import date
 

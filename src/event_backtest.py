@@ -30,7 +30,6 @@ import re
 import time
 from datetime import date, timedelta
 
-import numpy as np
 import pandas as pd
 import requests
 from scipy.stats import ttest_1samp
@@ -38,7 +37,7 @@ from scipy.stats import ttest_1samp
 from src.config import load_config
 from src.cache import (
     init_db, get_submissions, put_submissions,
-    get_backtest_prices, put_backtest_prices, get_filing_doc,
+    get_backtest_prices, put_backtest_prices,
 )
 from src.universe import build_universe
 from src.prices import fetch_all_prices, _fetch_batch_yfinance

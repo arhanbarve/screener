@@ -6,8 +6,9 @@ from datetime import datetime, timedelta
 from typing import Optional
 import finnhub
 import yfinance as yf
-from src.config import load_config, get_env
+from src.config import get_env
 from src.cache import get_fundamentals, put_fundamentals, get_edgar, put_edgar
+from src.factors import compute_sue
 
 logger = logging.getLogger(__name__)
 
@@ -205,105 +206,97 @@ def fetch_all_fundamentals(
 
     rows = []
     total = len(survivors_df)
-    # Single shared HTTP session for all yfinance Ticker calls — avoids per-ticker
-    # session creation which leaks file descriptors under launchd's low fd limits.
-    yf_session = requests.Session()
-    try:
-        for idx, record in survivors_df.iterrows():
-            ticker = record["ticker"]
-            cik    = record.get("cik", "")
-            logger.info(f"[fundamentals] {idx+1}/{total} {ticker}")
+    for idx, record in survivors_df.iterrows():
+        ticker = record["ticker"]
+        cik    = record.get("cik", "")
+        logger.info(f"[fundamentals] {idx+1}/{total} {ticker}")
 
-            row = {"ticker": ticker}
+        row = {"ticker": ticker}
 
-            if cik:
-                edgar = fetch_edgar(cik, db_path, ttl_days=ttl_edgar)
-                row["gp_assets"] = edgar["gp_assets"] if edgar else float("nan")
-            else:
-                row["gp_assets"] = float("nan")
+        if cik:
+            edgar = fetch_edgar(cik, db_path, ttl_days=ttl_edgar)
+            row["gp_assets"] = edgar["gp_assets"] if edgar else float("nan")
+        else:
+            row["gp_assets"] = float("nan")
 
-            cached_fund = get_fundamentals(db_path, ticker, ttl_days=ttl_fund)
-            if cached_fund:
-                # Back-fill empty sector in stale cache entries without full re-fetch
-                if not cached_fund.get("sector"):
-                    try:
-                        info = yf.Ticker(ticker).get_info()
-                        sector = (info.get("sector") or info.get("industry") or "").strip()
-                        if sector:
-                            cached_fund["sector"] = sector
-                            put_fundamentals(db_path, ticker, cached_fund)
-                    except Exception:
-                        pass
-                row.update(cached_fund)
-            else:
-                fund = {}
-                if use_finnhub:
-                    try:
-                        bucket.consume()
-                        earnings = fh.company_earnings(ticker, limit=8)
-                        actuals, estimates = parse_finnhub_surprise(earnings)
-                        from src.factors import compute_sue
-                        fund["sue"] = compute_sue(actuals, estimates) if actuals else 0.0
-                    except Exception as e:
-                        logger.warning(f"[fundamentals] earnings for {ticker}: {e}")
-                        fund["sue"] = float("nan")
-
-                    try:
-                        bucket.consume()
-                        trends = fh.recommendation_trends(ticker)
-                        breadth, mag = parse_finnhub_revisions(trends)
-                        fund["rev_breadth"] = breadth
-                        fund["rev_magnitude"] = mag
-                    except Exception as e:
-                        logger.warning(f"[fundamentals] revisions for {ticker}: {e}")
-                        fund["rev_breadth"] = float("nan")
-                        fund["rev_magnitude"] = float("nan")
-
-                    try:
-                        bucket.consume()
-                        insider_tx = fh.stock_insider_transactions(ticker, _from="", to="")
-                        insider_data = parse_insider_buys(insider_tx.get("data", []))
-                        fund["insider_buys_90d"]  = insider_data["insider_buys_90d"]
-                        fund["exec_buys_90d"]     = insider_data["exec_buys_90d"]
-                        fund["insider_buy_value"] = insider_data["insider_buy_value"]
-                        fund["insider_flag"]      = insider_data["exec_buys_90d"] >= 2
-                    except Exception as e:
-                        logger.warning(f"[fundamentals] insider for {ticker}: {e}")
-                        fund["insider_buys_90d"]  = 0
-                        fund["exec_buys_90d"]     = 0
-                        fund["insider_buy_value"] = 0.0
-                        fund["insider_flag"]      = False
-                else:
+        cached_fund = get_fundamentals(db_path, ticker, ttl_days=ttl_fund)
+        if cached_fund:
+            # Back-fill empty sector in stale cache entries without full re-fetch
+            if not cached_fund.get("sector"):
+                try:
+                    info = yf.Ticker(ticker).get_info()
+                    sector = (info.get("sector") or info.get("industry") or "").strip()
+                    if sector:
+                        cached_fund["sector"] = sector
+                        put_fundamentals(db_path, ticker, cached_fund)
+                except Exception:
+                    pass
+            row.update(cached_fund)
+        else:
+            fund = {}
+            if use_finnhub:
+                try:
+                    bucket.consume()
+                    earnings = fh.company_earnings(ticker, limit=8)
+                    actuals, estimates = parse_finnhub_surprise(earnings)
+                    fund["sue"] = compute_sue(actuals, estimates) if actuals else 0.0
+                except Exception as e:
+                    logger.warning(f"[fundamentals] earnings for {ticker}: {e}")
                     fund["sue"] = float("nan")
+
+                try:
+                    bucket.consume()
+                    trends = fh.recommendation_trends(ticker)
+                    breadth, mag = parse_finnhub_revisions(trends)
+                    fund["rev_breadth"] = breadth
+                    fund["rev_magnitude"] = mag
+                except Exception as e:
+                    logger.warning(f"[fundamentals] revisions for {ticker}: {e}")
                     fund["rev_breadth"] = float("nan")
                     fund["rev_magnitude"] = float("nan")
+
+                try:
+                    bucket.consume()
+                    insider_tx = fh.stock_insider_transactions(ticker, _from="", to="")
+                    insider_data = parse_insider_buys(insider_tx.get("data", []))
+                    fund["insider_buys_90d"]  = insider_data["insider_buys_90d"]
+                    fund["exec_buys_90d"]     = insider_data["exec_buys_90d"]
+                    fund["insider_buy_value"] = insider_data["insider_buy_value"]
+                    fund["insider_flag"]      = insider_data["exec_buys_90d"] >= 2
+                except Exception as e:
+                    logger.warning(f"[fundamentals] insider for {ticker}: {e}")
                     fund["insider_buys_90d"]  = 0
                     fund["exec_buys_90d"]     = 0
                     fund["insider_buy_value"] = 0.0
                     fund["insider_flag"]      = False
+            else:
+                fund["sue"] = float("nan")
+                fund["rev_breadth"] = float("nan")
+                fund["rev_magnitude"] = float("nan")
+                fund["insider_buys_90d"]  = 0
+                fund["exec_buys_90d"]     = 0
+                fund["insider_buy_value"] = 0.0
+                fund["insider_flag"]      = False
 
-                try:
-                    # Use get_info() not .info property — the property bypasses
-                    # yfinance's cookie/crumb handling with custom sessions,
-                    # causing silent rate-limit failures that blank sector.
-                    tk = yf.Ticker(ticker)
-                    info = tk.get_info()
-                    sf, dtc = parse_short_interest(info)
-                    fund["short_float"]   = sf
-                    fund["days_to_cover"] = dtc
-                    sector = (info.get("sector") or info.get("industry") or "").strip()
-                    fund["sector"] = sector
-                except Exception:
-                    fund["short_float"]   = float("nan")
-                    fund["days_to_cover"] = float("nan")
-                    fund["sector"]        = ""
+            try:
+                # Use get_info() not .info property — the property bypasses
+                # yfinance's cookie/crumb handling with custom sessions,
+                # causing silent rate-limit failures that blank sector.
+                info = yf.Ticker(ticker).get_info()
+                sf, dtc = parse_short_interest(info)
+                fund["short_float"]   = sf
+                fund["days_to_cover"] = dtc
+                sector = (info.get("sector") or info.get("industry") or "").strip()
+                fund["sector"] = sector
+            except Exception:
+                fund["short_float"]   = float("nan")
+                fund["days_to_cover"] = float("nan")
+                fund["sector"]        = ""
 
-                put_fundamentals(db_path, ticker, fund)
-                row.update(fund)
+            put_fundamentals(db_path, ticker, fund)
+            row.update(fund)
 
-            rows.append(row)
-            time.sleep(0.12)
-    finally:
-        yf_session.close()
+        rows.append(row)
+        time.sleep(0.12)
 
     return pd.DataFrame(rows)

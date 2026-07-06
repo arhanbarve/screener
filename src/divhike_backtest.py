@@ -37,7 +37,6 @@ import pandas as pd
 from src.backtest_recipe import (
     dedupe_events,
     drop_earnings_contamination,
-    filter_to_universe,
     load_earnings_for_tickers,
 )
 from src.cache import init_db

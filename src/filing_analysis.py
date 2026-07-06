@@ -17,10 +17,8 @@ Cost control: both classifiers are gated by similarity_threshold so Claude
 spend scales with the (small) fraction of real changers, not with universe size.
 """
 import os
-import json
 import re
 import threading
-import time
 import logging
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 
 from src.cache import get_filing_analysis, put_filing_analysis
-from src.filings import fetch_submissions, parse_submissions
+from src.filings import fetch_submissions
 from src.news import _ThreadSafeTokenBucket, _parse_json, _claude
 
 logger = logging.getLogger(__name__)

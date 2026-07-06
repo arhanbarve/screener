@@ -156,26 +156,7 @@ def adx_14(
     high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14
 ) -> float:
     """Wilder's ADX. < 20 = no trend, 20-25 = emerging, > 25 = trending."""
-    if len(close) < window * 2:
-        return float("nan")
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low  - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    up_move   = high - high.shift(1)
-    down_move = low.shift(1) - low
-    plus_dm  = np.where((up_move > down_move) & (up_move > 0),   up_move,   0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    plus_dm_s  = pd.Series(plus_dm,  index=high.index)
-    minus_dm_s = pd.Series(minus_dm, index=high.index)
-    atr_s    = tr.ewm(com=window - 1, min_periods=window).mean()
-    plus_di  = 100.0 * plus_dm_s.ewm(com=window - 1, min_periods=window).mean()  / atr_s
-    minus_di = 100.0 * minus_dm_s.ewm(com=window - 1, min_periods=window).mean() / atr_s
-    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-12)
-    adx_val = dx.ewm(com=window - 1, min_periods=window).mean()
-    return float(adx_val.iloc[-1])
+    return directional_indicators(high, low, close, window)[0]
 
 
 def mfi_14(

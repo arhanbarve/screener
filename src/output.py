@@ -61,9 +61,7 @@ def write_csv(df: pd.DataFrame, out_dir: str, date_str: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"screen_{date_str}.csv")
     cols = [c for c in CSV_COLUMNS if c in df.columns]
-    out = open(path, "w")
-    df[cols].to_csv(out, index=False, float_format="%.6f")
-    out.close()
+    df[cols].to_csv(path, index=False, float_format="%.6f")
     return path
 
 
@@ -145,9 +143,8 @@ def write_markdown(
             lines.append(f"| {row['ticker']} | {sf} | {dtc} | {m1} |")
 
     lines += ["", "---", "*Research tool only. Not investment advice.*"]
-    f = open(path, "w")
-    f.write("\n".join(lines) + "\n")
-    f.close()
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
     return path
 
 

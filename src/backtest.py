@@ -210,12 +210,7 @@ def run_factor_ic_analysis(
         .agg(ic_mean="mean", ic_std="std", n_periods="count")
         .reset_index()
     )
-    summary["ir"]       = summary["ic_mean"] / summary["ic_std"].replace(0, float("nan"))
-    summary["hit_rate"] = (
-        df[df["ic"] > 0].groupby(["factor", "horizon"])["ic"].count()
-        / df.groupby(["factor", "horizon"])["ic"].count()
-    ).reset_index(drop=True)
-    # Re-merge hit_rate properly
+    summary["ir"] = summary["ic_mean"] / summary["ic_std"].replace(0, float("nan"))
     hit = (df.groupby(["factor", "horizon"])
              .apply(lambda g: (g["ic"] > 0).mean())
              .reset_index(name="hit_rate"))
@@ -233,7 +228,6 @@ def test_decile_monotonicity(
     Sort universe into 10 deciles by composite score and measure average
     forward returns. Monotonic increase = signal is real. Flat = fragile.
     """
-    from src.config import load_config
     prices = _load_prices_from_db(db_path)
     spy_prices = prices.get("SPY")
     if spy_prices is None:

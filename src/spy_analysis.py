@@ -2,26 +2,10 @@
 import math
 
 import pandas as pd
-import yfinance as yf
 from datetime import datetime
 
 from src.factors import rsi_14, macd_state, adx_14, mfi_14, bollinger_pct_b
-
-
-def _fetch_ohlcv(ticker: str, days: int = 400) -> pd.DataFrame:
-    try:
-        raw = yf.download(ticker, period=f"{days}d", interval="1d",
-                          auto_adjust=True, progress=False)
-        if raw.empty:
-            return pd.DataFrame()
-        df = raw.copy()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0].lower() for c in df.columns]
-        else:
-            df.columns = [c.lower() for c in df.columns]
-        return df.dropna(how="all")
-    except Exception:
-        return pd.DataFrame()
+from src.positions import fetch_ohlcv as _fetch_ohlcv
 
 
 def _fetch_last(ticker: str) -> float | None:

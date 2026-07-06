@@ -16,7 +16,6 @@ import pandas as pd
 from src.compose import (
     winsorize_series,
     z_score_series,
-    rank_normalize,
     FINANCIAL_SECTORS,
 )
 

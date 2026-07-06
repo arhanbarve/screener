@@ -1,8 +1,7 @@
 import os
-import time
 import requests
 import pandas as pd
-from src.config import load_config, get_env
+from src.config import get_env
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 

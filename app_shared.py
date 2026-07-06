@@ -17,7 +17,6 @@ def _nans(v) -> str:
         pass
     s = str(v)
     return "" if s in ("nan", "None", "none", "NaN") else s
-import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -1317,6 +1316,14 @@ def _cached_stock_news(ticker: str) -> tuple[list, dict]:
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
+def _page_title(text: str) -> None:
+    st.markdown(
+        f'<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
+        f'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">{text}</h2>',
+        unsafe_allow_html=True,
+    )
+
+
 _SENT_COLORS = {
     "bullish":     ("#166534", "#dcfce7"),
     "bearish":     ("#991b1b", "#fee2e2"),
@@ -1573,11 +1580,7 @@ def _screener_html_table(df: pd.DataFrame) -> str:
 
 
 def _render_screener() -> None:
-    st.markdown(
-        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
-        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">SCREENER RESULTS</h2>',
-        unsafe_allow_html=True,
-    )
+    _page_title("SCREENER RESULTS")
 
     output_dir = Path("output")
     csv_files = sorted(output_dir.glob("screen_*.csv"), reverse=True)
@@ -1744,11 +1747,7 @@ the stock's own historical surprise volatility. Consistently beating = durable e
 # ── Market Regime ─────────────────────────────────────────────────────────────
 
 def _render_regime() -> None:
-    st.markdown(
-        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
-        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">MARKET REGIME</h2>',
-        unsafe_allow_html=True,
-    )
+    _page_title("MARKET REGIME")
 
     with st.spinner("Computing market regime…"):
         data = _cached_spy_regime()
@@ -2195,11 +2194,7 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
 
 
 def _render_positions() -> None:
-    st.markdown(
-        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
-        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">OPEN POSITIONS</h2>',
-        unsafe_allow_html=True,
-    )
+    _page_title("OPEN POSITIONS")
 
     fid_positions, synced_at = _load_fidelity_data()
     fid_by_ticker = {f["ticker"]: f for f in fid_positions}
@@ -2381,11 +2376,7 @@ def _stab_badge(val: float) -> str:
 def _render_filing_edge():
     longs, watch, date_str = _cached_filing_edge()
 
-    st.markdown(
-        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
-        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">FILING EDGE</h2>',
-        unsafe_allow_html=True,
-    )
+    _page_title("FILING EDGE")
     st.markdown(
         '<div style="font-size:0.74rem;color:var(--muted);margin-bottom:1rem;padding-left:12px;'
         'border-left:2px solid var(--border-hi)">Filing-language change (Cohen, Malloy &amp; Nguyen 2020) '
@@ -2661,11 +2652,7 @@ def _fmt_chg(x: float | None) -> str:
 
 
 def _render_confluence() -> None:
-    st.markdown(
-        '<h2 style="font-family:var(--mono);font-size:1.1rem;font-weight:700;'
-        'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.5rem">CONFLUENCE</h2>',
-        unsafe_allow_html=True,
-    )
+    _page_title("CONFLUENCE")
     st.markdown(
         '<div style="font-size:0.74rem;color:var(--muted);margin-bottom:1rem;padding-left:12px;'
         'border-left:2px solid var(--border-hi)">Filing Edge longs cross-checked against price momentum. '

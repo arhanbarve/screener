@@ -18,9 +18,8 @@ import logging
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import date, timedelta
-from src.config import load_config
-from src.factors import mom_12_1, rs_vs_spy, avg_dollar_vol
+from datetime import date
+from src.factors import mom_12_1, rs_vs_spy
 
 logger = logging.getLogger(__name__)
 
@@ -183,8 +182,6 @@ def run_backtest(
 
 
 if __name__ == "__main__":
-    import sys
-    cfg = load_config()
     universe = pd.read_parquet("data/universe.parquet")
     tickers = universe["ticker"].tolist()[:500]
     run_backtest(tickers, start="2018-01-01")

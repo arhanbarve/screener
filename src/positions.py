@@ -1,17 +1,15 @@
 import json
 import math
 import os
-import tempfile
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.factors import (
-    rsi_14, macd_state, adx_14, mfi_14,
+    rsi_14, macd_state, mfi_14,
     sma, chandelier_stop_long, obv_slope, directional_indicators,
-    parabolic_sar,
 )
 
 POSITIONS_FILE = Path("positions.json")
