@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 200
 HISTORY_DAYS = 420
+SPY_FETCH_RETRIES = 3
+SPY_FETCH_RETRY_DELAY = 5.0
 
 
 def _fetch_batch_yfinance(tickers: list[str], start: str | None = None, end: str | None = None) -> dict[str, pd.DataFrame]:
@@ -229,13 +231,20 @@ def fetch_all_prices(
     if spy_cached is not None and len(spy_cached) >= 252:
         spy_df = spy_cached
     else:
-        spy_data = _fetch_batch_yfinance(["SPY"])
-        spy_df   = spy_data.get("SPY", pd.DataFrame())
+        spy_df = pd.DataFrame()
+        for attempt in range(SPY_FETCH_RETRIES):
+            spy_data = _fetch_batch_yfinance(["SPY"])
+            spy_df   = spy_data.get("SPY", pd.DataFrame())
+            if not spy_df.empty:
+                break
+            if attempt < SPY_FETCH_RETRIES - 1:
+                logger.warning(f"[prices] SPY fetch attempt {attempt+1}/{SPY_FETCH_RETRIES} failed — retrying")
+                time.sleep(SPY_FETCH_RETRY_DELAY)
         if not spy_df.empty:
             put_prices(db_path, "SPY", spy_df)
         elif spy_cached is not None and not spy_cached.empty:
             # Rate-limited: fall back to stale cache rather than hard-fail
-            logger.warning("[prices] SPY live fetch failed — using stale cache")
+            logger.warning("[prices] SPY live fetch failed after retries — using stale cache")
             spy_df = spy_cached
     if spy_df is None or spy_df.empty:
         raise RuntimeError("Failed to fetch SPY — cannot compute relative strength")
