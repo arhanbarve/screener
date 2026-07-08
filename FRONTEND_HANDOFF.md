@@ -39,8 +39,7 @@ A Streamlit-based quantitative stock screener. Single file: `app.py` (1,172 line
 | Caution amber fg | `#92400e` | Wait/neutral badge text |
 | Blue accent | `#1e40af` / `#dbeafe` | RS badges |
 | Purple accent | `#6d28d9` / `#ede9fe` | Score badges |
-| Dark card | `#1e293b` | Filing Edge / Confluence top-3 cards |
-| Sky blue | `#38bdf8` | Stability values on dark cards |
+| Dark card | `#1e293b` | Top-3 cards |
 
 ### Pages and their current problems
 
@@ -69,21 +68,6 @@ A Streamlit-based quantitative stock screener. Single file: `app.py` (1,172 line
 - Exit banner triggers at 3/5 signals — text only, no visual urgency
 
 **Data shown per position:** ticker, entry date, entry price, current price, P&L%, days held, RSI, MACD, Stochastic, ADX, MFI (triggered vs not)
-
-#### 4. Filing Edge (`_render_filing_edge`)
-- Top 3 cards: dark `#1e293b` background — best-looking part of the app right now
-- Main table: `st.dataframe()` with emoji stability badges
-- Watch list table: same treatment
-- Academic citation shown — good for credibility, needs better presentation
-
-**Data shown:** ticker, name, sector, composite score, conviction (1–5), text stability (cosine similarity 0–1), doc sim, mkt cap, ADV, change direction, Claude change-characterization
-
-#### 5. Confluence (`_render_confluence`)
-- Summary metrics: 4x `st.metric()` — generic
-- Strong Buy cards: same dark card style as Filing Edge top-3
-- Main table: `st.dataframe()` with combined score progress bar
-
-**Data shown:** ticker, name, signal tier (Strong Buy/Watchlist/Filing Only), combined score, stability, 3M return, RS vs SPY, above 50d SMA, momentum score
 
 ### Navigation
 - Streamlit `st.radio()` in sidebar — functional, no visual personality
@@ -148,7 +132,7 @@ font = "monospace"
 - Page-level layout and information hierarchy
 
 **Constraints that must be preserved:**
-- All 5 pages must remain (Screener Results, Market Regime, Open Positions, Filing Edge, Confluence)
+- All 3 pages must remain (Screener Results, Market Regime, Open Positions)
 - All data fields listed above per page must remain visible
 - The signal color semantics: green = bull/confirm, amber = wait, red = bear/avoid/exit
 - Must work within Streamlit's rendering model (Python file, CSS injection, `unsafe_allow_html`)

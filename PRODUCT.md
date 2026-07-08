@@ -10,13 +10,11 @@ Solo quantitative trader (the developer). Uses the screener daily, typically aft
 
 ## Product Purpose
 
-Ranks US equities using institutional-grade momentum and fundamental factors, then overlays short-term technical oscillators and AI-powered news sentiment to produce actionable entry/exit signals. Five distinct screens:
+Ranks US equities using institutional-grade momentum and fundamental factors, then overlays short-term technical oscillators and AI-powered news sentiment to produce actionable entry/exit signals. Three distinct screens:
 
 1. **Screener Results** — ranked list of top 20 momentum stocks with composite scores, conviction, streaks, and news entry signals
 2. **Market Regime** — SPY-based composite bull/bear/neutral signal from 12+ macro/technical indicators
 3. **Open Positions** — live P&L tracking with exit signal monitoring (RSI, MACD, Stoch, ADX, MFI)
-4. **Filing Edge** — 10-K/10-Q language-stability screen targeting small/micro-cap neglected stocks (based on Cohen, Malloy & Nguyen 2020 "Lazy Prices")
-5. **Confluence** — cross-screen: Filing Edge longs checked against price momentum, producing Strong Buy / Watchlist / Filing Only tiers
 
 ## Brand Personality
 

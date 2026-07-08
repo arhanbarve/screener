@@ -97,35 +97,6 @@ def init_db(db_path: str):
         )
     """)
     c.execute("""
-        CREATE TABLE IF NOT EXISTS filing_similarity (
-            accession TEXT PRIMARY KEY, cik TEXT, report_date TEXT,
-            text_stability REAL, payload TEXT, fetched_at TEXT
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS filing_analysis (
-            accession TEXT PRIMARY KEY, payload TEXT, fetched_at TEXT
-        )
-    """)
-    # Point-in-time archive for filing-edge backtest validation.
-    # Each run persists the ranked output so forward returns can be measured later.
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS filing_edge_snapshots (
-            snapshot_date TEXT,
-            ticker TEXT,
-            list_type TEXT,          -- 'long' or 'watch'
-            rank INTEGER,
-            composite REAL,
-            text_stability REAL,
-            conviction INTEGER,
-            market_cap REAL,
-            avg_dollar_vol_20d REAL,
-            accession TEXT,
-            fetched_at TEXT,
-            PRIMARY KEY (snapshot_date, ticker, list_type)
-        )
-    """)
-    c.execute("""
         CREATE TABLE IF NOT EXISTS failed_tickers (
             ticker TEXT PRIMARY KEY, reason TEXT, fetched_at TEXT
         )
@@ -368,46 +339,7 @@ def get_news_sentiment(db_path: str, ticker: str, ttl_hours: int) -> dict | None
         return None
 
 
-# --- Filing-edge screen accessors ---
-
-def archive_filing_edge_snapshot(
-    db_path: str,
-    date_str: str,
-    longs_df,
-    watch_df,
-):
-    """Persist today's filing-edge ranked output for future forward-return validation."""
-    conn = _get_conn(db_path)
-    rows = []
-    now = _now_iso()
-    for rank, (_, row) in enumerate(longs_df.iterrows(), 1):
-        rows.append((
-            date_str, str(row.get("ticker", "")), "long", rank,
-            float(row.get("composite", 0) or 0),
-            float(row.get("text_stability", 0) or 0),
-            int(row.get("conviction", 0) or 0),
-            float(row.get("market_cap", 0) or 0),
-            float(row.get("avg_dollar_vol_20d", 0) or 0),
-            str(row.get("accession", "")),
-            now,
-        ))
-    for rank, (_, row) in enumerate(watch_df.iterrows(), 1):
-        rows.append((
-            date_str, str(row.get("ticker", "")), "watch", rank,
-            float(row.get("composite", 0) or 0),
-            float(row.get("text_stability", 0) or 0),
-            int(row.get("conviction", 0) or 0),
-            float(row.get("market_cap", 0) or 0),
-            float(row.get("avg_dollar_vol_20d", 0) or 0),
-            str(row.get("accession", "")),
-            now,
-        ))
-    conn.executemany(
-        "INSERT OR REPLACE INTO filing_edge_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows
-    )
-    conn.commit()
-
-
+# --- SEC filing fetch cache (shared by backtest modules) ---
 
 def put_submissions(db_path: str, cik: str, payload: dict):
     conn = _get_conn(db_path)
@@ -450,59 +382,6 @@ def get_filing_doc(db_path: str, accession: str) -> str | None:
     row = c.fetchone()
 
     return row[0] if row else None
-
-
-def put_filing_similarity(db_path: str, cik: str, result: dict):
-    """Memoized by the current filing's accession (an immutable pair)."""
-    conn = _get_conn(db_path)
-    conn.execute(
-        "INSERT OR REPLACE INTO filing_similarity VALUES (?,?,?,?,?,?)",
-        (
-            result["accession"], cik, result.get("report_date", ""),
-            float(result.get("text_stability", 0.0)),
-            json.dumps(result), _now_iso(),
-        ),
-    )
-    conn.commit()
-
-
-
-def get_filing_similarity(db_path: str, accession: str) -> dict | None:
-    conn = _get_conn(db_path)
-    c = conn.cursor()
-    c.execute("SELECT payload FROM filing_similarity WHERE accession=?", (accession,))
-    row = c.fetchone()
-
-    if row is None:
-        return None
-    try:
-        return json.loads(row[0])
-    except Exception:
-        return None
-
-
-def put_filing_analysis(db_path: str, accession: str, payload: dict):
-    conn = _get_conn(db_path)
-    conn.execute(
-        "INSERT OR REPLACE INTO filing_analysis VALUES (?,?,?)",
-        (accession, json.dumps(payload), _now_iso()),
-    )
-    conn.commit()
-
-
-
-def get_filing_analysis(db_path: str, accession: str) -> dict | None:
-    conn = _get_conn(db_path)
-    c = conn.cursor()
-    c.execute("SELECT payload FROM filing_analysis WHERE accession=?", (accession,))
-    row = c.fetchone()
-
-    if row is None:
-        return None
-    try:
-        return json.loads(row[0])
-    except Exception:
-        return None
 
 
 def put_failed_ticker(db_path: str, ticker: str, reason: str = "no_data"):

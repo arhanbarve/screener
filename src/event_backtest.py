@@ -41,7 +41,7 @@ from src.cache import (
 )
 from src.universe import build_universe
 from src.prices import fetch_all_prices, _fetch_batch_yfinance
-from src.lazy_run import _apply_neglect_gate
+from src.universe import apply_neglect_gate
 from src.filings import fetch_submissions, fetch_filing_doc, plain_text, _sec_headers, ARCHIVES_URL, _cik10
 from src.news import _parse_json
 
@@ -720,7 +720,7 @@ def run_phase1(args):
         },
     }
     _, factors_df = fetch_all_prices(universe_df, price_cfg, DB_PATH)
-    gated = _apply_neglect_gate(factors_df, lp, min_price=cfg["universe"].get("min_price", 0.0))
+    gated = apply_neglect_gate(factors_df, lp, min_price=cfg["universe"].get("min_price", 0.0))
     if args.limit:
         gated = gated.head(args.limit)
     print(f"[phase1] {len(gated)} tickers in gated universe, {args.days}d lookback")

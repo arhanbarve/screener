@@ -36,11 +36,6 @@ echo "=== Screener run started: $(date) ===" >> "$LOG_FILE"
 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.run >> "$LOG_FILE" 2>&1
 echo "=== Screener run finished: $(date) ===" >> "$LOG_FILE"
 
-echo "=== Filing-edge run started: $(date) ===" >> "$LOG_FILE"
-/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.lazy_run >> "$LOG_FILE" 2>&1 \
-    || echo "=== Filing-edge run FAILED (non-fatal, proceeding to commit) ===" >> "$LOG_FILE"
-echo "=== Filing-edge run finished: $(date) ===" >> "$LOG_FILE"
-
 # Commit and push today's output so watchdog/remote monitors can see results
 cd "$SCREENER_DIR"
 if git diff --quiet HEAD -- output/ && [ -z "$(git ls-files --others --exclude-standard output/)" ]; then
@@ -48,6 +43,6 @@ if git diff --quiet HEAD -- output/ && [ -z "$(git ls-files --others --exclude-s
 else
     TODAY=$(date +%Y-%m-%d)
     git add output/
-    git commit -m "chore(output): screener + filing-edge results $TODAY" >> "$LOG_FILE" 2>&1
+    git commit -m "chore(output): screener results $TODAY" >> "$LOG_FILE" 2>&1
     git push >> "$LOG_FILE" 2>&1 && echo "=== Output committed and pushed ===" >> "$LOG_FILE" || echo "=== git push failed (non-fatal) ===" >> "$LOG_FILE"
 fi

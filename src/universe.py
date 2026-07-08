@@ -1,7 +1,10 @@
 import os
+import logging
 import requests
 import pandas as pd
 from src.config import get_env
+
+logger = logging.getLogger(__name__)
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 
@@ -49,3 +52,20 @@ def build_universe(cfg: dict, out_path: str = "data/universe.parquet") -> pd.Dat
     df.to_parquet(out_path, index=False)
     print(f"[universe] {len(df)} tickers written to {out_path}")
     return df
+
+
+def apply_neglect_gate(factors_df: pd.DataFrame, lp_cfg: dict, min_price: float = 0.0) -> pd.DataFrame:
+    """Capacity-constrained band gate ($50M-$2B market cap, ADV floor) used by
+    event_backtest.py's neglected-universe construction."""
+    min_cap = lp_cfg["min_market_cap"]
+    max_cap = lp_cfg["max_market_cap"]
+    min_vol = lp_cfg["min_avg_dollar_vol_20d"]
+    before = len(factors_df)
+    result = factors_df[
+        (factors_df["market_cap"] >= min_cap) &
+        (factors_df["market_cap"] <= max_cap) &
+        (factors_df["avg_dollar_vol_20d"] >= min_vol) &
+        (factors_df["price"] >= min_price)
+    ].reset_index(drop=True)
+    logger.info(f"[neglect_gate] {before} → {len(result)} in $50M–$2B band (ADV≥$200K, price≥${min_price})")
+    return result
