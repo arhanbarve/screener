@@ -36,8 +36,8 @@ venv/
 # Node
 node_modules/
 
-# Claude Code local settings
-.claude/settings.local.json
+# Claude Code local settings/plugins
+.claude/
 
 # Nested repo (cloned separately, not a submodule)
 agent-skills/
