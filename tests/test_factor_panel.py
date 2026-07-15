@@ -237,3 +237,46 @@ def test_build_panel_end_to_end_synthetic(tmp_path, monkeypatch):
     # only rebalance dates inside [start, end]
     assert panel["date"].min() >= pd.Timestamp("2022-06-01")
     assert panel["date"].max() <= pd.Timestamp("2023-03-01")
+
+    # mcap point-in-time formula: (close_t / close_today) * cached mcap today
+    aaa_rows = panel[(panel["ticker"] == "AAA") & panel["close"].notna()]
+    row = aaa_rows.iloc[0]
+    expected_mcap = (row["close"] / prices["AAA"]["close"].iloc[-1]) * 2e9
+    assert row["mcap"] == pytest.approx(expected_mcap, rel=1e-9)
+
+
+def test_candidate_tickers_filters_by_cached_mcap(monkeypatch):
+    """Tickers with cached mcap >= MIN_MCAP_TODAY pass; below-threshold and
+    None market caps are excluded."""
+    import src.factor_panel as fp
+
+    universe = pd.DataFrame({"ticker": ["BIG", "SMALL", "UNKNOWN"]})
+    monkeypatch.setattr(fp.pd, "read_parquet", lambda path: universe)
+
+    mcaps = {"BIG": fp.MIN_MCAP_TODAY * 2, "SMALL": fp.MIN_MCAP_TODAY / 2, "UNKNOWN": None}
+    monkeypatch.setattr(fp, "get_market_cap_stale", lambda db, t: mcaps[t])
+
+    out = fp.candidate_tickers("unused.db")
+    assert out == ["BIG"]
+
+
+def test_build_panel_raises_on_empty_universe(monkeypatch):
+    """If candidate_tickers returns no tickers (or none survive the history
+    filter), build_panel should fail with a clear RuntimeError rather than
+    a raw pd.concat ValueError."""
+    import src.factor_panel as fp
+
+    idx = pd.bdate_range("2022-01-03", periods=320)
+    rng = np.random.default_rng(1)
+    spy = pd.DataFrame({
+        "close": 400 * np.cumprod(1 + rng.normal(0.0005, 0.015, 320)),
+        "volume": np.full(320, 1_000_000.0),
+    }, index=idx)
+
+    monkeypatch.setattr(fp, "candidate_tickers", lambda db_path: [])
+    monkeypatch.setattr(fp, "get_history_bulk", lambda ts, db_path, start, end: {})
+    monkeypatch.setattr(fp, "get_history", lambda t, db_path, start, end: spy)
+    monkeypatch.setattr(fp, "get_market_cap_stale", lambda db, t: 2e9)
+
+    with pytest.raises(RuntimeError, match="No tickers with usable history"):
+        fp.build_panel(db_path="unused.db", start="2022-06-01", end="2023-03-01")

@@ -261,6 +261,9 @@ def build_panel(db_path: str, start: str, end: str,
         f["mcap"] = (f["close"] / last_close) * mc_today if mc_today else np.nan
         frames.append(f)
 
+    if not frames:
+        raise RuntimeError("No tickers with usable history — check cache/universe data")
+
     panel = pd.concat(frames).rename_axis("date").reset_index()
     panel = apply_gates(panel)
     panel = composite_scores(panel)
