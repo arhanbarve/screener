@@ -69,6 +69,23 @@ def _rolling_slope(y: pd.Series, window: int) -> pd.Series:
     return y.rolling(window).apply(_slope, raw=True)
 
 
+def _monthly_asof(monthly: pd.Series, daily: pd.Series, t: pd.Timestamp,
+                   monthly_periods: pd.PeriodIndex) -> pd.Series:
+    """Month-end-resampled `monthly` series truncated to periods <= t's
+    month, with the in-progress (current) month's bin overwritten by
+    `daily.loc[t]` so it reflects only data through t. Reproduces
+    factors.residual_momentum's behavior of resampling close.loc[:t] fresh
+    at each t, without leaking future bars into t's own still-in-progress
+    month (which a single upfront resample("ME") of the full series would
+    do, since "ME" labels a bin at the true calendar month-end regardless
+    of how much data is actually available)."""
+    t_period = t.to_period("M")
+    m = monthly[monthly_periods <= t_period].copy()
+    if len(m) and m.index[-1].to_period("M") == t_period:
+        m.iloc[-1] = daily.loc[t]
+    return m
+
+
 def ticker_factor_frame(prices: pd.DataFrame, spy_close: pd.Series,
                         dates: list[pd.Timestamp]) -> pd.DataFrame:
     """All price-block factors + gate ingredients for one ticker, evaluated
@@ -108,13 +125,6 @@ def ticker_factor_frame(prices: pd.DataFrame, spy_close: pd.Series,
     monthly_spy = spy.resample("ME").last()
     monthly_periods = monthly_close.index.to_period("M")
 
-    def _monthly_asof(monthly: pd.Series, daily: pd.Series, t: pd.Timestamp) -> pd.Series:
-        t_period = t.to_period("M")
-        m = monthly[monthly_periods <= t_period].copy()
-        if len(m) and m.index[-1].to_period("M") == t_period:
-            m.iloc[-1] = daily.loc[t]
-        return m
-
     rows = []
     for t in dates:
         if t not in close.index or len(close.loc[:t]) < 252:
@@ -124,8 +134,8 @@ def ticker_factor_frame(prices: pd.DataFrame, spy_close: pd.Series,
                           "close", "above_sma200"]})
             continue
         res_mom = residual_momentum_from_monthly(
-            _monthly_asof(monthly_close, close, t),
-            _monthly_asof(monthly_spy, spy, t))
+            _monthly_asof(monthly_close, close, t, monthly_periods),
+            _monthly_asof(monthly_spy, spy, t, monthly_periods))
         rows.append({
             "mom_12_1": float(mom_12_1.loc[t]),
             "residual_mom": res_mom,
@@ -137,4 +147,11 @@ def ticker_factor_frame(prices: pd.DataFrame, spy_close: pd.Series,
             "close": float(close.loc[t]),
             "above_sma200": bool(close.loc[t] >= sma200.loc[t]),
         })
-    return pd.DataFrame(rows, index=pd.DatetimeIndex(dates))
+    frame = pd.DataFrame(rows, index=pd.DatetimeIndex(dates))
+    # Mixing NaN placeholder rows with computed bool rows makes pandas
+    # coerce this column to a plain float/object dtype where NaN is
+    # indistinguishable from a truthy value under naive `if row[...]:`
+    # checks (bool(float('nan')) is True). Cast to the nullable boolean
+    # dtype so True/False/<NA> stay a genuine tri-state column.
+    frame["above_sma200"] = frame["above_sma200"].astype("boolean")
+    return frame
