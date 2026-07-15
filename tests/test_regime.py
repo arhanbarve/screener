@@ -6,6 +6,10 @@ import pytest
 from src.regime import (
     trend_signal, breadth_signal, vol_signal, credit_signal,
 )
+from src.regime import (
+    ladder_points, ladder_exposure, thrust_override, combined_exposure,
+    THRUST_FLOOR,
+)
 
 
 def _bdays(n, start="2020-01-01"):
@@ -49,3 +53,46 @@ def test_credit_signal_ratio_below_sma100():
     assert bool(sig.iloc[-1]) is True          # ratio dropped below its SMA100
     assert bool(sig.iloc[110]) is False        # flat ratio == SMA -> not below
     assert bool(sig.iloc[50]) is False         # SMA100 not formed -> False
+
+
+def test_ladder_points_sums_aligned_signals():
+    idx = _bdays(3)
+    a = pd.Series([True, False, True], index=idx)
+    b = pd.Series([True, False, False], index=idx)
+    c = pd.Series([False, False, True], index=idx)
+    d = pd.Series([False, False, True], index=idx)
+    pts = ladder_points(a, b, c, d)
+    assert list(pts) == [2, 0, 3]
+
+
+def test_ladder_exposure_mapping():
+    idx = _bdays(5)
+    pts = pd.Series([0, 1, 2, 3, 4], index=idx)
+    exp = ladder_exposure(pts)
+    assert list(exp) == [1.00, 1.00, 0.66, 0.33, 0.00]
+
+
+def test_thrust_fires_on_cross_and_expires():
+    # breadth50: 12 days low (0.10), then jumps to 0.60 -> fires for THRUST_HOLD days
+    idx = _bdays(60)
+    vals = np.concatenate([np.full(12, 0.10), np.full(48, 0.60)])
+    active = thrust_override(pd.Series(vals, index=idx))
+    assert bool(active.iloc[11]) is False       # before cross
+    assert bool(active.iloc[12]) is True        # cross day
+    assert bool(active.iloc[12 + 19]) is True   # last day of hold window
+    assert bool(active.iloc[12 + 20]) is False  # expired (no re-fire: no dip below LOW)
+
+
+def test_thrust_does_not_fire_without_prior_low():
+    idx = _bdays(30)
+    vals = np.concatenate([np.full(15, 0.45), np.full(15, 0.60)])  # never below 0.20
+    active = thrust_override(pd.Series(vals, index=idx))
+    assert not active.any()
+
+
+def test_combined_exposure_applies_floor_only_when_thrust_active():
+    idx = _bdays(4)
+    pts = pd.Series([4, 4, 2, 0], index=idx)
+    thrust = pd.Series([True, False, True, False], index=idx)
+    exp = combined_exposure(pts, thrust)
+    assert list(exp) == [THRUST_FLOOR, 0.00, 0.66, 1.00]

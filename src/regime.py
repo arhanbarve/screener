@@ -50,3 +50,50 @@ def credit_signal(hyg_close: pd.Series, ief_close: pd.Series) -> pd.Series:
     ratio = hyg / ief
     sma = ratio.rolling(CREDIT_SMA_WINDOW).mean()
     return ((ratio < sma) & sma.notna()).fillna(False)
+
+
+def ladder_points(trend: pd.Series, breadth: pd.Series,
+                  vol: pd.Series, credit: pd.Series) -> pd.Series:
+    """Sum the four boolean signals into 0-4 daily points (int)."""
+    df = pd.concat(
+        {"t": trend, "b": breadth, "v": vol, "c": credit}, axis=1
+    ).fillna(False)
+    return df.sum(axis=1).astype(int)
+
+
+def ladder_exposure(points: pd.Series) -> pd.Series:
+    """Map daily points to target equity exposure per EXPOSURE_MAP."""
+    return points.map(EXPOSURE_MAP).astype(float)
+
+
+def thrust_override(pct_above_50: pd.Series) -> pd.Series:
+    """Breadth-thrust re-entry: True while the override is active.
+
+    Fires when pct_above_50 crosses above THRUST_HIGH having been below
+    THRUST_LOW within the prior THRUST_WINDOW sessions; stays active for
+    THRUST_HOLD sessions from the firing day (re-fires reset the clock).
+    """
+    vals = pct_above_50.to_numpy()
+    active = pd.Series(False, index=pct_above_50.index)
+    fire_until = -1
+    for i in range(len(vals)):
+        crossed = (
+            i > 0
+            and vals[i] > THRUST_HIGH
+            and not (vals[i - 1] > THRUST_HIGH)
+        )
+        if crossed:
+            lo = max(0, i - THRUST_WINDOW)
+            window = vals[lo:i]
+            if (window < THRUST_LOW).any():
+                fire_until = i + THRUST_HOLD - 1
+        if i <= fire_until:
+            active.iloc[i] = True
+    return active
+
+
+def combined_exposure(points: pd.Series, thrust_active: pd.Series) -> pd.Series:
+    """Ladder exposure with the thrust floor applied on active days."""
+    exp = ladder_exposure(points)
+    floored = exp.clip(lower=THRUST_FLOOR)
+    return exp.where(~thrust_active.reindex(exp.index, fill_value=False), floored)
