@@ -219,3 +219,64 @@ def breadth_series(prices: dict[str, pd.DataFrame]) -> pd.DataFrame:
         "pct_above_200": a200.mean(axis=1),
         "pct_above_50": a50.mean(axis=1),
     })
+
+
+def candidate_tickers(db_path: str) -> list[str]:
+    """Universe tickers with a cached market cap >= MIN_MCAP_TODAY. Names the
+    live screener has never cached a cap for are excluded (documented
+    universe-reconstruction crudeness — see module docstring)."""
+    uni = pd.read_parquet("data/universe.parquet")
+    out = []
+    for t in uni["ticker"]:
+        mc = get_market_cap_stale(db_path, t)
+        if mc is not None and mc >= MIN_MCAP_TODAY:
+            out.append(t)
+    logger.info(f"[candidates] {len(out)} tickers with cached mcap >= {MIN_MCAP_TODAY:,.0f}")
+    return out
+
+
+def build_panel(db_path: str, start: str, end: str,
+                panel_path: str = PANEL_PATH,
+                breadth_path: str = BREADTH_PATH) -> None:
+    """Fetch history, compute the factor panel at weekly rebalance dates in
+    [start, end], compute daily breadth, save both to parquet."""
+    fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=WARMUP_DAYS)).strftime("%Y-%m-%d")
+    tickers = candidate_tickers(db_path)
+    spy = get_history("SPY", db_path, start=fetch_start, end=end)
+    if spy is None or spy.empty:
+        raise RuntimeError("Could not fetch SPY history")
+    prices = get_history_bulk(tickers, db_path, start=fetch_start, end=end)
+    prices = {t: df for t, df in prices.items() if df is not None and len(df) >= 260}
+    logger.info(f"[panel] {len(prices)} tickers with usable history")
+
+    sim_index = spy.loc[start:end].index
+    dates = rebalance_dates(sim_index)
+
+    frames = []
+    for t, df in prices.items():
+        f = ticker_factor_frame(df, spy["close"], dates)
+        f["ticker"] = t
+        mc_today = get_market_cap_stale(db_path, t)
+        last_close = float(df["close"].iloc[-1])
+        f["mcap"] = (f["close"] / last_close) * mc_today if mc_today else np.nan
+        frames.append(f)
+
+    panel = pd.concat(frames).rename_axis("date").reset_index()
+    panel = apply_gates(panel)
+    panel = composite_scores(panel)
+    panel.to_parquet(panel_path, index=False)
+
+    breadth = breadth_series(prices).loc[start:end]
+    breadth.to_parquet(breadth_path)
+    logger.info(f"[panel] saved {len(panel)} rows -> {panel_path}, breadth -> {breadth_path}")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    ap = argparse.ArgumentParser(description="Build the portfolio-backtest factor panel")
+    ap.add_argument("--start", default="2015-01-01")
+    ap.add_argument("--end", default="2023-12-31",
+                    help="dev-window default; 2024+ is holdout, run once at the end")
+    ap.add_argument("--db", default="data/cache.db")
+    args = ap.parse_args()
+    build_panel(args.db, args.start, args.end)

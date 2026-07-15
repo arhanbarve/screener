@@ -196,3 +196,44 @@ def test_breadth_series_fractions():
     assert last["pct_above_50"] == pytest.approx(0.5)
     # before any ticker has 200 bars, the 200d breadth is undefined
     assert np.isnan(b.iloc[100]["pct_above_200"])
+
+
+def test_build_panel_end_to_end_synthetic(tmp_path, monkeypatch):
+    """Full build with fetchers monkeypatched — proves wiring, not math."""
+    import src.factor_panel as fp
+
+    n = 320
+    idx = pd.bdate_range("2022-01-03", periods=n)
+    rng = np.random.default_rng(3)
+
+    def synth(seed, base):
+        r = np.random.default_rng(seed)
+        return pd.DataFrame({
+            "close": base * np.cumprod(1 + r.normal(0.0005, 0.015, n)),
+            "volume": np.full(n, 1_000_000.0),
+        }, index=idx)
+
+    tickers = ["AAA", "BBB", "CCC"]
+    prices = {t: synth(i, 50 + 10 * i) for i, t in enumerate(tickers)}
+    spy = synth(99, 400)
+
+    monkeypatch.setattr(fp, "candidate_tickers", lambda db_path: tickers)
+    monkeypatch.setattr(fp, "get_history_bulk",
+                        lambda ts, db_path, start, end: {t: prices[t] for t in ts})
+    monkeypatch.setattr(fp, "get_history",
+                        lambda t, db_path, start, end: spy)
+    monkeypatch.setattr(fp, "get_market_cap_stale", lambda db, t: 2e9)
+
+    panel_path = tmp_path / "panel.parquet"
+    breadth_path = tmp_path / "breadth.parquet"
+    fp.build_panel(db_path="unused.db", start="2022-06-01", end="2023-03-01",
+                   panel_path=str(panel_path), breadth_path=str(breadth_path))
+
+    panel = pd.read_parquet(panel_path)
+    breadth = pd.read_parquet(breadth_path)
+    assert set(panel["ticker"]) == set(tickers)
+    assert {"composite", "passes_gates", "mcap", "close"} <= set(panel.columns)
+    assert {"pct_above_200", "pct_above_50"} <= set(breadth.columns)
+    # only rebalance dates inside [start, end]
+    assert panel["date"].min() >= pd.Timestamp("2022-06-01")
+    assert panel["date"].max() <= pd.Timestamp("2023-03-01")
