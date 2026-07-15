@@ -6,6 +6,7 @@ positions.json
 
 # Development
 .superpowers/
+.worktrees/
 
 # Cache and generated data (too large / regenerated each run)
 data/
