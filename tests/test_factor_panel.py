@@ -129,3 +129,70 @@ def test_monthly_asof_before_any_month_end_formed_returns_empty():
     m = _monthly_asof(monthly, daily, t, monthly_periods)
 
     assert len(m) == 0
+
+
+from src.factor_panel import (
+    apply_gates, composite_scores, breadth_series,
+    PRICE_BLOCK_WEIGHTS, GATE_MIN_MCAP, GATE_MIN_DOLLAR_VOL, GATE_MAX_BELOW_HIGH,
+)
+
+
+def _panel_row(ticker, date, **overrides):
+    row = {
+        "ticker": ticker, "date": pd.Timestamp(date), "close": 50.0,
+        "mom_12_1": 0.2, "residual_mom": 1.0, "rs_6m": 0.05, "rs_accel": 0.01,
+        "rs_slope": 0.001, "pct_from_high": -0.05, "dollar_vol_20d": 10e6,
+        "above_sma200": True, "mcap": 1e9,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_apply_gates():
+    d = "2023-06-02"
+    panel = pd.DataFrame([
+        _panel_row("PASS", d),
+        _panel_row("SMLL", d, mcap=100e6),                    # below $300M
+        _panel_row("THIN", d, dollar_vol_20d=1e6),            # below $5M ADV
+        _panel_row("BELW", d, above_sma200=False),            # below SMA200
+        _panel_row("DEEP", d, pct_from_high=-0.50),           # >35% off high
+        _panel_row("NODA", d, mom_12_1=np.nan),               # missing factor
+    ])
+    gated = apply_gates(panel)
+    assert list(gated.loc[gated["passes_gates"], "ticker"]) == ["PASS"]
+
+
+def test_composite_scores_zscore_and_weights():
+    d = pd.Timestamp("2023-06-02")
+    # three passing tickers, factors constructed so only mom_12_1 differs
+    base = dict(residual_mom=1.0, rs_6m=0.05, rs_accel=0.01,
+                rs_slope=0.001, pct_from_high=-0.05)
+    panel = pd.DataFrame([
+        _panel_row("A", d, mom_12_1=0.30, **base),
+        _panel_row("B", d, mom_12_1=0.20, **base),
+        _panel_row("C", d, mom_12_1=0.10, **base),
+    ])
+    panel["passes_gates"] = True
+    scored = composite_scores(panel)
+    by_t = scored.set_index("ticker")
+    # identical factors z to 0; mom_12_1 z-scores are +1.09.., 0, -1.09.. (ddof=1... pandas std default ddof=1)
+    assert by_t.loc["A", "composite"] > by_t.loc["B", "composite"] > by_t.loc["C", "composite"]
+    assert by_t.loc["B", "composite"] == pytest.approx(0.0, abs=1e-12)
+    # composite = w_mom * z_mom exactly, since all other z are 0
+    z_a = (0.30 - 0.20) / pd.Series([0.30, 0.20, 0.10]).std()
+    assert by_t.loc["A", "composite"] == pytest.approx(
+        PRICE_BLOCK_WEIGHTS["mom_12_1"] * z_a, rel=1e-9)
+
+
+def test_breadth_series_fractions():
+    idx = pd.bdate_range("2021-01-04", periods=300)
+    up = pd.DataFrame({"close": np.linspace(10, 40, 300),
+                       "volume": np.full(300, 1e6)}, index=idx)
+    down = pd.DataFrame({"close": np.linspace(40, 10, 300),
+                         "volume": np.full(300, 1e6)}, index=idx)
+    b = breadth_series({"UP": up, "DOWN": down})
+    last = b.iloc[-1]
+    assert last["pct_above_200"] == pytest.approx(0.5)   # UP above, DOWN below
+    assert last["pct_above_50"] == pytest.approx(0.5)
+    # before any ticker has 200 bars, the 200d breadth is undefined
+    assert np.isnan(b.iloc[100]["pct_above_200"])

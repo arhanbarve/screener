@@ -155,3 +155,67 @@ def ticker_factor_frame(prices: pd.DataFrame, spy_close: pd.Series,
     # dtype so True/False/<NA> stay a genuine tri-state column.
     frame["above_sma200"] = frame["above_sma200"].astype("boolean")
     return frame
+
+
+FACTOR_COLS = list(PRICE_BLOCK_WEIGHTS)
+
+
+def apply_gates(panel: pd.DataFrame) -> pd.DataFrame:
+    """Point-in-time liquidity + confirmation gates -> `passes_gates` column.
+    Rows with any missing factor fail (price-block factors are all-or-nothing
+    from the same OHLCV history, so partial coverage means short history)."""
+    p = panel.copy()
+    has_factors = p[FACTOR_COLS].notna().all(axis=1)
+    p["passes_gates"] = (
+        has_factors
+        & (p["mcap"] >= GATE_MIN_MCAP)
+        & (p["dollar_vol_20d"] >= GATE_MIN_DOLLAR_VOL)
+        & p["above_sma200"].fillna(False)
+        & (p["pct_from_high"] >= -GATE_MAX_BELOW_HIGH)
+    )
+    return p
+
+
+def _winsorize(s: pd.Series, pct: float = 0.01) -> pd.Series:
+    if s.notna().sum() < 3:
+        return s
+    lo, hi = s.quantile(pct), s.quantile(1 - pct)
+    return s.clip(lo, hi)
+
+
+def composite_scores(panel: pd.DataFrame) -> pd.DataFrame:
+    """Winsorize + z-score each factor cross-sectionally per date among gate
+    survivors; composite = weighted sum. Non-survivors get composite NaN."""
+    p = panel.copy()
+    p["composite"] = np.nan
+
+    for date, idx in p.groupby("date").groups.items():
+        rows = p.loc[idx]
+        surv = rows.index[rows["passes_gates"]]
+        if len(surv) < 3:
+            continue
+        comp = pd.Series(0.0, index=surv)
+        for col, w in PRICE_BLOCK_WEIGHTS.items():
+            vals = _winsorize(p.loc[surv, col])
+            std = vals.std()
+            if std < 1e-12 or np.isnan(std):
+                continue
+            comp += w * (vals - vals.mean()) / std
+        p.loc[surv, "composite"] = comp
+    return p
+
+
+def breadth_series(prices: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Daily fraction of tickers above their own SMA200 / SMA50.
+    Denominator = tickers whose SMA window has formed by that day."""
+    above200, above50 = [], []
+    for t, df in prices.items():
+        c = df["close"]
+        above200.append((c >= c.rolling(200).mean()).where(c.rolling(200).mean().notna()))
+        above50.append((c >= c.rolling(50).mean()).where(c.rolling(50).mean().notna()))
+    a200 = pd.concat(above200, axis=1)
+    a50 = pd.concat(above50, axis=1)
+    return pd.DataFrame({
+        "pct_above_200": a200.mean(axis=1),
+        "pct_above_50": a50.mean(axis=1),
+    })
