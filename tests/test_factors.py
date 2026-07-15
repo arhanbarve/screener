@@ -160,3 +160,31 @@ def test_tech_signal_score_partial():
         mfi=30.0,          # fail: below 40
     )
     assert tech_signal_score(row) == 4
+
+
+def test_residual_momentum_from_monthly_matches_wrapper():
+    """Core on pre-resampled monthly data == wrapper on daily data."""
+    import numpy as np
+    import pandas as pd
+    from src.factors import residual_momentum, residual_momentum_from_monthly
+
+    rng = np.random.default_rng(42)
+    idx = pd.bdate_range("2022-01-03", periods=420)
+    mkt = pd.Series(100 * np.cumprod(1 + rng.normal(0.0004, 0.01, len(idx))), index=idx)
+    stk = pd.Series(50 * np.cumprod(1 + rng.normal(0.0006, 0.02, len(idx))), index=idx)
+
+    expected = residual_momentum(stk, mkt)
+    monthly_stk = stk.resample("ME").last()
+    monthly_mkt = mkt.resample("ME").last()
+    got = residual_momentum_from_monthly(monthly_stk, monthly_mkt)
+    assert abs(got - expected) < 1e-12
+
+
+def test_residual_momentum_from_monthly_insufficient_data_nan():
+    import numpy as np
+    import pandas as pd
+    from src.factors import residual_momentum_from_monthly
+
+    idx = pd.date_range("2023-01-31", periods=6, freq="ME")
+    s = pd.Series(np.linspace(10, 12, 6), index=idx)
+    assert np.isnan(residual_momentum_from_monthly(s, s))

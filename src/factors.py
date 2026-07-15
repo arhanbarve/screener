@@ -65,9 +65,18 @@ def residual_momentum(close: pd.Series, market_close: pd.Series) -> float:
     sum residuals over 12 months (skip last), scale by residual vol.
     Lower crash risk than raw 12-1 momentum.
     """
-    monthly_stock = close.resample("ME").last().pct_change().dropna()
-    monthly_mkt   = market_close.resample("ME").last().pct_change().dropna()
-    df = pd.DataFrame({"r": monthly_stock, "m": monthly_mkt}).dropna()
+    monthly_stock = close.resample("ME").last()
+    monthly_mkt   = market_close.resample("ME").last()
+    return residual_momentum_from_monthly(monthly_stock, monthly_mkt)
+
+
+def residual_momentum_from_monthly(monthly_stock: pd.Series, monthly_mkt: pd.Series) -> float:
+    """Core of residual_momentum, taking already-resampled month-end closes.
+    Exists so the backtest factor panel can resample each ticker once and
+    evaluate at many as-of dates without paying resample cost per date."""
+    r = monthly_stock.pct_change().dropna()
+    m = monthly_mkt.pct_change().dropna()
+    df = pd.DataFrame({"r": r, "m": m}).dropna()
     if len(df) < 13:
         return float("nan")
     df = df.iloc[-13:-1]  # 12 months, skip most recent
