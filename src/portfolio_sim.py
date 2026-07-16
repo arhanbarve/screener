@@ -210,3 +210,103 @@ def simulate(
         "turnover_notional": turnover_notional,
         "avg_exposure": avg_exposure,
     }
+
+
+CRASH_WINDOWS = {"2020": ("2020-01-01", "2020-12-31"),
+                 "2022": ("2022-01-01", "2022-12-31")}
+DD_REDUCTION_REQUIRED = 1 / 3      # spec pass criterion 1
+CAGR_GIVEUP_MAX = 0.02             # spec pass criterion 2
+
+
+def _window_dd(run: dict, start: str, end: str) -> float:
+    eq = run["equity"].loc[start:end]
+    if len(eq) < 2:
+        return float("nan")
+    dd, _ = max_drawdown(eq)
+    return dd
+
+
+def verdict(unhedged: dict, laddered: dict, naive: dict) -> dict:
+    """Spec pass criteria, all a priori. NaN window (period doesn't cover a
+    crash year) -> that check passes vacuously but is flagged in the value."""
+    dd_u, _ = max_drawdown(unhedged["equity"])
+    dd_l, _ = max_drawdown(laddered["equity"])
+    reduced = (abs(dd_l) <= abs(dd_u) * (1 - DD_REDUCTION_REQUIRED))
+
+    window_ok = {}
+    for name, (s, e) in CRASH_WINDOWS.items():
+        wu, wl = _window_dd(unhedged, s, e), _window_dd(laddered, s, e)
+        if np.isnan(wu) or np.isnan(wl):
+            window_ok[name] = True   # window outside sim period
+        else:
+            window_ok[name] = abs(wl) <= abs(wu) * (1 - DD_REDUCTION_REQUIRED)
+
+    giveup = cagr(unhedged["equity"]) - cagr(laddered["equity"])
+    cagr_ok = giveup <= CAGR_GIVEUP_MAX
+    sharpe_ok = sharpe(laddered["equity"]) >= sharpe(naive["equity"])
+
+    overall = (reduced and window_ok["2020"] and window_ok["2022"]
+               and cagr_ok and sharpe_ok)
+    return {
+        "dd_unhedged": dd_u, "dd_laddered": dd_l,
+        "dd_reduced_third": reduced,
+        "dd_2020_ok": window_ok["2020"], "dd_2022_ok": window_ok["2022"],
+        "cagr_giveup": giveup, "cagr_giveup_ok": cagr_ok,
+        "sharpe_vs_naive_ok": sharpe_ok,
+        "overall": overall,
+    }
+
+
+def write_report(path: str, runs: dict[str, dict], v: dict, meta: dict) -> None:
+    lines = [
+        "# Portfolio Backtest Report",
+        "",
+        f"Period: {meta.get('start')} → {meta.get('end')} · "
+        f"costs {meta.get('cost_bps')} bps/side · cash earns 0%",
+        "",
+        "> **SURVIVORSHIP BIAS WARNING:** universe contains only currently-",
+        "> listed tickers (yfinance). Delisted losers are absent; every CAGR",
+        "> here is an upper bound. Ladder value is judged on *relative*",
+        "> drawdown reduction, which is far less bias-sensitive.",
+        "",
+        "## Summary",
+        "",
+        "| Strategy | CAGR | Vol | Sharpe | MaxDD | LongestDD (d) | AvgExp | ExpAdj CAGR | Costs $ |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for name, run in runs.items():
+        eq = run["equity"]
+        dd, dd_days = max_drawdown(eq)
+        c = cagr(eq)
+        ae = run.get("avg_exposure", 1.0)
+        vol = eq.pct_change().std() * np.sqrt(252)
+        exp_adj = c / ae if ae > 0 else float("nan")
+        lines.append(
+            f"| {name} | {c:.2%} | {vol:.2%} | {sharpe(eq):.2f} | {dd:.2%} "
+            f"| {dd_days} | {ae:.2f} | {exp_adj:.2%} | {run.get('costs', 0):,.0f} |")
+
+    lines += ["", "## Per-year", ""]
+    for name, run in runs.items():
+        table = per_year(run["equity"])
+        lines += [f"### {name}", "", "| Year | Return | MaxDD |", "|---|---|---|"]
+        for year, row in table.iterrows():
+            lines.append(f"| {year} | {row['return']:.2%} | {row['max_dd']:.2%} |")
+        lines.append("")
+
+    lines += [
+        "## Verdict (spec pass criteria, a priori)",
+        "",
+        f"- Max drawdown cut ≥ 1/3 overall: **{v['dd_reduced_third']}** "
+        f"(unhedged {v['dd_unhedged']:.2%} → laddered {v['dd_laddered']:.2%})",
+        f"- 2020 window cut ≥ 1/3: **{v['dd_2020_ok']}**",
+        f"- 2022 window cut ≥ 1/3: **{v['dd_2022_ok']}**",
+        f"- CAGR give-up ≤ 2pts: **{v['cagr_giveup_ok']}** ({v['cagr_giveup']:.2%})",
+        f"- Ladder Sharpe ≥ naive momentum Sharpe: **{v['sharpe_vs_naive_ok']}**",
+        "",
+        f"**OVERALL: {'PASS' if v['overall'] else 'FAIL'}**",
+        "",
+        meta.get("note", ""),   # raw markdown block (e.g. sensitivity table)
+    ]
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    logger.info(f"[report] wrote {path}")

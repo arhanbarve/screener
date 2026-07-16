@@ -243,3 +243,56 @@ def test_simulate_full_turnover_cash_capped_no_zero_division():
     # (its untouched-position set is empty, so it has nothing left to do)
     same_day = res["trades"][res["trades"]["date"] == fri1]
     assert len(same_day) == 6  # 3 step-2 sells + 3 step-2 buys, nothing else
+
+
+from src.portfolio_sim import verdict, write_report
+
+
+def _fake_run(final=150_000.0, dd_curve=None, avg_exposure=1.0, n=756,
+              start="2019-01-01"):
+    idx = pd.bdate_range(start, periods=n)
+    if dd_curve is None:
+        equity = pd.Series(np.linspace(100_000, final, n), index=idx)
+    else:
+        equity = pd.Series(dd_curve, index=idx[:len(dd_curve)])
+    return {"equity": equity, "avg_exposure": avg_exposure, "costs": 0.0,
+            "turnover_notional": 0.0,
+            "daily": pd.DataFrame({"equity": equity, "invested": equity,
+                                   "n_positions": 10, "exposure_target": 1.0})}
+
+
+def _curve_with_dd(n, dd_frac, seed=0):
+    """Linear up, one crash of dd_frac in the middle, recovery."""
+    third = n // 3
+    up1 = np.linspace(100_000, 130_000, third)
+    crash = np.linspace(130_000, 130_000 * (1 - dd_frac), third)
+    up2 = np.linspace(130_000 * (1 - dd_frac), 160_000, n - 2 * third)
+    return np.concatenate([up1, crash, up2])
+
+
+def test_verdict_pass_when_all_criteria_met():
+    n = 2016  # ~8 years covering 2019-2026, includes 2020 and 2022
+    unhedged = _fake_run(dd_curve=_curve_with_dd(n, 0.30), n=n)
+    laddered = _fake_run(dd_curve=_curve_with_dd(n, 0.15), avg_exposure=0.8, n=n)
+    naive = _fake_run(dd_curve=_curve_with_dd(n, 0.35), n=n)
+    v = verdict(unhedged, laddered, naive)
+    assert v["dd_reduced_third"] is True
+    assert isinstance(v["cagr_giveup_ok"], bool)
+    assert isinstance(v["sharpe_vs_naive_ok"], bool)
+    assert v["overall"] == (v["dd_reduced_third"] and v["dd_2020_ok"]
+                            and v["dd_2022_ok"] and v["cagr_giveup_ok"]
+                            and v["sharpe_vs_naive_ok"])
+
+
+def test_write_report_renders(tmp_path):
+    runs = {"composite": _fake_run(), "composite+ladder": _fake_run(final=140_000.0),
+            "naive_momentum": _fake_run(final=130_000.0), "SPY": _fake_run(final=120_000.0)}
+    v = verdict(runs["composite"], runs["composite+ladder"], runs["naive_momentum"])
+    path = tmp_path / "report.md"
+    write_report(str(path), runs, v, meta={"start": "2019-01-01", "end": "2026-01-01",
+                                           "cost_bps": 20.0, "note": "test"})
+    text = path.read_text()
+    assert "SURVIVORSHIP" in text.upper()
+    assert "composite+ladder" in text
+    assert "CAGR" in text
+    assert "Verdict" in text
