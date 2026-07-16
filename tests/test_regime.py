@@ -96,3 +96,46 @@ def test_combined_exposure_applies_floor_only_when_thrust_active():
     thrust = pd.Series([True, False, True, False], index=idx)
     exp = combined_exposure(pts, thrust)
     assert list(exp) == [THRUST_FLOOR, 0.00, 0.66, 1.00]
+
+
+def test_asym_dwell_cuts_immediately():
+    from src.regime import asymmetric_dwell
+    idx = _bdays(4)
+    raw = pd.Series([1.0, 1.0, 0.33, 0.33], index=idx)
+    out = asymmetric_dwell(raw, confirm=5)
+    assert list(out) == [1.0, 1.0, 0.33, 0.33]
+
+
+def test_asym_dwell_blocks_brief_reentry():
+    from src.regime import asymmetric_dwell
+    idx = _bdays(15)
+    # bear-rally shape: risk-off, 3-day bounce to 0.66, back down
+    raw = pd.Series([1.0] * 6 + [0.33] * 3 + [0.66] * 3 + [0.33] * 3, index=idx)
+    out = asymmetric_dwell(raw, confirm=5)
+    assert list(out) == [1.0] * 6 + [0.33] * 9   # bounce never confirmed
+
+
+def test_asym_dwell_reentry_after_confirm():
+    from src.regime import asymmetric_dwell
+    idx = _bdays(16)
+    raw = pd.Series([1.0] * 6 + [0.33] * 3 + [1.0] * 7, index=idx)
+    out = asymmetric_dwell(raw, confirm=5)
+    # 1.0 run starts at i=9; confirmed on its 5th session (i=13)
+    assert list(out) == [1.0] * 6 + [0.33] * 7 + [1.0] * 3
+
+
+def test_asym_dwell_deeper_cut_applies_during_unconfirmed_run():
+    from src.regime import asymmetric_dwell
+    idx = _bdays(10)
+    raw = pd.Series([1.0] * 6 + [0.66] * 2 + [0.0] * 2, index=idx)
+    out = asymmetric_dwell(raw, confirm=5)
+    assert list(out) == [1.0] * 6 + [0.66] * 2 + [0.0] * 2
+
+
+def test_asym_dwell_stable_series_unchanged():
+    from src.regime import asymmetric_dwell
+    idx = _bdays(8)
+    raw = pd.Series(1.0, index=idx)
+    out = asymmetric_dwell(raw, confirm=5)
+    assert (out == raw).all()
+    assert (out.index == raw.index).all()

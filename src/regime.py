@@ -18,6 +18,8 @@ CREDIT_SMA_WINDOW = 100
 
 EXPOSURE_MAP = {0: 1.00, 1: 1.00, 2: 0.66, 3: 0.33, 4: 0.00}
 
+DWELL_CONFIRM = 5      # sessions a higher target must persist before re-risking
+
 THRUST_LOW = 0.20      # breadth-50d must have been below this...
 THRUST_HIGH = 0.55     # ...and cross above this...
 THRUST_WINDOW = 10     # ...within this many sessions
@@ -97,3 +99,25 @@ def combined_exposure(points: pd.Series, thrust_active: pd.Series) -> pd.Series:
     exp = ladder_exposure(points)
     floored = exp.clip(lower=THRUST_FLOOR)
     return exp.where(~thrust_active.reindex(exp.index, fill_value=False), floored)
+
+
+def asymmetric_dwell(exposure: pd.Series, confirm: int = DWELL_CONFIRM) -> pd.Series:
+    """Whipsaw damper: exposure cuts apply the day they appear; a higher
+    target only takes effect once the raw series has held that same value
+    for `confirm` consecutive sessions (bear-market rallies flip 1-2 signals
+    off for a few days — this keeps one bounce from re-risking the book)."""
+    vals = exposure.to_numpy()
+    out = vals.copy()
+    cur = vals[0]
+    run_val, run_len = vals[0], 0
+    for i in range(len(vals)):
+        if vals[i] == run_val:
+            run_len += 1
+        else:
+            run_val, run_len = vals[i], 1
+        if vals[i] < cur:
+            cur = vals[i]
+        elif run_len >= confirm:
+            cur = run_val
+        out[i] = cur
+    return pd.Series(out, index=exposure.index)

@@ -573,3 +573,98 @@ def test_compute_exposure_custom_map_thrust_floors_up(monkeypatch):
     assert exp.loc[inactive_day] == pytest.approx(0.10)
     assert exp.loc[active_day] == pytest.approx(regime.THRUST_FLOOR)
     assert exp.loc[active_day] == pytest.approx(0.66)
+
+
+# --- index-overlay (SPY x ladder) ---------------------------------------
+
+from src.portfolio_sim import overlay_equity, verdict_index_overlay
+
+
+def test_overlay_equity_scales_returns_with_one_day_lag():
+    idx = pd.bdate_range("2023-01-02", periods=3)
+    close = pd.Series([100.0, 110.0, 99.0], index=idx)
+    exp = pd.Series([0.5, 0.5, 0.5], index=idx)
+    eq = overlay_equity(close, exp, cost_bps=0.0)
+    # day1: +10% * 0.5 = +5%; day2: -10% * 0.5 = -5%
+    assert eq.iloc[0] == pytest.approx(100_000.0)
+    assert eq.iloc[1] == pytest.approx(105_000.0)
+    assert eq.iloc[2] == pytest.approx(105_000.0 * 0.95)
+
+
+def test_overlay_equity_charges_cost_on_exposure_change():
+    idx = pd.bdate_range("2023-01-02", periods=3)
+    close = pd.Series([100.0, 100.0, 100.0], index=idx)   # flat market
+    exp = pd.Series([1.0, 0.5, 0.5], index=idx)           # one de-risk trade
+    eq = overlay_equity(close, exp, cost_bps=5.0)
+    # day1: |1.0-0.5| * 5bps = 2.5bps charged; no market return
+    assert eq.iloc[1] == pytest.approx(100_000.0 * (1 - 0.5 * 5.0 / 1e4))
+    assert eq.iloc[2] == pytest.approx(eq.iloc[1])         # no further trades
+
+
+def _det_curve(rets):
+    idx = pd.bdate_range("2022-01-03", periods=len(rets))
+    return pd.Series(100_000.0 * np.cumprod(1 + np.asarray(rets)), index=idx)
+
+
+def test_verdict_index_overlay_passes_when_overlay_dominates():
+    # index: steady gains with a -1%/day crash window; overlay sat it out
+    rets_idx = np.full(500, 0.001)
+    rets_idx[100:150] = -0.01
+    rets_ov = rets_idx.copy()
+    rets_ov[100:150] = 0.0
+    v = verdict_index_overlay(_det_curve(rets_idx), _det_curve(rets_ov))
+    assert v["dd_cut_third"] and v["cagr_giveup_ok"] and v["sharpe_ok"]
+    assert v["overall"] is True
+
+
+def test_verdict_index_overlay_fails_on_cagr_giveup():
+    # overlay = 0.3x index: DD cut passes, but gives up >4pts CAGR
+    # (Sharpe of uniformly scaled returns ties only to float precision, so
+    # it is not asserted here.)
+    rets_idx = np.full(500, 0.002)
+    rets_idx[100:130] = -0.01
+    rets_ov = rets_idx * 0.3
+    v = verdict_index_overlay(_det_curve(rets_idx), _det_curve(rets_ov))
+    assert v["dd_cut_third"]
+    assert not v["cagr_giveup_ok"]
+    assert v["overall"] is False
+
+
+def test_verdict_index_overlay_fails_without_dd_cut():
+    rets_idx = np.full(300, 0.001)
+    rets_idx[100:140] = -0.008
+    v = verdict_index_overlay(_det_curve(rets_idx), _det_curve(rets_idx))
+    assert not v["dd_cut_third"]
+    assert v["overall"] is False
+
+
+def test_run_index_overlay_end_to_end_synthetic(tmp_path, monkeypatch):
+    import src.portfolio_sim as ps
+
+    n = 300
+    idx = pd.bdate_range("2023-01-02", periods=n)
+    rng = np.random.default_rng(7)
+    breadth = pd.DataFrame({"pct_above_200": np.full(n, 0.6),
+                            "pct_above_50": np.full(n, 0.6)}, index=idx)
+
+    def synth_instr(base, vol):
+        r = np.random.default_rng(hash(base) % 2**31)
+        return pd.DataFrame({"close": base * np.cumprod(1 + r.normal(0.0003, vol, n)),
+                             "volume": np.full(n, 1e6)}, index=idx)
+
+    instruments = {"SPY": synth_instr(400, 0.01), "^VIX": synth_instr(18, 0.05),
+                   "^VIX3M": synth_instr(20, 0.04), "HYG": synth_instr(75, 0.005),
+                   "IEF": synth_instr(95, 0.004)}
+    monkeypatch.setattr(ps, "_fetch_instrument",
+                        lambda name, db_path, start, end: instruments[name])
+
+    breadth_path = tmp_path / "breadth.parquet"
+    breadth.to_parquet(breadth_path)
+    report_path = tmp_path / "overlay_report.md"
+
+    out = ps.run_index_overlay(breadth_path=str(breadth_path), db_path="unused.db",
+                               report_path=str(report_path))
+    text = report_path.read_text()
+    assert "SPY" in text and "ladder" in text
+    assert "OVERALL" in text
+    assert set(out) >= {"runs", "verdict", "report_path"}

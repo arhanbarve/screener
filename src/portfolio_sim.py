@@ -427,6 +427,119 @@ def run_backtest(panel_path: str = "output/factor_panel.parquet",
     return {"runs": runs, "verdict": v, "report_path": report_path}
 
 
+# --- index-overlay mode (SPY x ladder) -----------------------------------
+# Pre-registered criteria: docs/CONCLUSION-2026-07-16-composite-stock-picker.md
+# (fixed before the 2024+ holdout run). The composite stock-picker is retired;
+# this evaluates the regime ladder as drawdown insurance on the index itself.
+
+INDEX_OVERLAY_COST_BPS = 5.0       # per side on exposure-change notional (SPY spread ~1bp)
+INDEX_DD_REDUCTION_REQUIRED = 1 / 3
+INDEX_CAGR_GIVEUP_MAX = 0.04
+
+
+def overlay_equity(close: pd.Series, exposure: pd.Series,
+                   cost_bps: float = INDEX_OVERLAY_COST_BPS,
+                   initial_capital: float = 100_000.0) -> pd.Series:
+    """Single-instrument exposure overlay: daily returns scaled by the prior
+    close's exposure target (signal at close t trades at that close, earns
+    from t+1), minus cost_bps on each day's |exposure change|."""
+    rets = close.pct_change().fillna(0.0)
+    exp = exposure.reindex(close.index).ffill().fillna(1.0)
+    eff = exp.shift(1).fillna(exp.iloc[0])
+    tc = exp.diff().abs().fillna(0.0) * cost_bps / 1e4
+    return initial_capital * (1.0 + rets * eff - tc).cumprod()
+
+
+def verdict_index_overlay(index_eq: pd.Series, overlay_eq: pd.Series) -> dict:
+    """Pre-registered pass criteria for the ladder-on-index overlay:
+    MaxDD cut >= 1/3, CAGR give-up <= 4pts, Sharpe >= index Sharpe."""
+    dd_i, _ = max_drawdown(index_eq)
+    dd_o, _ = max_drawdown(overlay_eq)
+    dd_cut = abs(dd_o) <= abs(dd_i) * (1 - INDEX_DD_REDUCTION_REQUIRED)
+    giveup = cagr(index_eq) - cagr(overlay_eq)
+    giveup_ok = giveup <= INDEX_CAGR_GIVEUP_MAX
+    sharpe_ok = sharpe(overlay_eq) >= sharpe(index_eq)
+    return {
+        "dd_index": dd_i, "dd_overlay": dd_o, "dd_cut_third": dd_cut,
+        "cagr_giveup": giveup, "cagr_giveup_ok": giveup_ok,
+        "sharpe_ok": sharpe_ok,
+        "overall": bool(dd_cut and giveup_ok and sharpe_ok),
+    }
+
+
+def run_index_overlay(breadth_path: str = "output/breadth.parquet",
+                      db_path: str = "data/cache.db",
+                      report_path: str | None = None) -> dict:
+    """SPY buy-and-hold vs SPY x (regime ladder + asymmetric dwell)."""
+    breadth = pd.read_parquet(breadth_path)
+    breadth.index = pd.to_datetime(breadth.index)
+    start = str(breadth.index.min().date())
+    end = str(breadth.index.max().date())
+    fetch_start = str((breadth.index.min() - pd.Timedelta(days=400)).date())
+
+    spy = _fetch_instrument("SPY", db_path, fetch_start, end)["close"]
+    spy = spy.reindex(breadth.index).ffill()
+
+    raw_exp = compute_exposure(breadth, db_path, fetch_start, end)
+    exp = regime.asymmetric_dwell(raw_exp)
+
+    runs = {
+        "SPY": overlay_equity(spy, pd.Series(1.0, index=spy.index), cost_bps=0.0),
+        "SPY x ladder+dwell": overlay_equity(spy, exp),
+    }
+    v = verdict_index_overlay(runs["SPY"], runs["SPY x ladder+dwell"])
+
+    lines = [
+        "# Index Overlay Backtest Report (SPY x regime ladder)",
+        "",
+        f"Period: {start} → {end} · overlay costs {INDEX_OVERLAY_COST_BPS} bps/side "
+        f"on exposure changes · cash earns 0% · dwell confirm {regime.DWELL_CONFIRM}d",
+        "",
+        "Criteria pre-registered in docs/CONCLUSION-2026-07-16-composite-stock-picker.md.",
+        "Caveat: breadth + thrust signals derive from a survivorship-biased universe;",
+        "trend/vol/credit signals are clean.",
+        "",
+        "| Strategy | CAGR | Vol | Sharpe | MaxDD | LongestDD (d) | AvgExp |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for name, eq in runs.items():
+        dd, dd_days = max_drawdown(eq)
+        vol = eq.pct_change().std() * np.sqrt(252)
+        ae = 1.0 if name == "SPY" else float(exp.reindex(eq.index).ffill().mean())
+        lines.append(f"| {name} | {cagr(eq):.2%} | {vol:.2%} | {sharpe(eq):.2f} "
+                     f"| {dd:.2%} | {dd_days} | {ae:.2f} |")
+
+    lines += ["", "## Per-year", ""]
+    for name, eq in runs.items():
+        table = per_year(eq)
+        lines += [f"### {name}", "", "| Year | Return | MaxDD |", "|---|---|---|"]
+        for year, row in table.iterrows():
+            lines.append(f"| {year} | {row['return']:.2%} | {row['max_dd']:.2%} |")
+        lines.append("")
+
+    lines += [
+        "## Verdict (pre-registered criteria)",
+        "",
+        f"- MaxDD cut ≥ 1/3: **{v['dd_cut_third']}** "
+        f"(SPY {v['dd_index']:.2%} → overlay {v['dd_overlay']:.2%})",
+        f"- CAGR give-up ≤ 4pts: **{v['cagr_giveup_ok']}** ({v['cagr_giveup']:.2%})",
+        f"- Overlay Sharpe ≥ SPY Sharpe: **{v['sharpe_ok']}**",
+        "",
+        f"**OVERALL: {'PASS' if v['overall'] else 'FAIL'}**",
+    ]
+
+    if report_path is None:
+        report_path = f"output/index_overlay_{pd.Timestamp.today().date()}.md"
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
+    with open(report_path, "w") as f:
+        f.write("\n".join(lines))
+    logger.info(f"[report] wrote {report_path}")
+    for name, eq in runs.items():
+        safe = name.replace(" ", "_").replace("+", "_")
+        eq.to_csv(report_path.replace(".md", f"_{safe}_equity.csv"))
+    return {"runs": runs, "verdict": v, "report_path": report_path}
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description="Run the portfolio backtest + regime ladder")
@@ -435,9 +548,15 @@ if __name__ == "__main__":
     ap.add_argument("--db", default="data/cache.db")
     ap.add_argument("--report", default=None)
     ap.add_argument("--sensitivity", action="store_true")
+    ap.add_argument("--index-overlay", action="store_true",
+                    help="run SPY x ladder overlay instead of the composite harness")
     args = ap.parse_args()
-    out = run_backtest(panel_path=args.panel, breadth_path=args.breadth,
-                       db_path=args.db, report_path=args.report,
-                       sensitivity=args.sensitivity)
+    if args.index_overlay:
+        out = run_index_overlay(breadth_path=args.breadth, db_path=args.db,
+                                report_path=args.report)
+    else:
+        out = run_backtest(panel_path=args.panel, breadth_path=args.breadth,
+                           db_path=args.db, report_path=args.report,
+                           sensitivity=args.sensitivity)
     print(f"OVERALL: {'PASS' if out['verdict']['overall'] else 'FAIL'}"
           f" -> {out['report_path']}")
