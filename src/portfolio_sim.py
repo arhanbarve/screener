@@ -117,7 +117,8 @@ def simulate(
         target_exposure = float(exposure.loc[day])
 
         # 2) weekly band rebalance at this close
-        if day in rebal_by_date:
+        rebalanced_today = day in rebal_by_date
+        if rebalanced_today:
             g = rebal_by_date[day]
             surv = g[g["passes_gates"]].dropna(subset=[score_col])
             ranked = surv.sort_values(score_col, ascending=False)["ticker"].tolist()
@@ -144,18 +145,33 @@ def simulate(
                     break
                 _trade(t, notional, "buy")
 
-        # 3) daily exposure adjustment (pro-rata) when target changed
-        invested = sum(positions.values())
-        if prev_exposure is not None and target_exposure != prev_exposure and invested > 0:
-            equity = cash + invested
-            target_invested = equity * target_exposure
-            scale = target_invested / invested
-            for t in list(positions):
-                delta = positions[t] * (scale - 1.0)
-                if delta > 0:
-                    _trade(t, delta, "buy")
-                elif delta < 0:
-                    _trade(t, -delta, "sell")
+        # 3) daily exposure adjustment (pro-rata) when target changed.
+        # Skipped on rebalance days: step 2 already sized its buys against
+        # this same target_exposure, so re-scaling here would just churn
+        # (buy-then-sell the positions step 2 just opened) without changing
+        # the end-of-day allocation.
+        if not rebalanced_today:
+            invested = sum(positions.values())
+            if prev_exposure is not None and target_exposure != prev_exposure and invested > 0:
+                equity = cash + invested
+                target_invested = equity * target_exposure
+                scale = target_invested / invested
+                if scale > 1.0:
+                    # Buying: all deltas below are positive (pro-rata scale-up
+                    # of long-only positions), so cap their sum to what cash
+                    # affords -- same principle as step 2's cash-affordability
+                    # cap -- to keep cash from going negative.
+                    total_buy = invested * (scale - 1.0)
+                    affordable = cash / (1.0 + cost_rate)
+                    if total_buy > affordable:
+                        shrink = max(0.0, affordable / total_buy)
+                        scale = 1.0 + (scale - 1.0) * shrink
+                for t in list(positions):
+                    delta = positions[t] * (scale - 1.0)
+                    if delta > 0:
+                        _trade(t, delta, "buy")
+                    elif delta < 0:
+                        _trade(t, -delta, "sell")
         prev_exposure = target_exposure
 
         invested = sum(positions.values())

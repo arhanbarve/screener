@@ -93,16 +93,28 @@ def test_simulate_costs_reduce_equity():
                       cost_bps=20.0)
     assert costly["equity"].iloc[-1] < free["equity"].iloc[-1]
     assert costly["costs"] > 0
+    # costs are fully deterministic in this synthetic fixture (fee = notional
+    # * cost_rate on every trade, so total costs = turnover * cost_rate) --
+    # pin the exact magnitude so a fee-doubling (or halving) bug can't slip
+    # through a direction-only check.
+    cost_rate = 20.0 / 1e4
+    assert costly["costs"] == pytest.approx(costly["turnover_notional"] * cost_rate)
 
 
 def test_simulate_exposure_scales_invested_fraction():
     panel, closes, fridays = _mini_market()
     exposure = pd.Series(1.0, index=closes.index)
-    exposure.loc[exposure.index >= fridays[1]] = 0.5   # de-risk halfway through
+    # de-risk the day *after* the rebalance, not on it: step 3 (the daily
+    # pro-rata exposure adjustment) now deliberately no-ops on rebalance
+    # days (see simulate()'s rebalanced_today guard), so an exposure change
+    # landing exactly on a rebalance day wouldn't be applied by step 3 until
+    # band composition itself changes. Test the pro-rata mechanism on its
+    # own footing by changing exposure on an ordinary (non-rebalance) day.
+    day_after = closes.index[closes.index.get_loc(fridays[1]) + 1]
+    exposure.loc[exposure.index >= day_after] = 0.5   # de-risk halfway through
     res = simulate(panel, closes, max_positions=2, entry_band=2, exit_band=3,
                    cost_bps=0.0, exposure=exposure)
-    # day after de-risking: invested value ~= 50% of equity
-    day_after = closes.index[closes.index.get_loc(fridays[1]) + 1]
+    # on the de-risking day itself: invested value ~= 50% of equity
     snap = res["daily"].loc[day_after]
     assert snap["invested"] / snap["equity"] == pytest.approx(0.5, abs=0.02)
     # and average exposure < 1
