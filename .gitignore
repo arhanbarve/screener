@@ -11,6 +11,7 @@ positions.json
 # Cache and generated data (too large / regenerated each run)
 data/
 logs/
+output/*.parquet
 
 # Handoff docs (local-only, read via filesystem not git)
 docs/handoffs/
