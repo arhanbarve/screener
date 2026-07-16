@@ -401,3 +401,54 @@ def test_write_report_renders(tmp_path):
     row = next(l for l in lines if l.startswith("| composite+ladder |"))
     assert f"{expected_cagr:.2%}" in row
     assert f"{expected_dd:.2%}" in row
+
+
+def test_run_backtest_end_to_end_synthetic(tmp_path, monkeypatch):
+    """Wiring smoke test: panel/breadth/instruments synthetic, full CLI path."""
+    import src.portfolio_sim as ps
+
+    n = 300
+    idx = pd.bdate_range("2023-01-02", periods=n)
+    rng = np.random.default_rng(11)
+    tickers = [f"T{i}" for i in range(30)]
+    closes = pd.DataFrame(
+        {t: 100 * np.cumprod(1 + rng.normal(0.0004, 0.015, n)) for t in tickers},
+        index=idx)
+
+    fridays = [d for d in idx if d.dayofweek == 4]
+    rows = []
+    for d in fridays:
+        for i, t in enumerate(tickers):
+            rows.append({"date": d, "ticker": t, "passes_gates": True,
+                         "composite": float(rng.normal()), "mom_12_1": float(rng.normal()),
+                         "close": float(closes.loc[d, t])})
+    panel = pd.DataFrame(rows)
+    breadth = pd.DataFrame({"pct_above_200": np.full(n, 0.6),
+                            "pct_above_50": np.full(n, 0.6)}, index=idx)
+
+    def synth_instr(base, vol):
+        r = np.random.default_rng(hash(base) % 2**31)
+        return pd.DataFrame({"close": base * np.cumprod(1 + r.normal(0.0003, vol, n)),
+                             "volume": np.full(n, 1e6)}, index=idx)
+
+    instruments = {"SPY": synth_instr(400, 0.01), "^VIX": synth_instr(18, 0.05),
+                   "^VIX3M": synth_instr(20, 0.04), "HYG": synth_instr(75, 0.005),
+                   "IEF": synth_instr(95, 0.004)}
+    monkeypatch.setattr(ps, "_fetch_instrument",
+                        lambda name, db_path, start, end: instruments[name])
+
+    panel_path = tmp_path / "panel.parquet"
+    breadth_path = tmp_path / "breadth.parquet"
+    panel.to_parquet(panel_path, index=False)
+    breadth.to_parquet(breadth_path)
+    report_path = tmp_path / "report.md"
+
+    ps.run_backtest(panel_path=str(panel_path), breadth_path=str(breadth_path),
+                    db_path="unused.db", report_path=str(report_path),
+                    sensitivity=True)
+
+    text = report_path.read_text()
+    assert "composite+ladder" in text
+    assert "naive_momentum" in text
+    assert "Sensitivity" in text
+    assert "OVERALL" in text

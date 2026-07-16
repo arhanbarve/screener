@@ -318,3 +318,118 @@ def write_report(path: str, runs: dict[str, dict], v: dict, meta: dict) -> None:
     with open(path, "w") as f:
         f.write("\n".join(lines))
     logger.info(f"[report] wrote {path}")
+
+
+from src import regime
+from src.event_backtest import get_history
+
+SENSITIVITY_MAPS = [
+    {0: 1.00, 1: 1.00, 2: 0.66, 3: 0.33, 4: 0.00},   # spec (chosen)
+    {0: 1.00, 1: 0.75, 2: 0.50, 3: 0.25, 4: 0.00},   # linear
+    {0: 1.00, 1: 1.00, 2: 0.50, 3: 0.00, 4: 0.00},   # aggressive
+    {0: 1.00, 1: 0.66, 2: 0.33, 3: 0.00, 4: 0.00},   # early
+]
+
+
+def _fetch_instrument(name: str, db_path: str, start: str, end: str) -> pd.DataFrame:
+    df = get_history(name, db_path, start=start, end=end)
+    if df is None or df.empty:
+        raise RuntimeError(f"Could not fetch {name}")
+    return df
+
+
+def compute_exposure(breadth: pd.DataFrame, db_path: str, start: str, end: str,
+                     exposure_map: dict | None = None) -> pd.Series:
+    """Daily combined ladder+thrust exposure over breadth's index."""
+    spy = _fetch_instrument("SPY", db_path, start, end)["close"]
+    vix = _fetch_instrument("^VIX", db_path, start, end)["close"]
+    vix3m = _fetch_instrument("^VIX3M", db_path, start, end)["close"]
+    hyg = _fetch_instrument("HYG", db_path, start, end)["close"]
+    ief = _fetch_instrument("IEF", db_path, start, end)["close"]
+
+    idx = breadth.index
+    pts = regime.ladder_points(
+        regime.trend_signal(spy).reindex(idx, fill_value=False),
+        regime.breadth_signal(breadth["pct_above_200"]),
+        regime.vol_signal(vix, vix3m).reindex(idx, fill_value=False),
+        regime.credit_signal(hyg, ief).reindex(idx, fill_value=False),
+    )
+    thrust = regime.thrust_override(breadth["pct_above_50"])
+    if exposure_map is None:
+        return regime.combined_exposure(pts, thrust)
+    exp = pts.map(exposure_map).astype(float)
+    floored = exp.clip(lower=regime.THRUST_FLOOR)
+    return exp.where(~thrust.reindex(exp.index, fill_value=False), floored)
+
+
+def run_backtest(panel_path: str = "output/factor_panel.parquet",
+                 breadth_path: str = "output/breadth.parquet",
+                 db_path: str = "data/cache.db",
+                 report_path: str | None = None,
+                 sensitivity: bool = False) -> dict:
+    panel = pd.read_parquet(panel_path)
+    panel["date"] = pd.to_datetime(panel["date"])
+    breadth = pd.read_parquet(breadth_path)
+    breadth.index = pd.to_datetime(breadth.index)
+
+    start = str(breadth.index.min().date())
+    end = str(breadth.index.max().date())
+    # warm-up for SMA200/SMA100 in regime signals
+    fetch_start = str((breadth.index.min() - pd.Timedelta(days=400)).date())
+
+    closes = (panel.pivot_table(index="date", columns="ticker", values="close")
+              .reindex(breadth.index).ffill())
+
+    spy = _fetch_instrument("SPY", db_path, fetch_start, end)
+    spy_close = spy["close"].reindex(breadth.index).ffill()
+    spy_run = {"equity": 100_000.0 * spy_close / spy_close.iloc[0],
+               "avg_exposure": 1.0, "costs": 0.0, "turnover_notional": 0.0,
+               "daily": pd.DataFrame({"equity": spy_close, "invested": spy_close,
+                                      "n_positions": 1, "exposure_target": 1.0})}
+
+    exposure = compute_exposure(breadth, db_path, fetch_start, end)
+
+    runs = {
+        "composite": simulate(panel, closes),
+        "composite+ladder": simulate(panel, closes, exposure=exposure),
+        "naive_momentum": simulate(panel, closes, score_col="mom_12_1"),
+        "SPY": spy_run,
+    }
+    v = verdict(runs["composite"], runs["composite+ladder"], runs["naive_momentum"])
+
+    note = ""
+    if sensitivity:
+        note_lines = ["", "## Sensitivity (alternative exposure maps — robustness, not tuning)", "",
+                      "| Map | CAGR | MaxDD | Sharpe |", "|---|---|---|---|"]
+        for m in SENSITIVITY_MAPS:
+            exp_m = compute_exposure(breadth, db_path, fetch_start, end, exposure_map=m)
+            r = simulate(panel, closes, exposure=exp_m)
+            dd, _ = max_drawdown(r["equity"])
+            note_lines.append(f"| {m} | {cagr(r['equity']):.2%} | {dd:.2%} "
+                              f"| {sharpe(r['equity']):.2f} |")
+        note = "\n".join(note_lines)
+
+    if report_path is None:
+        report_path = f"output/portfolio_backtest_{pd.Timestamp.today().date()}.md"
+    write_report(report_path, runs, v,
+                 meta={"start": start, "end": end,
+                       "cost_bps": TRANSACTION_COST_BPS, "note": note})
+    for name, run in runs.items():
+        run["equity"].to_csv(report_path.replace(".md", f"_{name.replace('+','_')}_equity.csv"))
+    return {"runs": runs, "verdict": v, "report_path": report_path}
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    ap = argparse.ArgumentParser(description="Run the portfolio backtest + regime ladder")
+    ap.add_argument("--panel", default="output/factor_panel.parquet")
+    ap.add_argument("--breadth", default="output/breadth.parquet")
+    ap.add_argument("--db", default="data/cache.db")
+    ap.add_argument("--report", default=None)
+    ap.add_argument("--sensitivity", action="store_true")
+    args = ap.parse_args()
+    out = run_backtest(panel_path=args.panel, breadth_path=args.breadth,
+                       db_path=args.db, report_path=args.report,
+                       sensitivity=args.sensitivity)
+    print(f"OVERALL: {'PASS' if out['verdict']['overall'] else 'FAIL'}"
+          f" -> {out['report_path']}")
