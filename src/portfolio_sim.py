@@ -118,6 +118,7 @@ def simulate(
 
         # 2) weekly band rebalance at this close
         rebalanced_today = day in rebal_by_date
+        traded_in_step2: set[str] = set()
         if rebalanced_today:
             g = rebal_by_date[day]
             surv = g[g["passes_gates"]].dropna(subset=[score_col])
@@ -128,6 +129,7 @@ def simulate(
                 r = rank_of.get(t)
                 if r is None or r > exit_band:
                     _trade(t, positions[t], "sell")
+                    traded_in_step2.add(t)
 
             equity = cash + sum(positions.values())
             target_invested = equity * target_exposure
@@ -144,34 +146,43 @@ def simulate(
                 if notional <= 1e-9 or notional < slot * 0.5:
                     break
                 _trade(t, notional, "buy")
+                traded_in_step2.add(t)
 
         # 3) daily exposure adjustment (pro-rata) when target changed.
-        # Skipped on rebalance days: step 2 already sized its buys against
-        # this same target_exposure, so re-scaling here would just churn
-        # (buy-then-sell the positions step 2 just opened) without changing
-        # the end-of-day allocation.
-        if not rebalanced_today:
-            invested = sum(positions.values())
-            if prev_exposure is not None and target_exposure != prev_exposure and invested > 0:
-                equity = cash + invested
-                target_invested = equity * target_exposure
-                scale = target_invested / invested
-                if scale > 1.0:
-                    # Buying: all deltas below are positive (pro-rata scale-up
-                    # of long-only positions), so cap their sum to what cash
-                    # affords -- same principle as step 2's cash-affordability
-                    # cap -- to keep cash from going negative.
-                    total_buy = invested * (scale - 1.0)
-                    affordable = cash / (1.0 + cost_rate)
-                    if total_buy > affordable:
-                        shrink = max(0.0, affordable / total_buy)
-                        scale = 1.0 + (scale - 1.0) * shrink
-                for t in list(positions):
-                    delta = positions[t] * (scale - 1.0)
-                    if delta > 0:
-                        _trade(t, delta, "buy")
-                    elif delta < 0:
-                        _trade(t, -delta, "sell")
+        # Runs every day, including rebalance days -- but skips any ticker
+        # step 2 already traded today (opened/closed), since re-scaling
+        # those would just churn (buy-then-sell the same ticker step 2
+        # just opened) without changing the end-of-day allocation. Other,
+        # untouched (drifting) positions still need pro-rata rescaling
+        # toward the new target -- otherwise an exposure change that lands
+        # on a rebalance day with little band turnover never gets applied
+        # to them.
+        invested = sum(positions.values())
+        if prev_exposure is not None and target_exposure != prev_exposure and invested > 0:
+            equity = cash + invested
+            target_invested = equity * target_exposure
+            scale = target_invested / invested
+            if scale > 1.0:
+                # Buying: all deltas below are positive (pro-rata scale-up
+                # of long-only positions), so cap their sum to what cash
+                # affords -- same principle as step 2's cash-affordability
+                # cap -- to keep cash from going negative. Only sum deltas
+                # for positions step 3 actually touches (untouched ones);
+                # step-2-traded tickers are excluded from the loop below.
+                total_buy = sum(v for t, v in positions.items()
+                                 if t not in traded_in_step2) * (scale - 1.0)
+                affordable = cash / (1.0 + cost_rate)
+                if total_buy > affordable:
+                    shrink = max(0.0, affordable / total_buy)
+                    scale = 1.0 + (scale - 1.0) * shrink
+            for t in list(positions):
+                if t in traded_in_step2:
+                    continue
+                delta = positions[t] * (scale - 1.0)
+                if delta > 0:
+                    _trade(t, delta, "buy")
+                elif delta < 0:
+                    _trade(t, -delta, "sell")
         prev_exposure = target_exposure
 
         invested = sum(positions.values())

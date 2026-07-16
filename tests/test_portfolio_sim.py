@@ -104,21 +104,84 @@ def test_simulate_costs_reduce_equity():
 def test_simulate_exposure_scales_invested_fraction():
     panel, closes, fridays = _mini_market()
     exposure = pd.Series(1.0, index=closes.index)
-    # de-risk the day *after* the rebalance, not on it: step 3 (the daily
-    # pro-rata exposure adjustment) now deliberately no-ops on rebalance
-    # days (see simulate()'s rebalanced_today guard), so an exposure change
-    # landing exactly on a rebalance day wouldn't be applied by step 3 until
-    # band composition itself changes. Test the pro-rata mechanism on its
-    # own footing by changing exposure on an ordinary (non-rebalance) day.
-    day_after = closes.index[closes.index.get_loc(fridays[1]) + 1]
-    exposure.loc[exposure.index >= day_after] = 0.5   # de-risk halfway through
+    exposure.loc[exposure.index >= fridays[1]] = 0.5   # de-risk halfway through
     res = simulate(panel, closes, max_positions=2, entry_band=2, exit_band=3,
                    cost_bps=0.0, exposure=exposure)
-    # on the de-risking day itself: invested value ~= 50% of equity
+    # day after de-risking: invested value ~= 50% of equity
+    day_after = closes.index[closes.index.get_loc(fridays[1]) + 1]
     snap = res["daily"].loc[day_after]
     assert snap["invested"] / snap["equity"] == pytest.approx(0.5, abs=0.02)
     # and average exposure < 1
     assert res["avg_exposure"] < 0.85
+
+
+def test_simulate_exposure_change_on_rebalance_day_still_rescales_untouched_positions():
+    """Exposure change lands exactly on a rebalance day where band membership
+    doesn't turn over (T1/T2 stay top-ranked every week in _mini_market()).
+    Step 2 only sizes newly-traded positions -- it never touches the
+    already-held, untouched T1/T2 -- so step 3 is the only mechanism that can
+    rescale them toward the new exposure target. Regression test for the bug
+    where step 3 used to no-op entirely on rebalance days, permanently
+    dropping the de-risk signal for untouched positions (invested/equity
+    stayed pinned at the old exposure for the rest of the run)."""
+    panel, closes, fridays = _mini_market()
+    exposure = pd.Series(1.0, index=closes.index)
+    exposure.loc[exposure.index >= fridays[1]] = 0.5   # de-risk exactly on rebal day
+    res = simulate(panel, closes, max_positions=2, entry_band=2, exit_band=3,
+                   cost_bps=0.0, exposure=exposure)
+    # no band turnover happened on fridays[1] (T1/T2 remain rank 1/2 all
+    # along), so step 2 traded nothing that day -- the trades below are all
+    # step 3's pro-rata rescale, confirming this exercises the
+    # untouched-position rescale path, not step 2's sizing.
+    same_day_trades = res["trades"][res["trades"]["date"] == fridays[1]]
+    assert set(same_day_trades["ticker"]) == {"T1", "T2"}
+    assert (same_day_trades["side"] == "sell").all()
+    # the de-risk should still take effect the same day, via step 3.
+    snap = res["daily"].loc[fridays[1]]
+    assert snap["invested"] / snap["equity"] == pytest.approx(0.5, abs=0.02)
+    # and it must stick -- not get silently dropped and drift back toward
+    # full exposure over the following days/rebalances.
+    tail = res["daily"].loc[fridays[1]:]
+    assert (tail["invested"] / tail["equity"] < 0.7).all()
+
+
+def test_simulate_rebalance_and_exposure_change_same_day_no_double_trade():
+    """Original bug (pre-7bb4054): a same-day rebalance (step 2) + exposure
+    change (step 3) caused wasteful buy-then-immediate-sell churn on the same
+    ticker. Force real band turnover (T2 exits, T3 enters) on the same day
+    exposure changes, and confirm each step-2-traded ticker is traded at most
+    once that day -- step 3 must skip tickers step 2 already sized, even
+    though (per the newer fix) it still rescales the untouched one (T1)."""
+    idx = pd.bdate_range("2024-01-01", periods=15)
+    fridays = [pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-12"),
+               pd.Timestamp("2024-01-19")]
+    tickers = ["T1", "T2", "T3", "T4", "T5"]
+    closes = pd.DataFrame({t: np.full(15, 100.0) for t in tickers}, index=idx)
+
+    rows = []
+    for d in fridays:
+        for rank, t in enumerate(tickers, start=1):
+            rows.append({"date": d, "ticker": t, "passes_gates": True,
+                         "composite": float(len(tickers) - rank), "close": 100.0})
+    panel = pd.DataFrame(rows)
+    # at the second rebalance: demote T2 out of the exit band (sold) and
+    # promote T3 into the entry band (bought); T1 stays top-ranked (untouched).
+    panel.loc[(panel["date"] == fridays[1]) & (panel["ticker"] == "T2"), "composite"] = -5
+    panel.loc[(panel["date"] == fridays[1]) & (panel["ticker"] == "T3"), "composite"] = 10
+
+    exposure = pd.Series(1.0, index=closes.index)
+    exposure.loc[exposure.index >= fridays[1]] = 0.5   # exposure change same day as turnover
+
+    res = simulate(panel, closes, max_positions=2, entry_band=2, exit_band=3,
+                   cost_bps=20.0, exposure=exposure)
+    same_day = res["trades"][res["trades"]["date"] == fridays[1]]
+    assert set(same_day["ticker"]) == {"T1", "T2", "T3"}
+    # no ticker traded more than once (no buy-then-sell churn on step 2's picks)
+    assert (same_day.groupby("ticker").size() == 1).all()
+    trade_by_ticker = same_day.set_index("ticker")
+    assert trade_by_ticker.loc["T2", "side"] == "sell"   # step 2: exited the band
+    assert trade_by_ticker.loc["T3", "side"] == "buy"    # step 2: entered the band
+    assert trade_by_ticker.loc["T1", "side"] == "sell"   # step 3: untouched, rescaled down
 
 
 def test_simulate_full_exposure_zero_goes_all_cash():
