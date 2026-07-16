@@ -228,18 +228,23 @@ def _window_dd(run: dict, start: str, end: str) -> float:
 
 def verdict(unhedged: dict, laddered: dict, naive: dict) -> dict:
     """Spec pass criteria, all a priori. NaN window (period doesn't cover a
-    crash year) -> that check passes vacuously but is flagged in the value."""
+    crash year) -> that check passes vacuously (counts toward `overall` per
+    original intent -- a window absent from the data shouldn't fail the run)
+    but is flagged via the `dd_2020_covered`/`dd_2022_covered` keys so callers
+    and the report can distinguish a vacuous pass from a real one."""
     dd_u, _ = max_drawdown(unhedged["equity"])
     dd_l, _ = max_drawdown(laddered["equity"])
     reduced = (abs(dd_l) <= abs(dd_u) * (1 - DD_REDUCTION_REQUIRED))
 
-    window_ok = {}
+    window_ok, window_covered = {}, {}
     for name, (s, e) in CRASH_WINDOWS.items():
         wu, wl = _window_dd(unhedged, s, e), _window_dd(laddered, s, e)
         if np.isnan(wu) or np.isnan(wl):
             window_ok[name] = True   # window outside sim period
+            window_covered[name] = False
         else:
             window_ok[name] = abs(wl) <= abs(wu) * (1 - DD_REDUCTION_REQUIRED)
+            window_covered[name] = True
 
     giveup = cagr(unhedged["equity"]) - cagr(laddered["equity"])
     cagr_ok = giveup <= CAGR_GIVEUP_MAX
@@ -251,6 +256,7 @@ def verdict(unhedged: dict, laddered: dict, naive: dict) -> dict:
         "dd_unhedged": dd_u, "dd_laddered": dd_l,
         "dd_reduced_third": reduced,
         "dd_2020_ok": window_ok["2020"], "dd_2022_ok": window_ok["2022"],
+        "dd_2020_covered": window_covered["2020"], "dd_2022_covered": window_covered["2022"],
         "cagr_giveup": giveup, "cagr_giveup_ok": cagr_ok,
         "sharpe_vs_naive_ok": sharpe_ok,
         "overall": overall,
@@ -298,8 +304,10 @@ def write_report(path: str, runs: dict[str, dict], v: dict, meta: dict) -> None:
         "",
         f"- Max drawdown cut ≥ 1/3 overall: **{v['dd_reduced_third']}** "
         f"(unhedged {v['dd_unhedged']:.2%} → laddered {v['dd_laddered']:.2%})",
-        f"- 2020 window cut ≥ 1/3: **{v['dd_2020_ok']}**",
-        f"- 2022 window cut ≥ 1/3: **{v['dd_2022_ok']}**",
+        f"- 2020 window cut ≥ 1/3: **{v['dd_2020_ok']}**"
+        f"{' (window not in sim period)' if not v['dd_2020_covered'] else ''}",
+        f"- 2022 window cut ≥ 1/3: **{v['dd_2022_ok']}**"
+        f"{' (window not in sim period)' if not v['dd_2022_covered'] else ''}",
         f"- CAGR give-up ≤ 2pts: **{v['cagr_giveup_ok']}** ({v['cagr_giveup']:.2%})",
         f"- Ladder Sharpe ≥ naive momentum Sharpe: **{v['sharpe_vs_naive_ok']}**",
         "",

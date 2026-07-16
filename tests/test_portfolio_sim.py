@@ -270,22 +270,112 @@ def _curve_with_dd(n, dd_frac, seed=0):
     return np.concatenate([up1, crash, up2])
 
 
+def _curve_with_window_crash(idx, window_start, window_end, dd_frac,
+                             start_val=100_000.0, end_val=160_000.0):
+    """Equity curve over `idx`: linear rise to a local peak exactly at
+    `window_start`, a monotonic dd_frac crash down to `window_end`, then a
+    linear recovery to end_val. The crash is located via idx.searchsorted so
+    it lands precisely inside the given calendar window regardless of
+    business-day alignment -- unlike `_curve_with_dd`'s fixed 1/3-of-n
+    crash position, which (for the default start="2019-01-01") does NOT
+    actually land inside the literal 2020 or 2022 calendar windows, so it
+    can't genuinely exercise the window drawdown comparison. Since cagr()
+    and max_drawdown() only look at endpoint/extremum values (not the
+    interior path), this also gives exact control over both the window's
+    max_drawdown (== dd_frac) and, via end_val, the overall CAGR."""
+    n = len(idx)
+    i0 = idx.searchsorted(pd.Timestamp(window_start))
+    i1 = idx.searchsorted(pd.Timestamp(window_end), side="right") - 1
+    assert 0 < i0 < i1 < n - 1, "window crash must sit strictly inside idx"
+    peak_val = start_val + (end_val - start_val) * 0.5
+    trough_val = peak_val * (1 - dd_frac)
+    up1 = np.linspace(start_val, peak_val, i0)
+    crash = np.linspace(peak_val, trough_val, i1 - i0 + 1)
+    up2 = np.linspace(trough_val, end_val, n - i1 - 1)
+    return np.concatenate([up1, crash, up2])
+
+
 def test_verdict_pass_when_all_criteria_met():
-    n = 2016  # ~8 years covering 2019-2026, includes 2020 and 2022
-    unhedged = _fake_run(dd_curve=_curve_with_dd(n, 0.30), n=n)
-    laddered = _fake_run(dd_curve=_curve_with_dd(n, 0.15), avg_exposure=0.8, n=n)
-    naive = _fake_run(dd_curve=_curve_with_dd(n, 0.35), n=n)
+    # ~7.7 years covering 2019-2026 (idx ends 2026-09-22), includes 2020 and
+    # 2022. cagr()/max_drawdown() depend only on endpoint/extremum values, so
+    # end_val below was solved analytically (see scratch calc in the PR) to
+    # produce a known, nonzero cagr_giveup of exactly 0.01 -- well within
+    # CAGR_GIVEUP_MAX (0.02) but genuinely nonzero, so this test can't pass
+    # via the degenerate giveup == 0.0 case a same-final-value fixture would
+    # produce.
+    idx = pd.bdate_range("2019-01-01", periods=2016)
+    n = len(idx)
+    u_curve = _curve_with_window_crash(idx, "2020-01-01", "2020-12-31", 0.30,
+                                       end_val=200_000.0)
+    l_curve = _curve_with_window_crash(idx, "2020-01-01", "2020-12-31", 0.15,
+                                       end_val=186_305.4309686459)
+    naive_curve = _curve_with_window_crash(idx, "2020-01-01", "2020-12-31", 0.35,
+                                           end_val=150_000.0)
+    unhedged = _fake_run(dd_curve=u_curve, n=n)
+    laddered = _fake_run(dd_curve=l_curve, avg_exposure=0.8, n=n)
+    naive = _fake_run(dd_curve=naive_curve, n=n)
     v = verdict(unhedged, laddered, naive)
+
+    # The 2020 window is genuinely covered and its dd comparison is real
+    # (0.15 <= 0.30 * 2/3 == 0.20), not the degenerate 0.0 <= 0.0 case the
+    # old fixture produced.
+    assert v["dd_2020_covered"] is True
+    assert v["dd_2022_covered"] is True
+    assert v["dd_2020_ok"] is True
     assert v["dd_reduced_third"] is True
-    assert isinstance(v["cagr_giveup_ok"], bool)
+
+    # Giveup is a real, known nonzero number and passes because it's under
+    # the 2pt threshold -- not because it's exactly zero.
+    assert v["cagr_giveup"] == pytest.approx(0.01, abs=1e-6)
+    assert v["cagr_giveup_ok"] is True
+
     assert isinstance(v["sharpe_vs_naive_ok"], bool)
     assert v["overall"] == (v["dd_reduced_third"] and v["dd_2020_ok"]
                             and v["dd_2022_ok"] and v["cagr_giveup_ok"]
                             and v["sharpe_vs_naive_ok"])
 
 
+def test_verdict_cagr_giveup_fails_when_exceeds_max():
+    """Same endpoint-only-dependence trick as above, but solved for a giveup
+    of exactly 0.05 -- comfortably over CAGR_GIVEUP_MAX (0.02) -- to confirm
+    cagr_giveup_ok actually flips to False rather than always reading True."""
+    idx = pd.bdate_range("2019-01-01", periods=2016)
+    n = len(idx)
+    unhedged = _fake_run(dd_curve=np.linspace(100_000, 200_000.0, n), n=n)
+    laddered = _fake_run(dd_curve=np.linspace(100_000, 139_347.17832624083, n), n=n)
+    naive = _fake_run(dd_curve=np.linspace(100_000, 150_000.0, n), n=n)
+    v = verdict(unhedged, laddered, naive)
+    assert v["cagr_giveup"] == pytest.approx(0.05, abs=1e-6)
+    assert v["cagr_giveup_ok"] is False
+    assert v["overall"] is False
+
+
+def test_verdict_vacuous_window_not_covered():
+    """A short-horizon run that never reaches 2020 or 2022 at all: both
+    window checks fall back to the NaN/vacuous branch. Confirms dd_2020_ok
+    (and dd_2022_ok) still read True -- vacuous pass, unchanged pre-existing
+    behavior toward `overall` -- but the new coverage flags now correctly
+    report that no real comparison happened, closing the gap where a
+    holdout run outside both crash years would otherwise render an
+    indistinguishable-from-genuine PASS."""
+    unhedged = _fake_run(final=110_000.0, n=100, start="2023-01-01")
+    laddered = _fake_run(final=108_000.0, n=100, start="2023-01-01")
+    naive = _fake_run(final=105_000.0, n=100, start="2023-01-01")
+    v = verdict(unhedged, laddered, naive)
+    assert v["dd_2020_ok"] is True
+    assert v["dd_2020_covered"] is False
+    assert v["dd_2022_ok"] is True
+    assert v["dd_2022_covered"] is False
+
+
 def test_write_report_renders(tmp_path):
-    runs = {"composite": _fake_run(), "composite+ladder": _fake_run(final=140_000.0),
+    # composite+ladder uses a curve with a genuine (nonzero) drawdown, not a
+    # monotonically-increasing one -- a monotonic curve's MaxDD is exactly
+    # 0.0, and 0.0 formats identically whether or not the sign is flipped
+    # (`{0.0:.2%}` == `{-0.0:.2%}` == "0.00%"), which would make the value
+    # assertion below pass even against a sabotaged sign.
+    runs = {"composite": _fake_run(),
+            "composite+ladder": _fake_run(dd_curve=_curve_with_dd(756, 0.18)),
             "naive_momentum": _fake_run(final=130_000.0), "SPY": _fake_run(final=120_000.0)}
     v = verdict(runs["composite"], runs["composite+ladder"], runs["naive_momentum"])
     path = tmp_path / "report.md"
@@ -296,3 +386,18 @@ def test_write_report_renders(tmp_path):
     assert "composite+ladder" in text
     assert "CAGR" in text
     assert "Verdict" in text
+
+    # Value-level check, not just label presence: compute the actual CAGR and
+    # MaxDD for the "composite+ladder" run directly and confirm the exact
+    # formatted string appears in its summary-table row. This is deliberately
+    # non-tautological -- sabotaging write_report's formatting (e.g. flipping
+    # the MaxDD sign to `{-dd:.2%}`, or swapping which run's CAGR is printed)
+    # was manually confirmed to break this assertion while the old
+    # substring-only checks above kept passing.
+    ladder_run = runs["composite+ladder"]
+    expected_cagr = cagr(ladder_run["equity"])
+    expected_dd, _ = max_drawdown(ladder_run["equity"])
+    lines = text.splitlines()
+    row = next(l for l in lines if l.startswith("| composite+ladder |"))
+    assert f"{expected_cagr:.2%}" in row
+    assert f"{expected_dd:.2%}" in row
