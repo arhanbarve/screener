@@ -452,3 +452,124 @@ def test_run_backtest_end_to_end_synthetic(tmp_path, monkeypatch):
     assert "naive_momentum" in text
     assert "Sensitivity" in text
     assert "OVERALL" in text
+
+
+from src import regime
+
+
+def test_compute_exposure_values_correct(monkeypatch):
+    """Value-level check of compute_exposure: hand-computed ladder points on
+    specific days, not just 'expected labels appear in report text'.
+
+    Uses < 100 rows of data so trend_signal (SMA200) and credit_signal
+    (SMA100) never form -- both stay False every day regardless of price
+    level, isolating the assertions to breadth_signal + vol_signal (which
+    have no warm-up window)."""
+    import src.portfolio_sim as ps
+
+    idx = pd.bdate_range("2023-01-02", periods=10)
+
+    calm_day = idx[3]
+    stress_day = idx[6]
+
+    pct_above_200 = pd.Series(0.60, index=idx)
+    pct_above_200.loc[stress_day] = 0.25          # breadth signal ON only here
+
+    pct_above_50 = pd.Series(0.60, index=idx)     # constant -> thrust never fires
+
+    breadth = pd.DataFrame({"pct_above_200": pct_above_200,
+                            "pct_above_50": pct_above_50})
+
+    vix = pd.Series(15.0, index=idx)
+    vix3m = pd.Series(15.0, index=idx)            # equal -> vol signal off by default
+    vix.loc[stress_day] = 30.0                     # > VIX_LEVEL_THRESHOLD (25)
+    vix3m.loc[stress_day] = 10.0                   # and VIX > VIX3M (inverted)
+
+    spy = pd.Series(400.0, index=idx)             # flat, <200 rows -> trend always off
+    hyg = pd.Series(75.0, index=idx)
+    ief = pd.Series(95.0, index=idx)              # <100 rows -> credit always off
+
+    instruments = {
+        "SPY": pd.DataFrame({"close": spy}),
+        "^VIX": pd.DataFrame({"close": vix}),
+        "^VIX3M": pd.DataFrame({"close": vix3m}),
+        "HYG": pd.DataFrame({"close": hyg}),
+        "IEF": pd.DataFrame({"close": ief}),
+    }
+    monkeypatch.setattr(ps, "_fetch_instrument",
+                        lambda name, db_path, start, end: instruments[name])
+
+    exp = ps.compute_exposure(breadth, "unused.db",
+                              str(idx[0].date()), str(idx[-1].date()))
+
+    # calm day: breadth off (0.60 >= 0.40), vol off (VIX 15 <= 25, not
+    # inverted) -> 0 ladder points -> full exposure.
+    assert exp.loc[calm_day] == pytest.approx(regime.EXPOSURE_MAP[0])
+    assert exp.loc[calm_day] == pytest.approx(1.00)
+
+    # stress day: breadth on (0.25 < 0.40) AND vol on (VIX 30 > 25, and
+    # VIX > VIX3M) -> 2 ladder points -> exposure cut to EXPOSURE_MAP[2].
+    assert exp.loc[stress_day] == pytest.approx(regime.EXPOSURE_MAP[2])
+    assert exp.loc[stress_day] == pytest.approx(0.66)
+
+
+def test_compute_exposure_custom_map_thrust_floors_up(monkeypatch):
+    """Custom exposure_map branch: breadth-thrust override must floor
+    exposure UP to THRUST_FLOOR on active days, using a map that would
+    otherwise sit well below the floor at that points level."""
+    import src.portfolio_sim as ps
+
+    idx = pd.bdate_range("2023-01-02", periods=30)
+
+    # V-shaped breadth-thrust recovery: dip below THRUST_LOW, then cross
+    # above THRUST_HIGH within THRUST_WINDOW sessions -> override fires and
+    # holds for THRUST_HOLD sessions from the crossing day.
+    pct_above_50 = pd.Series(0.30, index=idx)
+    pct_above_50.iloc[0] = 0.15                   # below THRUST_LOW (0.20)
+    pct_above_50.iloc[1:5] = 0.30                 # recovering, still below HIGH
+    pct_above_50.iloc[5:] = 0.60                  # crosses above THRUST_HIGH (0.55) at day 5
+
+    fire_day_idx = 5
+    inactive_day = idx[0]                          # before the override ever fires
+    active_day = idx[fire_day_idx + 5]              # within the THRUST_HOLD window
+
+    assert regime.THRUST_WINDOW >= fire_day_idx      # dip at day 0 is within window of cross at day 5
+    assert regime.THRUST_HOLD > 5                    # active_day (fire+5) still within hold
+
+    pct_above_200 = pd.Series(0.60, index=idx)      # keep breadth signal off throughout
+    breadth = pd.DataFrame({"pct_above_200": pct_above_200,
+                            "pct_above_50": pct_above_50})
+
+    vix = pd.Series(15.0, index=idx)
+    vix3m = pd.Series(15.0, index=idx)              # vol signal off throughout
+    spy = pd.Series(400.0, index=idx)               # trend off (<200 rows)
+    hyg = pd.Series(75.0, index=idx)
+    ief = pd.Series(95.0, index=idx)                # credit off (<100 rows)
+
+    instruments = {
+        "SPY": pd.DataFrame({"close": spy}),
+        "^VIX": pd.DataFrame({"close": vix}),
+        "^VIX3M": pd.DataFrame({"close": vix3m}),
+        "HYG": pd.DataFrame({"close": hyg}),
+        "IEF": pd.DataFrame({"close": ief}),
+    }
+    monkeypatch.setattr(ps, "_fetch_instrument",
+                        lambda name, db_path, start, end: instruments[name])
+
+    # Sanity-check the thrust window fired as intended before trusting the
+    # exposure assertions below.
+    thrust = regime.thrust_override(pct_above_50)
+    assert bool(thrust.loc[inactive_day]) is False
+    assert bool(thrust.loc[active_day]) is True
+
+    # All other signals are off every day -> 0 ladder points every day ->
+    # this custom map would give 0.10 (well below THRUST_FLOOR) throughout
+    # if the floor weren't applied.
+    low_map = {0: 0.10, 1: 0.10, 2: 0.10, 3: 0.10, 4: 0.10}
+    exp = ps.compute_exposure(breadth, "unused.db",
+                              str(idx[0].date()), str(idx[-1].date()),
+                              exposure_map=low_map)
+
+    assert exp.loc[inactive_day] == pytest.approx(0.10)
+    assert exp.loc[active_day] == pytest.approx(regime.THRUST_FLOOR)
+    assert exp.loc[active_day] == pytest.approx(0.66)

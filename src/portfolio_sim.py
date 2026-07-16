@@ -6,6 +6,7 @@ number this simulator prints, and is repeated in the report output.
 """
 import argparse
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -409,8 +410,15 @@ def run_backtest(panel_path: str = "output/factor_panel.parquet",
                               f"| {sharpe(r['equity']):.2f} |")
         note = "\n".join(note_lines)
 
+    caveat = ("Note: composite/composite+ladder/naive_momentum use weekly-rebalance "
+              "close prices (forward-filled to daily); intra-week moves and the SPY "
+              "baseline (genuine daily data) are not directly comparable on "
+              "Vol/Sharpe/MaxDD.")
+    note = f"{caveat}\n\n{note}" if note else caveat
+
     if report_path is None:
         report_path = f"output/portfolio_backtest_{pd.Timestamp.today().date()}.md"
+    os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
     write_report(report_path, runs, v,
                  meta={"start": start, "end": end,
                        "cost_bps": TRANSACTION_COST_BPS, "note": note})
