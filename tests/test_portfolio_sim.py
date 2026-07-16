@@ -191,3 +191,55 @@ def test_simulate_full_exposure_zero_goes_all_cash():
                    cost_bps=0.0, exposure=exposure)
     assert (res["daily"]["invested"] < 1e-9).all()
     assert res["equity"].iloc[-1] == pytest.approx(100_000.0)
+
+
+def _full_turnover_market(seed):
+    """8 tickers, 2 weekly rebalances. Week 2 flips the ranking entirely
+    (all 3 held positions fall outside exit_band=4; 3 new ones fill in),
+    so every held position is traded by step 2 that day -- step 3's
+    untouched-position set is empty. Same day, exposure jumps 0.9 -> 1.15,
+    which cash-caps step 2's last buy (its notional lands a hair below the
+    full slot from float rounding, tipping cash to ~-1e-12). Regression
+    scenario for the ZeroDivisionError in step 3's cash-affordability cap:
+    total_buy over the (empty) untouched set is exactly 0.0, and 0.0 was
+    compared/divided against that tiny negative `affordable`."""
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2024-01-01", periods=15)
+    fri0, fri1 = idx[4], idx[9]
+    tickers = [f"T{i}" for i in range(8)]
+    rets = rng.normal(0.0, 0.03, size=(15, 8))
+    prices = 100.0 * np.cumprod(1.0 + rets, axis=0)
+    closes = pd.DataFrame(prices, index=idx, columns=tickers)
+
+    rows = []
+    for rank, t in enumerate(["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7"], start=1):
+        rows.append({"date": fri0, "ticker": t, "passes_gates": True,
+                     "composite": float(8 - rank), "close": float(closes.loc[fri0, t])})
+    for rank, t in enumerate(["T5", "T6", "T7", "T4", "T3", "T2", "T1", "T0"], start=1):
+        rows.append({"date": fri1, "ticker": t, "passes_gates": True,
+                     "composite": float(8 - rank), "close": float(closes.loc[fri1, t])})
+    panel = pd.DataFrame(rows)
+
+    exposure = pd.Series(0.9, index=idx)
+    exposure.loc[exposure.index >= fri1] = 1.15
+    return panel, closes, exposure, fri1
+
+
+def test_simulate_full_turnover_cash_capped_no_zero_division():
+    """Regression test: step 3's cash-affordability cap used to divide
+    `affordable / total_buy` unconditionally whenever scale > 1.0. On a day
+    where step 2 trades every held position (full turnover) and its last
+    buy is cash-capped, float rounding can leave `cash` a hair below zero
+    while `total_buy` (summed only over positions step 2 didn't touch) is
+    exactly 0.0 -- `0.0 > affordable` was True, so `affordable / total_buy`
+    raised ZeroDivisionError. Seed below is a known-good deterministic
+    trigger for that exact condition."""
+    panel, closes, exposure, fri1 = _full_turnover_market(seed=861908)
+    res = simulate(panel, closes, entry_band=3, exit_band=4, max_positions=3,
+                   cost_bps=51.34574847743024, exposure=exposure)  # must not raise
+    cash = res["daily"]["equity"] - res["daily"]["invested"]
+    assert (cash > -1e-6).all()
+    # step 3 shouldn't fire spurious trades on top of step 2's full turnover
+    # (its untouched-position set is empty, so it has nothing left to do)
+    same_day = res["trades"][res["trades"]["date"] == fri1]
+    assert len(same_day) == 6  # 3 step-2 sells + 3 step-2 buys, nothing else

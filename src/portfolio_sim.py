@@ -75,6 +75,12 @@ def simulate(
       existing positions drift (no weight rebalancing).
     - Exposure (daily target fraction, default 1.0): on days the target
       changes, all positions scale pro-rata toward target invested value.
+      Known limitation: the scale factor is computed over the whole book but
+      only applied to positions untouched by that day's step-2 rebalance
+      trades, so when a large fraction of the book turns over on the same
+      day the target also changes, the achieved exposure can miss the
+      target (proportional to turnover fraction) until the next exposure
+      change fires a fresh rescale.
     - Costs: `cost_bps` per side on traded notional. Cash earns 0%.
     """
     exposure = (pd.Series(1.0, index=closes.index) if exposure is None
@@ -171,10 +177,11 @@ def simulate(
                 # step-2-traded tickers are excluded from the loop below.
                 total_buy = sum(v for t, v in positions.items()
                                  if t not in traded_in_step2) * (scale - 1.0)
-                affordable = cash / (1.0 + cost_rate)
-                if total_buy > affordable:
-                    shrink = max(0.0, affordable / total_buy)
-                    scale = 1.0 + (scale - 1.0) * shrink
+                if total_buy > 1e-9:
+                    affordable = cash / (1.0 + cost_rate)
+                    if total_buy > affordable:
+                        shrink = max(0.0, affordable / total_buy)
+                        scale = 1.0 + (scale - 1.0) * shrink
             for t in list(positions):
                 if t in traded_in_step2:
                     continue
