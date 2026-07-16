@@ -94,6 +94,37 @@ exposure, thrust status) into live screener output as **advisory** guidance
 on index exposure, per Part 3 of the original spec.
 If FAIL → the numbers are documented and the project stops cleanly.
 
+## Holdout result (run 2026-07-16, after the criteria above were committed)
+
+Dev window (2015-2023, in-sample): PASS all three
+(`output/index_overlay_dev_2026-07-16.md`).
+
+Holdout (2024-01-02 → 2026-07-13, first genuine out-of-sample run,
+`output/index_overlay_holdout_2026-07-16.md`):
+
+| Criterion | Result |
+|---|---|
+| MaxDD cut ≥ 1/3 | **PASS** (SPY -18.76% → overlay -10.47%, a 44% cut through the 2025 drawdown) |
+| Sharpe ≥ SPY | **PASS** (1.37 vs 1.31) |
+| CAGR give-up ≤ 4pts | **FAIL** (5.29pts: 21.41% → 16.12%) |
+
+**OVERALL: FAIL.** Per this document's own protocol: no live wiring, no
+post-hoc tuning, project stops cleanly. The mechanism validated
+out-of-sample — the ladder cut the holdout's real drawdown nearly in half
+and improved risk-adjusted return — but the insurance cost exceeded the
+price cap fixed in advance. A 21%/yr bull holdout is close to the
+worst-case environment for any de-risking overlay; that context is noted,
+and it does not change the verdict.
+
+Procedural note: an earlier same-day holdout invocation produced a
+meaningless FAIL (SPY series empty: the cached instrument payload did not
+cover the holdout range and the live re-fetch was rate-limited, so the
+overlay ran against a flat curve). That run was discarded as a data
+failure — visible in the report as SPY CAGR/Vol/MaxDD all 0.00% — the
+instrument cache was re-fetched over the full 2013-2026 span, and the run
+above is the first valid holdout execution. No criteria or parameters were
+changed between the two invocations.
+
 ## Caveats carried forward
 
 - The breadth signal (and thrust override) is computed on the
