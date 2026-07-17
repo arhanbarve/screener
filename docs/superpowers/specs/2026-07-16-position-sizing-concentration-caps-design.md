@@ -72,13 +72,16 @@ apply_caps(
 
 ### Data availability
 
-Each ticker's row already carries `close_series` (full trailing close
-history) from `src/prices.py` (`compute_factors_for_ticker`, line ~201) into
-the composite DataFrame. Realized vol is therefore computed from data already
-in memory — **no new data fetch, no new cache dependency**. ATR was
-considered and rejected: it needs high/low, which are not stored past
-`prices.py`, whereas `close_series` is; and inverse-realized-vol is the
-standard construction.
+`src/prices.py` computes a `close_series` per ticker but **strips it** when
+building `factors_df` (`prices.py:293`), so it does NOT survive into the
+composite DataFrame. (The original spec assumed it did; code review caught the
+resulting silent no-op before ship.) Instead, `fetch_all_prices` returns a
+`price_store` dict (ticker → full OHLCV DataFrame) that `run.py` already has in
+hand. `attach_weights(ranked_df, cfg, price_store)` computes realized vol from
+`price_store[ticker]["close"]` — no new data fetch, no new cache dependency,
+and no Series objects stuffed into the ranked DataFrame. ATR was considered and
+rejected: inverse-realized-vol on closes is the standard construction and needs
+only the close column.
 
 ### Wire point
 
