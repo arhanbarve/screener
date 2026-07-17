@@ -11,6 +11,7 @@ from src.compose import build_composite
 from src.streak import load_streak_history
 from src.news import attach_news_overlay
 from src.spy_analysis import compute_market_stress_overlay
+from src.sizing import attach_weights
 from src.output import write_csv, write_markdown, print_top10
 import pandas as pd
 
@@ -41,7 +42,7 @@ def run(force_universe: bool = False):
         print(f"[universe] loaded {len(universe_df)} tickers from cache")
 
     # Stage 2: Prices + liquidity gate
-    _, survivors_df = fetch_all_prices(universe_df, cfg, DB_PATH)
+    price_store, survivors_df = fetch_all_prices(universe_df, cfg, DB_PATH)
     print(f"[stage2] {len(universe_df)} → {len(survivors_df)} after liquidity gate")
 
     # Archive today's surviving universe for future point-in-time backtesting
@@ -95,6 +96,9 @@ def run(force_universe: bool = False):
     # Stage 4.5: News overlay (entry signal + conviction adjustment)
     if cfg.get("news", {}).get("enabled", True):
         ranked_df = attach_news_overlay(ranked_df, cfg, DB_PATH)
+
+    # Stage 4.6: Position sizing + concentration caps (advisory weights)
+    ranked_df = attach_weights(ranked_df, cfg, price_store)
 
     # Squeeze screen
     if cfg["output"].get("include_squeeze_screen", False):

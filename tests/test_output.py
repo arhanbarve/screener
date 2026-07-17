@@ -43,3 +43,32 @@ def test_write_markdown_creates_file():
     content.close()
     assert "T0" in text
     assert "composite" in text.lower() or "Rank" in text
+
+
+def test_weight_pct_written_to_csv(tmp_path):
+    df = pd.DataFrame({
+        "ticker": ["AAA", "BBB"],
+        "name": ["Alpha", "Beta"],
+        "sector": ["Tech", "Health"],
+        "composite": [1.2, 0.9],
+        "weight_pct": [60.0, 40.0],
+    })
+    path = write_csv(df, str(tmp_path), "2026-07-16")
+    text = open(path).read()
+    assert "weight_pct" in text.splitlines()[0]
+    assert "60" in text
+
+
+def test_weight_pct_column_in_markdown(tmp_path):
+    df = pd.DataFrame({
+        "ticker": ["AAA"],
+        "name": ["Alpha"],
+        "sector": ["Tech"],
+        "composite": [1.2],
+        "conviction": [8],
+        "weight_pct": [60.0],
+    })
+    path = write_markdown(df, str(tmp_path), "2026-07-16", squeeze_df=None)
+    text = open(path).read()
+    assert "Weight" in text
+    assert "60.0%" in text

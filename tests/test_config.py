@@ -18,3 +18,11 @@ def test_load_config_has_weights():
 def test_get_env_missing_key_raises():
     with pytest.raises(KeyError):
         get_env("NONEXISTENT_KEY_XYZ")
+
+def test_config_has_sizing_block():
+    cfg = load_config()
+    sizing = cfg["sizing"]
+    assert sizing["enabled"] is True
+    assert sizing["vol_window"] == 63
+    assert sizing["name_cap"] == 0.10
+    assert sizing["sector_cap"] == 0.25

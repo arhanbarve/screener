@@ -2,7 +2,7 @@ import os
 import pandas as pd
 
 CSV_COLUMNS = [
-    "ticker", "name", "sector", "composite", "conviction", "factor_coverage",
+    "ticker", "name", "sector", "composite", "weight_pct", "conviction", "factor_coverage",
     # z-scores for all composite factors
     "z_mom_12_1", "z_residual_mom", "z_rs_6m", "z_rs_accel", "z_rs_slope", "z_pct_from_high",
     "z_sue", "z_rev_breadth", "z_rev_magnitude",
@@ -73,6 +73,14 @@ def write_markdown(
 ) -> str:
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"screen_{date_str}.md")
+    has_weight = "weight_pct" in df.columns
+    header = "| Rank | Ticker | Name | Sector | Composite |"
+    sep    = "|------|--------|------|--------|-----------|"
+    if has_weight:
+        header += " Weight |"
+        sep    += "--------|"
+    header += " Conv | Streak | Signal | Entry | Rationale |"
+    sep    += "------|--------|--------|-------|-----------|"
     lines = [
         f"# Stock Screen — {date_str}",
         "",
@@ -80,8 +88,8 @@ def write_markdown(
         "",
         "## Top Ranked Names",
         "",
-        "| Rank | Ticker | Name | Sector | Composite | Conv | Streak | Signal | Entry | Rationale |",
-        "|------|--------|------|--------|-----------|------|--------|--------|-------|-----------|",
+        header,
+        sep,
     ]
     for i, (_, row) in enumerate(df.iterrows(), 1):
         name      = str(row.get("name", ""))[:30]
@@ -95,7 +103,12 @@ def write_markdown(
         es = str(row.get("entry_signal", "") or "")
         es_badge = {"confirm_entry": "✅", "wait": "⏳", "avoid": "🚫"}.get(es, "")
         es_str = f"{es_badge} {es}" if es_badge else "—"
-        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {conv}/10 | {streak_str} | {es_str} | {entry} | {rationale} |")
+        wt_cell = ""
+        if has_weight:
+            wt = row.get("weight_pct")
+            wt_str = f"{float(wt):.1f}%" if wt is not None and pd.notna(wt) else "—"
+            wt_cell = f" {wt_str} |"
+        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} |{wt_cell} {conv}/10 | {streak_str} | {es_str} | {entry} | {rationale} |")
 
     lines += [
         "",
