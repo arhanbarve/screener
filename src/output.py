@@ -2,7 +2,7 @@ import os
 import pandas as pd
 
 CSV_COLUMNS = [
-    "ticker", "name", "sector", "composite", "conviction", "factor_coverage",
+    "ticker", "name", "sector", "composite", "weight_pct", "conviction", "factor_coverage",
     # z-scores for all composite factors
     "z_mom_12_1", "z_residual_mom", "z_rs_6m", "z_rs_accel", "z_rs_slope", "z_pct_from_high",
     "z_sue", "z_rev_breadth", "z_rev_magnitude",
@@ -80,13 +80,15 @@ def write_markdown(
         "",
         "## Top Ranked Names",
         "",
-        "| Rank | Ticker | Name | Sector | Composite | Conv | Streak | Signal | Entry | Rationale |",
-        "|------|--------|------|--------|-----------|------|--------|--------|-------|-----------|",
+        "| Rank | Ticker | Name | Sector | Composite | Weight | Conv | Streak | Signal | Entry | Rationale |",
+        "|------|--------|------|--------|-----------|--------|------|--------|--------|-------|-----------|",
     ]
     for i, (_, row) in enumerate(df.iterrows(), 1):
         name      = str(row.get("name", ""))[:30]
         sector    = str(row.get("sector", ""))[:20]
         comp      = f"{row.get('composite', 0):.3f}"
+        wt = row.get("weight_pct")
+        wt_str = f"{float(wt):.1f}%" if wt is not None and pd.notna(wt) else "—"
         conv      = int(row.get("conviction", 0) or 0)
         cons      = int(row.get("streak_consecutive", 0) or 0)
         streak_str = f"🔥{cons}d" if cons >= 2 else "—"
@@ -95,7 +97,7 @@ def write_markdown(
         es = str(row.get("entry_signal", "") or "")
         es_badge = {"confirm_entry": "✅", "wait": "⏳", "avoid": "🚫"}.get(es, "")
         es_str = f"{es_badge} {es}" if es_badge else "—"
-        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {conv}/10 | {streak_str} | {es_str} | {entry} | {rationale} |")
+        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} | {wt_str} | {conv}/10 | {streak_str} | {es_str} | {entry} | {rationale} |")
 
     lines += [
         "",
