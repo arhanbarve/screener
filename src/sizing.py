@@ -96,8 +96,10 @@ def _enforce_sector_cap(
     w: dict[str, float], sectors: dict[str, str],
     name_cap: float, sector_cap: float,
 ) -> bool:
-    """One pass of sector capping. Only moves weight that non-over sectors have
-    room to absorb (best-effort when infeasible, e.g. a single-sector book)."""
+    """One pass of sector capping. Recipient room is bounded by BOTH the name
+    cap and the recipient sector's remaining headroom, so redistributing out of
+    an over-cap sector never pushes an under-cap sector over its own cap — this
+    prevents the ping-pong that otherwise burns the iteration guard."""
     sec_tot: dict[str, float] = {}
     for t, v in w.items():
         s = sectors.get(t, "Unknown")
@@ -112,10 +114,25 @@ def _enforce_sector_cap(
         sec_excess = tot - sector_cap
         for t in [x for x in w if sectors.get(x, "Unknown") == s]:
             donors[t] = sec_excess * (w[t] / tot)
-    # recipients: names in non-over sectors, below their name cap
-    recipients = {t: name_cap - w[t] for t in w
-                  if sectors.get(t, "Unknown") not in over_secs
-                  and w[t] < name_cap - 1e-12}
+
+    # recipient room per name = name-cap room, scaled per under-sector so the
+    # sector's total intake cannot exceed its remaining headroom to sector_cap
+    recipients: dict[str, float] = {}
+    for s, tot in sec_tot.items():
+        if s in over_secs:
+            continue
+        headroom = sector_cap - tot
+        if headroom <= 1e-12:
+            continue
+        name_room = {t: name_cap - w[t] for t in w
+                     if sectors.get(t, "Unknown") == s and w[t] < name_cap - 1e-12}
+        sector_name_room = sum(name_room.values())
+        if sector_name_room <= 0.0:
+            continue
+        scale = min(1.0, headroom / sector_name_room)
+        for t, r in name_room.items():
+            recipients[t] = r * scale
+
     return _redistribute(w, donors, recipients)
 
 
@@ -137,14 +154,13 @@ def _warn_if_violated(
                        f"sectors to redistribute into (best-effort)")
 
 
-def attach_weights(ranked_df, cfg):
+def attach_weights(ranked_df, cfg, price_store):
     """Add a `weight_pct` column (inverse-vol, cap-constrained) to the ranked
-    top-N. No-op when sizing is disabled, the frame is empty, or the required
-    `close_series`/`sector` columns are absent."""
+    top-N. `price_store` maps ticker -> OHLCV DataFrame (with a 'close' column);
+    the full close history lives there, not in `ranked_df`. No-op when sizing is
+    disabled, the frame is empty, or no name has enough history to be sized."""
     sizing = cfg.get("sizing", {})
-    if not sizing.get("enabled", False):
-        return ranked_df
-    if len(ranked_df) == 0 or "close_series" not in ranked_df.columns:
+    if not sizing.get("enabled", False) or len(ranked_df) == 0:
         return ranked_df
 
     window = sizing.get("vol_window", 63)
@@ -155,12 +171,18 @@ def attach_weights(ranked_df, cfg):
     sectors = {}
     for _, row in ranked_df.iterrows():
         t = row["ticker"]
-        vols[t] = realized_vol(row["close_series"], window=window)
+        px = price_store.get(t)
+        vols[t] = (realized_vol(px["close"], window=window)
+                   if px is not None and "close" in px else float("nan"))
         sectors[t] = str(row.get("sector", "") or "Unknown")
 
     raw = inverse_vol_weights(vols)
-    capped = apply_caps(raw, sectors, name_cap, sector_cap)
+    if not raw:
+        logger.warning("[sizing] no sizeable names (insufficient price "
+                       "history) — weight_pct not attached")
+        return ranked_df
 
+    capped = apply_caps(raw, sectors, name_cap, sector_cap)
     df = ranked_df.copy()
     df["weight_pct"] = df["ticker"].map(
         lambda t: round(capped.get(t, 0.0) * 100.0, 4)

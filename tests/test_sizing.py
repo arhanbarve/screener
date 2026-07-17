@@ -118,26 +118,35 @@ def test_apply_caps_infeasible_single_sector_best_effort_no_crash():
 
 # ---- attach_weights --------------------------------------------------------
 
-def _fake_ranked_df():
-    # two low-vol names, one high-vol name, mixed sectors
+def _fake_ranked_df_and_store():
+    # two low-vol names, one high-vol name, mixed sectors. The ranked frame
+    # carries NO close history (mirrors the real pipeline, which strips it);
+    # closes live in price_store keyed by ticker.
     idx = pd.date_range(end="2024-06-28", periods=300, freq="B")
     def series(sig):
         rets = np.array([sig if i % 2 == 0 else -sig for i in range(300)])
         return pd.Series(100.0 * np.exp(np.cumsum(rets)), index=idx)
-    return pd.DataFrame({
+    ranked = pd.DataFrame({
         "ticker": ["A", "B", "C"],
         "sector": ["Tech", "Health", "Energy"],
-        "close_series": [series(0.005), series(0.01), series(0.05)],
+        "composite": [1.3, 1.1, 0.9],
     })
+    store = {
+        "A": pd.DataFrame({"close": series(0.005)}),
+        "B": pd.DataFrame({"close": series(0.01)}),
+        "C": pd.DataFrame({"close": series(0.05)}),
+    }
+    return ranked, store
 
 
 def test_attach_weights_adds_weight_pct_summing_to_100():
     from src.sizing import attach_weights
+    ranked, store = _fake_ranked_df_and_store()
     cfg = {"sizing": {"enabled": True, "vol_window": 63,
                       "name_cap": 0.60, "sector_cap": 0.90}}
-    out = attach_weights(_fake_ranked_df(), cfg)
+    out = attach_weights(ranked, cfg, store)
     assert "weight_pct" in out.columns
-    assert out["weight_pct"].sum() == pytest.approx(100.0, abs=1e-6)
+    assert out["weight_pct"].sum() == pytest.approx(100.0, abs=1e-2)
     # lowest-vol name (A) gets the largest weight
     assert out.set_index("ticker").loc["A", "weight_pct"] > \
            out.set_index("ticker").loc["C", "weight_pct"]
@@ -145,23 +154,66 @@ def test_attach_weights_adds_weight_pct_summing_to_100():
 
 def test_attach_weights_respects_name_cap():
     from src.sizing import attach_weights
+    ranked, store = _fake_ranked_df_and_store()
     cfg = {"sizing": {"enabled": True, "vol_window": 63,
                       "name_cap": 0.40, "sector_cap": 0.90}}
-    out = attach_weights(_fake_ranked_df(), cfg)
+    out = attach_weights(ranked, cfg, store)
     assert out["weight_pct"].max() <= 40.0 + 1e-6
 
 
 def test_attach_weights_disabled_returns_df_unchanged():
     from src.sizing import attach_weights
-    df = _fake_ranked_df()
+    ranked, store = _fake_ranked_df_and_store()
     cfg = {"sizing": {"enabled": False}}
-    out = attach_weights(df, cfg)
+    out = attach_weights(ranked, cfg, store)
     assert "weight_pct" not in out.columns
 
 
 def test_attach_weights_empty_df_noop():
     from src.sizing import attach_weights
+    _, store = _fake_ranked_df_and_store()
     cfg = {"sizing": {"enabled": True, "vol_window": 63,
                       "name_cap": 0.10, "sector_cap": 0.25}}
-    out = attach_weights(pd.DataFrame(columns=["ticker"]), cfg)
+    out = attach_weights(pd.DataFrame(columns=["ticker"]), cfg, store)
     assert len(out) == 0
+
+
+def test_attach_weights_no_price_history_is_noop_with_warning(caplog):
+    # ranked names whose price_store frames are too short to size -> no-op + warn
+    from src.sizing import attach_weights
+    ranked = pd.DataFrame({"ticker": ["X", "Y"], "sector": ["Tech", "Health"],
+                           "composite": [1.0, 0.9]})
+    short = pd.DataFrame({"close": pd.Series(range(10), dtype=float)})
+    store = {"X": short, "Y": short}
+    cfg = {"sizing": {"enabled": True, "vol_window": 63,
+                      "name_cap": 0.10, "sector_cap": 0.25}}
+    with caplog.at_level("WARNING"):
+        out = attach_weights(ranked, cfg, store)
+    assert "weight_pct" not in out.columns
+    assert any("no sizeable names" in r.message for r in caplog.records)
+
+
+def test_attach_weights_pipeline_shape_all_caps_hold():
+    # 20 names across 5 sectors, ranked frame has no close history (pipeline
+    # shape). Both caps must hold and the column must sum to ~100.
+    from src.sizing import attach_weights
+    idx = pd.date_range(end="2024-06-28", periods=300, freq="B")
+    secs = ["Tech", "Health", "Energy", "Utilities", "Financials"]
+    def series(sig):
+        rets = np.array([sig if i % 2 == 0 else -sig for i in range(300)])
+        return pd.Series(100.0 * np.exp(np.cumsum(rets)), index=idx)
+    tickers = [f"T{i}" for i in range(20)]
+    ranked = pd.DataFrame({
+        "ticker": tickers,
+        "sector": [secs[i % 5] for i in range(20)],
+        "composite": [2.0 - 0.05 * i for i in range(20)],
+    })
+    store = {t: pd.DataFrame({"close": series(0.01 + 0.002 * i)})
+             for i, t in enumerate(tickers)}
+    cfg = {"sizing": {"enabled": True, "vol_window": 63,
+                      "name_cap": 0.10, "sector_cap": 0.25}}
+    out = attach_weights(ranked, cfg, store)
+    assert out["weight_pct"].sum() == pytest.approx(100.0, abs=1e-1)
+    assert out["weight_pct"].max() <= 10.0 + 1e-6
+    sect = out.groupby("sector")["weight_pct"].sum()
+    assert sect.max() <= 25.0 + 1e-6

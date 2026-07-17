@@ -42,7 +42,7 @@ def run(force_universe: bool = False):
         print(f"[universe] loaded {len(universe_df)} tickers from cache")
 
     # Stage 2: Prices + liquidity gate
-    _, survivors_df = fetch_all_prices(universe_df, cfg, DB_PATH)
+    price_store, survivors_df = fetch_all_prices(universe_df, cfg, DB_PATH)
     print(f"[stage2] {len(universe_df)} → {len(survivors_df)} after liquidity gate")
 
     # Archive today's surviving universe for future point-in-time backtesting
@@ -98,7 +98,7 @@ def run(force_universe: bool = False):
         ranked_df = attach_news_overlay(ranked_df, cfg, DB_PATH)
 
     # Stage 4.6: Position sizing + concentration caps (advisory weights)
-    ranked_df = attach_weights(ranked_df, cfg)
+    ranked_df = attach_weights(ranked_df, cfg, price_store)
 
     # Squeeze screen
     if cfg["output"].get("include_squeeze_screen", False):
