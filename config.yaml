@@ -56,6 +56,12 @@ output:
   entry_band: 20
   exit_band: 35
 
+sizing:
+  enabled: true
+  vol_window: 63        # ~3mo realized-vol lookback (trading days)
+  name_cap: 0.10        # no single stock above 10% of the book
+  sector_cap: 0.25      # no GICS sector above 25% of the book
+
 cache:
   price_ttl_hours: 18
   fundamentals_ttl_days: 7
