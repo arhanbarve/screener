@@ -135,3 +135,34 @@ def _warn_if_violated(
         logger.warning(f"[sizing] sector cap {sector_cap:.0%} not met for "
                        f"'{worst}' ({sec_tot[worst]:.1%}) — too few other "
                        f"sectors to redistribute into (best-effort)")
+
+
+def attach_weights(ranked_df, cfg):
+    """Add a `weight_pct` column (inverse-vol, cap-constrained) to the ranked
+    top-N. No-op when sizing is disabled, the frame is empty, or the required
+    `close_series`/`sector` columns are absent."""
+    sizing = cfg.get("sizing", {})
+    if not sizing.get("enabled", False):
+        return ranked_df
+    if len(ranked_df) == 0 or "close_series" not in ranked_df.columns:
+        return ranked_df
+
+    window = sizing.get("vol_window", 63)
+    name_cap = sizing.get("name_cap", 0.10)
+    sector_cap = sizing.get("sector_cap", 0.25)
+
+    vols = {}
+    sectors = {}
+    for _, row in ranked_df.iterrows():
+        t = row["ticker"]
+        vols[t] = realized_vol(row["close_series"], window=window)
+        sectors[t] = str(row.get("sector", "") or "Unknown")
+
+    raw = inverse_vol_weights(vols)
+    capped = apply_caps(raw, sectors, name_cap, sector_cap)
+
+    df = ranked_df.copy()
+    df["weight_pct"] = df["ticker"].map(
+        lambda t: round(capped.get(t, 0.0) * 100.0, 4)
+    )
+    return df

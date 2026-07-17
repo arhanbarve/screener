@@ -114,3 +114,54 @@ def test_apply_caps_infeasible_single_sector_best_effort_no_crash():
     # no crash; still a valid distribution; name cap still respected
     assert sum(out.values()) == pytest.approx(1.0)
     assert max(out.values()) <= 0.40 + 1e-9
+
+
+# ---- attach_weights --------------------------------------------------------
+
+def _fake_ranked_df():
+    # two low-vol names, one high-vol name, mixed sectors
+    idx = pd.date_range(end="2024-06-28", periods=300, freq="B")
+    def series(sig):
+        rets = np.array([sig if i % 2 == 0 else -sig for i in range(300)])
+        return pd.Series(100.0 * np.exp(np.cumsum(rets)), index=idx)
+    return pd.DataFrame({
+        "ticker": ["A", "B", "C"],
+        "sector": ["Tech", "Health", "Energy"],
+        "close_series": [series(0.005), series(0.01), series(0.05)],
+    })
+
+
+def test_attach_weights_adds_weight_pct_summing_to_100():
+    from src.sizing import attach_weights
+    cfg = {"sizing": {"enabled": True, "vol_window": 63,
+                      "name_cap": 0.60, "sector_cap": 0.90}}
+    out = attach_weights(_fake_ranked_df(), cfg)
+    assert "weight_pct" in out.columns
+    assert out["weight_pct"].sum() == pytest.approx(100.0, abs=1e-6)
+    # lowest-vol name (A) gets the largest weight
+    assert out.set_index("ticker").loc["A", "weight_pct"] > \
+           out.set_index("ticker").loc["C", "weight_pct"]
+
+
+def test_attach_weights_respects_name_cap():
+    from src.sizing import attach_weights
+    cfg = {"sizing": {"enabled": True, "vol_window": 63,
+                      "name_cap": 0.40, "sector_cap": 0.90}}
+    out = attach_weights(_fake_ranked_df(), cfg)
+    assert out["weight_pct"].max() <= 40.0 + 1e-6
+
+
+def test_attach_weights_disabled_returns_df_unchanged():
+    from src.sizing import attach_weights
+    df = _fake_ranked_df()
+    cfg = {"sizing": {"enabled": False}}
+    out = attach_weights(df, cfg)
+    assert "weight_pct" not in out.columns
+
+
+def test_attach_weights_empty_df_noop():
+    from src.sizing import attach_weights
+    cfg = {"sizing": {"enabled": True, "vol_window": 63,
+                      "name_cap": 0.10, "sector_cap": 0.25}}
+    out = attach_weights(pd.DataFrame(columns=["ticker"]), cfg)
+    assert len(out) == 0
