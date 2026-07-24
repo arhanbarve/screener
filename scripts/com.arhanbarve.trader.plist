@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.arhanbarve.trader</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/arhanbarve/Code/screener/run_trader.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>1</integer></dict>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>2</integer></dict>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>3</integer></dict>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>4</integer></dict>
+        <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>5</integer></dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/arhanbarve/Code/screener/logs/trader_launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/arhanbarve/Code/screener/logs/trader_launchd.log</string>
+</dict>
+</plist>
