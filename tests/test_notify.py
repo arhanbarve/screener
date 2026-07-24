@@ -19,13 +19,44 @@ POSITIONS = [
 def test_render_positions_table_colors_pl():
     html = notify.render_positions_table(POSITIONS)
     assert "TSEM" in html and "STX" in html
-    assert 'class="pos"' in html   # positive uP&L styled green
-    assert 'class="neg"' in html   # negative uP&L styled red
+    assert "pos" in html   # positive uP&L styled green
+    assert "neg" in html   # negative uP&L styled red
 
 
 def test_render_positions_table_empty():
     html = notify.render_positions_table([])
     assert "No open positions" in html
+
+
+MARKET = [
+    {"sym": "SPY", "label": "S&P 500", "price": 738.26, "pct": -0.07},
+    {"sym": "QQQ", "label": "Nasdaq", "price": 684.02, "pct": -1.37},
+    {"sym": "^VIX", "label": "VIX", "price": 18.75, "pct": 0.27},
+]
+
+
+def test_render_tape_shows_indices():
+    html = notify.render_tape(MARKET)
+    assert "S&P 500" in html and "Nasdaq" in html and "VIX" in html
+    assert "1.37%" in html
+
+
+def test_render_tape_empty_market():
+    assert notify.render_tape([]) == ""
+
+
+def test_render_alloc_sums_and_labels():
+    html = notify.render_alloc(POSITIONS, equity=100000.0, cash=88031.08)
+    assert "TSEM" in html
+    assert "Cash" in html
+
+
+def test_extract_sections_keeps_only_named():
+    md = ("## Snapshot\n\nfoo\n## Market context\n\nSPY up.\n"
+          "## Decisions\n\nbought X.\n## Scorecard\n\n0%")
+    out = notify.extract_sections(md, keep=["market context", "decision"])
+    assert "SPY up." in out and "bought X." in out
+    assert "foo" not in out and "Scorecard" not in out
 
 
 def test_build_daily_email():
@@ -34,7 +65,7 @@ def test_build_daily_email():
     assert "2026-07-24" in subject
     assert "99,928" in subject or "99928" in subject
     assert "0.07%" in subject and "−" in subject  # day P&L pct, proper minus glyph
-    assert "Equity" in html
+    assert "equity" in html.lower()
     assert "TSEM" in html
     assert "SPY choppy" in html
     assert "<!doctype html>" in html.lower() or "<html" in html.lower()

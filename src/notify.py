@@ -1,18 +1,17 @@
-"""Render the daily / weekly trading journal into a clean HTML email and send
-it via Gmail SMTP.
+"""Render the daily / weekly trading journal into a visual HTML email (a
+"trading desk" briefing) and send it via Gmail SMTP.
 
 Env vars (in .env):
   GMAIL_ADDRESS        sender Gmail address
-  GMAIL_APP_PASSWORD   Gmail app password (Google account -> Security -> App passwords)
+  GMAIL_APP_PASSWORD   Gmail app password
   TRADER_EMAIL_TO      recipient (default arhanbarve@gmail.com)
 
-If credentials are absent, send_email() is a no-op that reports why — so the
-trading pipeline never crashes just because email isn't configured yet.
+If credentials are absent, send_email() is a no-op that reports why, so the
+trading pipeline never crashes just because email isn't configured.
 
 CLI:
-  python -m src.notify daily  [--file PATH] [--date YYYY-MM-DD]
-  python -m src.notify weekly [--file PATH] [--week YYYY-Www]
-Both also write a preview to logs/email_preview_*.html for inspection.
+  python -m src.notify daily  [--file PATH] [--date YYYY-MM-DD] [--preview-only]
+  python -m src.notify weekly [--file PATH] [--week YYYY-Www] [--preview-only]
 """
 import argparse
 import os
@@ -31,53 +30,91 @@ ET = ZoneInfo("America/New_York")
 DEFAULT_TO = "arhanbarve@gmail.com"
 BASELINE = 100000.0  # experiment starting equity
 
+# Index tape: symbol -> short label
+MARKET_SYMS = [("SPY", "S&P 500"), ("QQQ", "Nasdaq"), ("DIA", "Dow"),
+               ("IWM", "Russell"), ("^VIX", "VIX")]
+
+# Categorical allocation palette — deliberately avoids green/red, which are
+# reserved for P&L semantics elsewhere. Leads with the site accent amber.
+ALLOC_COLORS = ["#f59e0b", "#22d3ee", "#a78bfa", "#60a5fa", "#f472b6",
+                "#818cf8", "#2dd4bf", "#fbbf24"]
+CASH_COLOR = "rgba(100,116,139,0.10)"
+CASH_BORDER = "rgba(100,116,139,0.45)"
+
+GAIN = "#22c55e"   # --bull
+LOSS = "#ef4444"   # --bear
+
 CSS = """
-  :root { color-scheme: light; }
-  body { margin:0; padding:0; background:#eef1f5;
-         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
-         color:#1a2233; }
-  .wrap { max-width:640px; margin:0 auto; padding:24px 16px; }
-  .card { background:#ffffff; border-radius:14px; overflow:hidden;
-          box-shadow:0 1px 3px rgba(16,24,40,.08),0 1px 2px rgba(16,24,40,.06); }
-  .hero { padding:26px 28px 22px; background:linear-gradient(135deg,#0f172a,#1e293b); color:#fff; }
-  .hero .label { font-size:12px; letter-spacing:.08em; text-transform:uppercase;
-                 color:#94a3b8; margin:0 0 6px; }
-  .hero .equity { font-size:38px; font-weight:700; line-height:1; margin:0; }
-  .hero .sub { margin:10px 0 0; font-size:15px; color:#cbd5e1; }
-  .chip { display:inline-block; padding:3px 10px; border-radius:999px; font-weight:600;
-          font-size:14px; }
-  .chip.pos { background:rgba(34,197,94,.18); color:#4ade80; }
-  .chip.neg { background:rgba(239,68,68,.18); color:#f87171; }
-  .chip.flat{ background:rgba(148,163,184,.18); color:#cbd5e1; }
-  .metrics { display:flex; border-top:1px solid #eef1f5; }
-  .metric { flex:1; padding:16px 18px; text-align:center; border-right:1px solid #eef1f5; }
-  .metric:last-child { border-right:none; }
-  .metric .k { font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#64748b; margin:0 0 4px; }
-  .metric .v { font-size:18px; font-weight:700; margin:0; color:#0f172a; }
-  .section { padding:8px 28px 4px; }
-  .section h2 { font-size:13px; letter-spacing:.06em; text-transform:uppercase;
-                color:#64748b; margin:22px 0 10px; }
-  table.pos { width:100%; border-collapse:collapse; font-size:14px; }
-  table.pos th { text-align:right; font-size:11px; text-transform:uppercase; letter-spacing:.04em;
-                 color:#94a3b8; padding:8px 10px; border-bottom:1px solid #e5e9f0; }
-  table.pos th.l, table.pos td.l { text-align:left; }
-  table.pos td { padding:10px; border-bottom:1px solid #f1f4f8; }
-  table.pos td.tk { font-weight:700; color:#0f172a; }
-  .pos { color:#0a7d33; font-weight:600; }
-  .neg { color:#c0392b; font-weight:600; }
-  .empty { padding:18px 0; color:#64748b; font-style:italic; }
-  .body { padding:4px 28px 24px; font-size:15px; line-height:1.6; color:#334155; }
-  .body h1 { font-size:20px; color:#0f172a; margin:18px 0 8px; }
-  .body h2 { font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:#64748b;
-             border-top:1px solid #eef1f5; padding-top:18px; margin:22px 0 10px; }
-  .body h3 { font-size:15px; color:#0f172a; margin:16px 0 6px; }
-  .body table { width:100%; border-collapse:collapse; font-size:13px; margin:10px 0; }
-  .body th { text-align:left; background:#f8fafc; padding:7px 9px; border:1px solid #e5e9f0; color:#475569; }
-  .body td { padding:7px 9px; border:1px solid #eef1f5; }
-  .body strong { color:#0f172a; }
-  .body ul { margin:8px 0; padding-left:20px; }
-  .foot { text-align:center; padding:18px; color:#94a3b8; font-size:12px; }
-  .foot a { color:#64748b; }
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+  :root { color-scheme: dark; }
+  body { margin:0; padding:0; background:#020209;
+         font-family:'IBM Plex Sans',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         color:#e2e8f0; }
+  .mono { font-family:'IBM Plex Mono','Courier New',ui-monospace,Menlo,monospace;
+          font-variant-numeric:tabular-nums; }
+  .wrap { max-width:640px; margin:0 auto; padding:20px 14px 32px; }
+  .card { background:#07090f; border:1px solid #161824; border-radius:14px; overflow:hidden; }
+  .eyebrow { display:flex; justify-content:space-between; align-items:center;
+             padding:14px 22px; border-bottom:1px solid #161824; background:#040408; }
+  .brand { font-family:'IBM Plex Mono','Courier New',monospace; font-size:12px; letter-spacing:.2em;
+           text-transform:uppercase; color:#f59e0b; font-weight:700; }
+  .brand .dot { color:#22c55e; }
+  .date { font-size:12px; letter-spacing:.06em; color:#64748b; }
+  .hero { padding:26px 22px 22px; }
+  .hero .k { font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#64748b; margin:0 0 6px; }
+  .hero .equity { font-family:'IBM Plex Mono','Courier New',monospace; font-size:44px; font-weight:700;
+                  line-height:1; margin:0; letter-spacing:-.02em; }
+  .chips { margin:16px 0 0; }
+  .chip { display:inline-block; padding:5px 11px; border-radius:6px; font-size:13px; font-weight:600;
+          margin-right:8px; }
+  .chip.pos { background:rgba(34,197,94,.10); color:#22c55e; border:1px solid rgba(34,197,94,.25); }
+  .chip.neg { background:rgba(239,68,68,.10); color:#ef4444; border:1px solid rgba(239,68,68,.25); }
+  .chip.flat{ background:rgba(100,116,139,.12); color:#94a3b8; border:1px solid rgba(100,116,139,.25); }
+  .sec { padding:18px 22px 4px; border-top:1px solid #161824; }
+  .sec h2 { font-family:'IBM Plex Mono','Courier New',monospace; font-size:11px; letter-spacing:.14em;
+            text-transform:uppercase; color:#64748b; margin:0 0 14px; font-weight:600; }
+  .sec h2 span { color:#2a3a54; font-weight:400; text-transform:none; letter-spacing:0; }
+  .tape td { padding:2px 4px; }
+  .tk { border:1px solid #161824; border-radius:6px; background:#0c0e1a; padding:9px 8px; text-align:center; }
+  .tk .n { font-size:10px; letter-spacing:.07em; text-transform:uppercase; color:#64748b; margin:0 0 3px; }
+  .tk .p { font-size:14px; font-weight:700; margin:0; }
+  .bars td { padding:5px 0; font-size:12px; color:#94a3b8; }
+  .bars .lab { width:64px; letter-spacing:.06em; text-transform:uppercase; color:#64748b; }
+  .bars .val { width:72px; text-align:right; font-weight:700; }
+  .track { background:#0c0e1a; border:1px solid #161824; border-radius:4px; height:16px; }
+  .fill { height:16px; border-radius:3px; }
+  .alloc { border-radius:6px; overflow:hidden; border:1px solid #161824; }
+  .alloc td { height:30px; text-align:center; font-family:'IBM Plex Mono','Courier New',monospace;
+              font-size:10px; font-weight:700; color:#020209; letter-spacing:.04em; overflow:hidden; }
+  .alloc-key { margin:10px 0 0; font-size:11px; color:#64748b; }
+  .alloc-key span { display:inline-block; margin:0 12px 4px 0; }
+  .alloc-key i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px;
+                 vertical-align:baseline; }
+  table.pos { width:100%; border-collapse:collapse; }
+  table.pos td { padding:9px 6px; border-bottom:1px solid #111420; font-size:13px; }
+  table.pos .sym { font-family:'IBM Plex Mono','Courier New',monospace; font-weight:700; color:#e2e8f0; }
+  table.pos .sz { color:#64748b; font-size:11px; }
+  table.pos .num { text-align:right; font-weight:700; }
+  .pos { color:#22c55e; }
+  .neg { color:#ef4444; }
+  .dv { width:120px; }
+  .dv table { width:100%; border-collapse:collapse; }
+  .dv .half { width:50%; height:12px; }
+  .dv .lft { text-align:right; }
+  .dv .center { border-left:1px solid #242c42; }
+  .empty { padding:16px 0; color:#64748b; font-style:italic; }
+  .notes { padding:6px 22px 20px; border-top:1px solid #161824; }
+  .notes .body { font-size:14px; line-height:1.62; color:#b4c0d4; }
+  .notes .body h2 { font-family:'IBM Plex Mono','Courier New',monospace; font-size:11px; letter-spacing:.14em;
+                    text-transform:uppercase; color:#64748b; margin:18px 0 8px; font-weight:600; }
+  .notes .body h3 { font-family:'IBM Plex Mono','Courier New',monospace; font-size:14px; color:#e2e8f0; margin:14px 0 4px; }
+  .notes .body strong { color:#e2e8f0; }
+  .notes .body ul { margin:6px 0; padding-left:18px; }
+  .notes .body li { margin:3px 0; }
+  .notes .body table { width:100%; border-collapse:collapse; font-size:12px; margin:8px 0; }
+  .notes .body th { text-align:left; background:#0c0e1a; padding:6px 8px; border:1px solid #161824; color:#94a3b8; }
+  .notes .body td { padding:6px 8px; border:1px solid #111420; color:#b4c0d4; }
+  .foot { text-align:center; padding:16px 8px 0; color:#2a3a54; font-size:11px; line-height:1.6; }
 """
 
 
@@ -90,6 +127,11 @@ def _f(x, default=0.0):
 
 def fmt_money(x):
     return f"${_f(x):,.2f}"
+
+
+def fmt_k(x):
+    v = _f(x)
+    return f"${v/1000:.1f}k" if abs(v) >= 1000 else f"${v:,.0f}"
 
 
 def fmt_signed(x):
@@ -107,9 +149,114 @@ def _cls(v):
     return "pos" if v > 0 else ("neg" if v < 0 else "flat")
 
 
+def _arrow(v):
+    v = _f(v)
+    return "▲" if v > 0 else ("▼" if v < 0 else "■")
+
+
+def fetch_market():
+    """Return [{sym,label,price,pct}] for the index tape. Resilient: [] on any failure."""
+    try:
+        import yfinance as yf
+        tk = yf.Tickers(" ".join(s for s, _ in MARKET_SYMS))
+        out = []
+        for sym, label in MARKET_SYMS:
+            try:
+                fi = tk.tickers[sym].fast_info
+                last, prev = float(fi.last_price), float(fi.previous_close)
+                out.append({"sym": sym, "label": label, "price": last,
+                            "pct": (last / prev - 1) * 100 if prev else 0.0})
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
+
+
+def render_tape(market):
+    if not market:
+        return ""
+    cells = []
+    for m in market:
+        c = LOSS if m["pct"] < 0 else (GAIN if m["pct"] > 0 else "#9fb1cc")
+        price = f"{m['price']:,.2f}" if m["sym"] != "^VIX" else f"{m['price']:.2f}"
+        cells.append(
+            f'<td class="tk"><p class="n">{m["label"]}</p>'
+            f'<p class="p mono" style="color:{c}">{_arrow(m["pct"])} {abs(m["pct"]):.2f}%</p>'
+            f'<p class="n mono" style="color:#64748b;margin-top:2px">{price}</p></td>'
+        )
+    return (f'<div class="sec"><h2>Market tape <span>· today</span></h2>'
+            f'<table class="tape" width="100%"><tr>{"".join(cells)}</tr></table></div>')
+
+
+def _hbar(pct, color, track="#0c0e1a"):
+    w = max(0, min(100, abs(pct) * (100 / _hbar.scale) if _hbar.scale else 0))
+    return (f'<div class="track" style="background:{track}">'
+            f'<div class="fill" style="width:{w:.0f}%;background:{color}"></div></div>')
+_hbar.scale = 1.0
+
+
+def render_vs_market(port_pct, spy_pct):
+    scale = max(abs(port_pct), abs(spy_pct), 0.5)
+    _hbar.scale = scale
+    rows = [
+        ("You", port_pct, "#f59e0b"),
+        ("S&P 500", spy_pct, GAIN if spy_pct >= 0 else LOSS),
+    ]
+    trs = []
+    for lab, pct, col in rows:
+        trs.append(
+            f'<tr><td class="lab">{lab}</td>'
+            f'<td>{_hbar(pct, col)}</td>'
+            f'<td class="val mono {_cls(pct)}">{fmt_pct(pct)}</td></tr>'
+        )
+    edge = port_pct - spy_pct
+    return (f'<div class="sec"><h2>You vs S&amp;P 500 <span>· day</span></h2>'
+            f'<table class="bars" width="100%">{"".join(trs)}</table>'
+            f'<p style="margin:8px 0 0;font-size:12px;color:#64748b">'
+            f'Relative: <span class="mono {_cls(edge)}">{fmt_pct(edge)}</span> vs benchmark today</p></div>')
+
+
+def render_alloc(positions, equity, cash):
+    equity = equity or 1.0
+    segs = []
+    keys = []
+    for i, p in enumerate(positions):
+        mv = _f(p.get("market_value"))
+        w = mv / equity * 100
+        col = ALLOC_COLORS[i % len(ALLOC_COLORS)]
+        label = p.get("symbol", "") if w >= 9 else ""
+        segs.append(f'<td style="width:{w:.2f}%;background:{col}">{label}</td>')
+        keys.append(f'<span><i style="background:{col}"></i>{p.get("symbol","")} '
+                    f'{w:.0f}%</span>')
+    cw = max(0.0, cash / equity * 100)
+    if cw > 0.1:
+        segs.append(f'<td style="width:{cw:.2f}%;background:{CASH_COLOR};'
+                    f'border-left:1px solid {CASH_BORDER};color:#64748b">'
+                    f'{"CASH" if cw >= 9 else ""}</td>')
+        keys.append(f'<span><i style="background:{CASH_BORDER}"></i>Cash {cw:.0f}%</span>')
+    return (f'<div class="sec"><h2>Capital <span>· {fmt_k(equity-cash)} deployed / '
+            f'{fmt_k(cash)} cash</span></h2>'
+            f'<table class="alloc" width="100%"><tr>{"".join(segs)}</tr></table>'
+            f'<p class="alloc-key">{"".join(keys)}</p></div>')
+
+
+def _diverging(pl, maxabs):
+    frac = min(1.0, abs(pl) / maxabs) if maxabs else 0.0
+    w = frac * 100
+    if pl >= 0:
+        left = '<td class="half lft"></td>'
+        right = f'<td class="half center"><div style="width:{w:.0f}%;height:12px;background:{GAIN};border-radius:0 4px 4px 0"></div></td>'
+    else:
+        left = f'<td class="half lft"><div style="width:{w:.0f}%;height:12px;background:{LOSS};border-radius:4px 0 0 4px;margin-left:auto"></div></td>'
+        right = '<td class="half center"></td>'
+    return f'<div class="dv"><table><tr>{left}{right}</tr></table></div>'
+
+
 def render_positions_table(positions):
     if not positions:
-        return '<div class="empty">No open positions — fully in cash.</div>'
+        return '<div class="sec"><h2>Positions</h2><div class="empty">No open positions — fully in cash.</div></div>'
+    maxabs = max((abs(_f(p.get("unrealized_pl"))) for p in positions), default=1.0) or 1.0
     rows = []
     for p in positions:
         pl = _f(p.get("unrealized_pl"))
@@ -117,73 +264,90 @@ def render_positions_table(positions):
         cls = _cls(pl)
         rows.append(
             f'<tr>'
-            f'<td class="l tk">{p.get("symbol","")}</td>'
-            f'<td>{_f(p.get("qty")):.2f}</td>'
-            f'<td>{fmt_money(p.get("avg_entry_price"))}</td>'
-            f'<td>{fmt_money(p.get("current_price"))}</td>'
-            f'<td>{fmt_money(p.get("market_value"))}</td>'
-            f'<td class="{cls}">{fmt_signed(pl)}</td>'
-            f'<td class="{cls}">{fmt_pct(plpc)}</td>'
+            f'<td><span class="sym">{p.get("symbol","")}</span><br>'
+            f'<span class="sz mono">{fmt_k(p.get("market_value"))}</span></td>'
+            f'<td class="dv">{_diverging(pl, maxabs)}</td>'
+            f'<td class="num mono {cls}">{fmt_signed(pl)}<br>'
+            f'<span style="font-weight:600;font-size:11px">{fmt_pct(plpc)}</span></td>'
             f'</tr>'
         )
-    return (
-        '<table class="pos">'
-        '<tr><th class="l">Ticker</th><th>Qty</th><th>Avg</th><th>Last</th>'
-        '<th>Value</th><th>Unrl P&amp;L</th><th>%</th></tr>'
-        + "".join(rows) + '</table>'
-    )
+    return (f'<div class="sec"><h2>Positions <span>· unrealized P&amp;L</span></h2>'
+            f'<table class="pos">{"".join(rows)}</table></div>')
+
+
+def extract_sections(md_text, keep=None):
+    """Return markdown containing only the ## sections whose header is in `keep`
+    (case-insensitive substring match). keep=None returns the text unchanged."""
+    if keep is None:
+        return md_text
+    keep_l = [k.lower() for k in keep]
+    lines = md_text.splitlines()
+    out, take = [], False
+    for ln in lines:
+        if ln.startswith("## "):
+            head = ln[3:].strip().lower()
+            take = any(k in head for k in keep_l)
+        if take:
+            out.append(ln)
+    return "\n".join(out).strip()
 
 
 def md_to_html(md_text):
     return markdown.markdown(md_text, extensions=["tables", "sane_lists"])
 
 
-def build_email(kind, period, account, positions, body_md):
+def build_email(kind, period, account, positions, body_md, market=None):
     equity = _f(account.get("equity"))
     last_equity = _f(account.get("last_equity"), equity)
     cash = _f(account.get("cash"))
     day_pl = equity - last_equity
     day_pct = (day_pl / last_equity * 100) if last_equity else 0.0
     total_pct = (equity - BASELINE) / BASELINE * 100
-    day_cls = _cls(day_pl)
 
     if kind == "weekly":
         subject = f"🗓️ Weekly Paper Trading Digest — {period} — {fmt_money(equity)} ({fmt_pct(total_pct)} total)"
-        hero_label = f"Weekly digest · {period}"
+        eyebrow_date = f"Weekly digest · {period}"
+        notes_md = body_md  # weekly file is already a curated digest
     else:
         subject = f"📈 Paper Trading — {period} — {fmt_money(equity)} ({fmt_pct(day_pct)})"
-        hero_label = f"Daily session · {period}"
+        eyebrow_date = period
+        notes_md = extract_sections(body_md, keep=["market context", "decision"])
 
     hero = f"""
     <div class="hero">
-      <p class="label">{hero_label}</p>
-      <p class="equity">{fmt_money(equity)}</p>
-      <p class="sub">Today <span class="chip {day_cls}">{fmt_signed(day_pl)} ({fmt_pct(day_pct)})</span>
-         &nbsp;·&nbsp; Since start <span class="chip {_cls(total_pct)}">{fmt_pct(total_pct)}</span></p>
-    </div>
-    <div class="metrics">
-      <div class="metric"><p class="k">Equity</p><p class="v">{fmt_money(equity)}</p></div>
-      <div class="metric"><p class="k">Cash</p><p class="v">{fmt_money(cash)}</p></div>
-      <div class="metric"><p class="k">Invested</p><p class="v">{fmt_money(equity - cash)}</p></div>
-      <div class="metric"><p class="k">Positions</p><p class="v">{len(positions)}</p></div>
+      <p class="k">Account equity</p>
+      <p class="equity mono">{fmt_money(equity)}</p>
+      <div class="chips">
+        <span class="chip {_cls(day_pl)}">{_arrow(day_pl)} {fmt_signed(day_pl)} today · {fmt_pct(day_pct)}</span>
+        <span class="chip {_cls(total_pct)}">{fmt_pct(total_pct)} since start</span>
+      </div>
     </div>"""
 
-    positions_block = (
-        f'<div class="section"><h2>Holdings</h2>{render_positions_table(positions)}</div>'
-    )
-    body_block = f'<div class="body">{md_to_html(body_md)}</div>'
+    tape = render_tape(market or [])
+    spy = next((m["pct"] for m in (market or []) if m["sym"] == "SPY"), None)
+    vs = render_vs_market(day_pct, spy) if spy is not None else ""
+    alloc = render_alloc(positions, equity, cash)
+    pos = render_positions_table(positions)
+    notes = (f'<div class="notes"><div class="body">{md_to_html(notes_md)}</div></div>'
+             if notes_md.strip() else "")
 
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
 <style>{CSS}</style></head>
 <body><div class="wrap"><div class="card">
-{hero}
-{positions_block}
-{body_block}
+  <div class="eyebrow"><span class="brand"><span class="dot">●</span> Paper Desk</span>
+    <span class="date mono">{eyebrow_date}</span></div>
+  {hero}
+  {tape}
+  {vs}
+  {alloc}
+  {pos}
+  {notes}
 </div>
 <div class="foot">Alpaca paper account · autonomous screener strategy<br>
-Benchmark: equity vs $100,000 baseline. Not investment advice.</div>
+Equity benchmarked to $100,000 baseline. Not investment advice.</div>
 </div></body></html>"""
     return subject, html
 
@@ -244,7 +408,8 @@ def main(argv=None):
         print(f"broker error: {e}", file=sys.stderr)
         return 1
 
-    subject, html = build_email(args.kind, period, account, positions, body_md)
+    market = fetch_market()
+    subject, html = build_email(args.kind, period, account, positions, body_md, market)
     preview = _preview_path(args.kind, period)
     preview.write_text(html)
 
