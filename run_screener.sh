@@ -32,6 +32,25 @@ if [ -f "$SCREENER_DIR/.env" ]; then
     set +a
 fi
 
+# Skip if output for the most recent completed trading close already exists.
+# (Makes RunAtLoad / wake-coalesced re-fires idempotent. --force overrides.)
+LATEST_NEEDED=$(/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 - <<'EOF'
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+now = datetime.now(ZoneInfo("America/New_York"))
+d = now.date()
+if (now.hour, now.minute) < (16, 30):
+    d -= timedelta(days=1)
+while d.weekday() >= 5:
+    d -= timedelta(days=1)
+print(d.isoformat())
+EOF
+)
+if [ "${1:-}" != "--force" ] && [ -f "output/screen_${LATEST_NEEDED}.csv" ]; then
+    echo "=== Fresh output for ${LATEST_NEEDED} exists, skipping ===" >> "$LOG_FILE"
+    exit 0
+fi
+
 echo "=== Screener run started: $(date) ===" >> "$LOG_FILE"
 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.run >> "$LOG_FILE" 2>&1
 echo "=== Screener run finished: $(date) ===" >> "$LOG_FILE"
