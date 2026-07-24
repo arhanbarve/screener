@@ -55,6 +55,7 @@ echo "$TODAY" > "$STAMP_FILE"
 echo "=== Trader session started: $(date) ===" >> "$LOG_FILE"
 
 "$CLAUDE" -p "$(cat trading/PROMPT.md)" \
+    --model opus \
     --allowedTools "Bash($PY -m src.trader_cli:*),Read,Glob,Grep,WebSearch,WebFetch,Write(trading/**),Edit(trading/**)" \
     --max-turns 120 \
     >> "$LOG_FILE" 2>&1 || echo "=== claude session exited nonzero ===" >> "$LOG_FILE"
