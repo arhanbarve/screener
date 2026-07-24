@@ -69,3 +69,9 @@ else
     git commit -m "chore(trading): journal $TODAY" >> "$LOG_FILE" 2>&1
     git push >> "$LOG_FILE" 2>&1 || echo "=== git push failed (non-fatal) ===" >> "$LOG_FILE"
 fi
+
+# Email the summary (no-op if GMAIL creds absent). Weekly digest on Fridays.
+"$PY" -m src.notify daily >> "$LOG_FILE" 2>&1 || echo "=== daily email failed (non-fatal) ===" >> "$LOG_FILE"
+if [ "$(date +%u)" = "5" ]; then
+    "$PY" -m src.notify weekly >> "$LOG_FILE" 2>&1 || echo "=== weekly email failed (non-fatal) ===" >> "$LOG_FILE"
+fi
