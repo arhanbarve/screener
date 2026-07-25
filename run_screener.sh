@@ -57,11 +57,12 @@ echo "=== Screener run finished: $(date) ===" >> "$LOG_FILE"
 
 # Commit and push today's output so watchdog/remote monitors can see results
 cd "$SCREENER_DIR"
-if git diff --quiet HEAD -- output/ && [ -z "$(git ls-files --others --exclude-standard output/)" ]; then
+COMMIT_PATHS="output/ positions.json data/fidelity/positions_data.json"
+if git diff --quiet HEAD -- $COMMIT_PATHS && [ -z "$(git ls-files --others --exclude-standard $COMMIT_PATHS)" ]; then
     echo "=== No new output to commit ===" >> "$LOG_FILE"
 else
     TODAY=$(date +%Y-%m-%d)
-    git add output/
+    git add $COMMIT_PATHS
     git commit -m "chore(output): screener results $TODAY" >> "$LOG_FILE" 2>&1
     git push >> "$LOG_FILE" 2>&1 && echo "=== Output committed and pushed ===" >> "$LOG_FILE" || echo "=== git push failed (non-fatal) ===" >> "$LOG_FILE"
 fi

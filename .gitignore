@@ -2,14 +2,18 @@
 .env
 
 # Application data
-positions.json
+# positions.json is tracked so the cloud dashboard sees current positions
 
 # Development
 .superpowers/
 .worktrees/
 
 # Cache and generated data (too large / regenerated each run)
-data/
+data/*
+# except the small fidelity snapshot the cloud dashboard reads
+!data/fidelity/
+data/fidelity/*
+!data/fidelity/positions_data.json
 logs/
 
 # Handoff docs (local-only, read via filesystem not git)
