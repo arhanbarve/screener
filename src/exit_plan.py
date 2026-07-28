@@ -147,25 +147,34 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
 
 
 def weekly_health(df: pd.DataFrame, spy_close: pd.Series | None) -> dict:
-    """Weekly-bar health check. Returns {"bearish": n, "parts": [...], "asof": date}.
+    """Weekly-bar health check. Returns
+    {"bearish": n, "parts": [...], "errors": [...], "weeks": n, "asof": date}.
 
     Four checks on W-FRI resampled bars: MACD state, 13-week RS vs SPY,
     OBV slope, ADX direction (-DI dominant and ADX falling). Each bearish
     check adds 1. Used ONLY to tighten trail_mult — never to sell.
+
+    "weeks" records how many weekly bars were actually evaluated, so callers
+    can distinguish "checked, all clear" (weeks >= 15, bearish 0) from
+    "never checked" (weeks < 15, bearish 0 by construction — short history,
+    e.g. a recent IPO). "errors" names any check that threw and was skipped,
+    so a swallowed exception reads as "unknown" rather than silently
+    counting toward a healthy score.
     """
     parts: list[str] = []
+    errors: list[str] = []
     wk = df.resample("W-FRI").agg(
         {"high": "max", "low": "min", "close": "last", "volume": "sum"}
     ).dropna()
     asof = df.index[-1].strftime("%Y-%m-%d") if len(df) else None
     if len(wk) < 15:
-        return {"bearish": 0, "parts": [], "asof": asof}
+        return {"bearish": 0, "parts": [], "errors": [], "weeks": len(wk), "asof": asof}
 
     try:
         if macd_state(wk["close"]) in ("bearish", "bearish_cross"):
             parts.append("macd")
     except Exception:
-        pass
+        errors.append("macd")
     try:
         if spy_close is not None:
             spy_wk = spy_close.resample("W-FRI").last().dropna()
@@ -175,13 +184,13 @@ def weekly_health(df: pd.DataFrame, spy_close: pd.Series | None) -> dict:
                 if stk < spy:
                     parts.append("rs")
     except Exception:
-        pass
+        errors.append("rs")
     try:
         slp = obv_slope(wk["close"], wk["volume"], window=10)
         if not math.isnan(slp) and slp < 0:
             parts.append("obv")
     except Exception:
-        pass
+        errors.append("obv")
     try:
         adx_now, pdi, ndi = directional_indicators(wk["high"], wk["low"], wk["close"])
         if len(wk) >= 20:
@@ -191,15 +200,15 @@ def weekly_health(df: pd.DataFrame, spy_close: pd.Series | None) -> dict:
                     and adx_past > adx_now and ndi > pdi):
                 parts.append("adx")
     except Exception:
-        pass
-    return {"bearish": len(parts), "parts": parts, "asof": asof}
+        errors.append("adx")
+    return {"bearish": len(parts), "parts": parts, "errors": errors, "weeks": len(wk), "asof": asof}
 
 
 def apply_weekly_tightener(plan: dict, health: dict) -> dict:
     """If ≥2 weekly checks bearish, step trail_mult down one notch (floor 2.0).
     Never loosens. Stores health on the plan either way."""
     plan["health"] = health
-    if health["bearish"] >= 2:
+    if health.get("bearish", 0) >= 2:
         steps = [m for m in TRAIL_MULT_STEPS if m < plan["trail_mult"]]
         if steps:
             plan["trail_mult"] = steps[0]

@@ -266,3 +266,33 @@ class TestWeeklyTightener:
         plan["trail_mult"] = 2.0
         plan = apply_weekly_tightener(plan, weekly_health(df, spy))
         assert plan["trail_mult"] == 2.0   # healthy again, but no loosening
+
+    def test_short_history_is_distinguishable_from_healthy(self):
+        # ~8 weeks of history: too little for any check to run. bearish must
+        # read 0 (same as a fully-evaluated healthy result), but "weeks"
+        # must reveal it was never actually checked so callers (and the UI
+        # badge) don't mistake "unknown" for "4/4 healthy".
+        df = trend_df(40, 50, 60)
+        spy = trend_df(40, 100, 105)["close"]
+        health = weekly_health(df, spy)
+        assert health["bearish"] == 0
+        assert health["weeks"] < 15
+
+    def test_check_exception_is_recorded_not_silently_healthy(self, monkeypatch):
+        # Rollover fixture where macd/rs/obv/adx would all normally fire.
+        # Force obv_slope to throw and confirm the failure is recorded in
+        # "errors" (not silently treated as "not bearish"), while the other
+        # three checks still run independently.
+        closes = list(np.linspace(50, 150, 200)) + list(np.linspace(150, 110, 100))
+        df = make_df(closes)
+        spy = trend_df(300, 100, 130)["close"]
+
+        def boom(*args, **kwargs):
+            raise ValueError("bad volume data")
+
+        monkeypatch.setattr("src.exit_plan.obv_slope", boom)
+        health = weekly_health(df, spy)
+        assert "obv" in health["errors"]
+        assert "obv" not in health["parts"]
+        assert health["bearish"] == 3   # macd, rs, adx still fired
+        assert set(health["parts"]) == {"macd", "rs", "adx"}
