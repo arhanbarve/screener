@@ -1663,11 +1663,12 @@ the stock's own historical surprise volatility. Consistently beating = durable e
 | **OBV / SMA20-50-200** | Volume accumulation + trend structure | OBV rising, price > MAs | OBV distribution, close < SMA |
 | **Chandelier / ATR stop** | Volatility-scaled trailing stop | — | close < high(22) − 3·ATR |
 
-**Exit tiers** (mirrors the entry grade's veto + scored-points design):
-- **HARD EXIT** (any one → sell, overrides everything; both require *close < SMA200* so they never fire in a healthy uptrend):
-  **①** ATR trailing-stop breach below the 200-day  **②** death-cross regime (close < SMA200 and SMA50 < SMA200).
-- **SOFT** (weighted points, max 12): MACD, SMA50/SMA20 breaks, RSI, Stoch, MFI, OBV distribution, ADX+DMI, Bollinger blow-off, RS-vs-SPY decay → **STRONG EXIT** ≥7 · **TRIM** 4–6 · **WATCH** 2–3 · **HOLD** <2.
-- **EARN Nd** chip = earnings within 14 days (risk flag only, not counted in the score).
+**Standing exit plan** — Each open position is evaluated once per day, on the closing price, during the 4:30pm pipeline run — never on page load — so a verdict can't flip with intraday noise or an ordinary market-wide down/up day the way a live-recomputed snapshot would.
+- **SELL** (terminal — persists until you act) fires on any one of: close below the trailing stop (peak close − trail-mult × ATR14), close below the max-loss floor (entry − 2×ATR14, which ratchets up to breakeven once the de-risk trim fires), or 3+ consecutive closes below the 50-day SMA.
+- **TRIM** rungs each fire at most once, ever, and each means sell 1/3 of the position: **de-risk** at +2R or +20% gain (moves the floor up to breakeven) and **blowoff** extension (>25% above the 50-day, weekly RSI > 80, or a >3×ATR burst within 5 sessions).
+- **Weekly health check** can only tighten the trailing multiplier (3.0 → 2.5 → 2.0), never loosen it, and never issues a SELL by itself.
+- Stops only ratchet up, trims are append-only, and a SELL is terminal — so the verdict can't oscillate day to day the way the old recomputed-every-load grade did.
+- **EARN Nd** chip = earnings within 14 days (risk flag only, shown alongside the verdict — deliberately not part of it).
         """)
 
     # ── News Entry Signals — top picks ────────────────────────────────────────
