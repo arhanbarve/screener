@@ -91,9 +91,10 @@ Earnings within 5 days remains a non-scoring risk badge (unchanged behavior).
    SELL or a new TRIM rung fires. Subject `ACTION: SELL NVDA` /
    `ACTION: TRIM NVDA`. Body: verdict, level breached, exact instruction,
    reasoning (levels, history).
-2. **Daily digest** — positions table appended to the existing daily screener
-   email: verdict, close vs stop_level distance, trims fired, health badge,
-   earnings badge.
+2. **Daily digest** — standalone positions email sent after the 4:30pm eval
+   (the screener run has no email of its own today; the daily HTML email
+   belongs to the 9am trader job and is untouched): verdict, close vs
+   stop_level distance, trims fired, health badge, earnings badge.
 
 ## Positions page UI
 
