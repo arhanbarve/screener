@@ -69,6 +69,12 @@ DURATION=$(( $(date +%s) - STARTED_EPOCH ))
     --log "$LOG_FILE" --rc "$RUN_RC" --started "$STARTED_ISO" --duration "$DURATION" \
     >> "$LOG_FILE" 2>&1 || echo "=== run_status failed (non-fatal) ===" >> "$LOG_FILE"
 
+# Standing exit plan: evaluate open positions against today's close and email
+# any SELL/TRIM verdict. Runs as its own process so a screener failure above
+# can't cost the user a sell instruction, and vice versa.
+/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.exit_plan \
+    >> "$LOG_FILE" 2>&1 || echo "=== exit-plan eval failed (non-fatal) ===" >> "$LOG_FILE"
+
 # Commit and push today's output so watchdog/remote monitors can see results.
 # run_status.json is committed on failure too — that's how the cloud dashboard
 # reports a dead run instead of just going stale.
