@@ -1,0 +1,50 @@
+#!/bin/bash
+# Blocks commits that stage secrets, brokerage account numbers, or .env files.
+# Install: scripts/install_hooks.sh
+# Bypass (only when you are certain): git commit --no-verify
+
+set -uo pipefail
+REPO_ROOT=$(git rev-parse --show-toplevel)
+source "$REPO_ROOT/scripts/secret_scan.sh"
+
+FAILED=0
+
+# 1. Never allow env files to be staged, whatever .gitignore says.
+ENV_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^|/)\.env($|\.)' || true)
+if [ -n "$ENV_STAGED" ]; then
+    echo "✗ refusing to commit env file(s):"
+    printf '%s\n' "$ENV_STAGED" | sed 's/^/      /'
+    FAILED=1
+fi
+
+# 2. Scan the staged content of every added/modified text file.
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    # Skip binaries and this scanner's own pattern definitions.
+    case "$f" in
+        scripts/secret_scan.sh|scripts/hooks/pre-commit|SECURITY.md) continue ;;
+    esac
+    if ! git show ":$f" 2>/dev/null | grep -qI . 2>/dev/null; then
+        continue  # binary or empty
+    fi
+    if ! git show ":$f" 2>/dev/null | scan_text "$f"; then
+        FAILED=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM)
+
+if [ "$FAILED" -ne 0 ]; then
+    cat <<'MSG'
+
+COMMIT BLOCKED — staged changes contain secrets or identifying data.
+
+This repo's history is not publication-safe (see SECURITY.md); the point of
+this hook is to stop that surface from growing. Remove the data, or if it is
+a genuine false positive:
+
+    git commit --no-verify
+
+MSG
+    exit 1
+fi
+
+exit 0

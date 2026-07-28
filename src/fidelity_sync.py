@@ -103,11 +103,13 @@ def _parse_fidelity_csv(content: str) -> list[dict]:
         if qty <= 0:
             continue
 
+        # SECURITY: Account Number / Account Name / Description are deliberately
+        # NOT captured. This file is committed to git so the cloud dashboard can
+        # read it, and nothing in the app consumes those three fields — they were
+        # pure identifying data sitting in a tracked file. Do not add them back;
+        # scripts/pre-commit blocks account-number-shaped strings anyway.
         holdings.append({
             "ticker":          symbol,
-            "description":     (row.get("Description") or "").strip(),
-            "account":         (row.get("Account Number") or "").strip(),
-            "account_name":    (row.get("Account Name") or "").strip(),
             "quantity":        qty,
             "last_price":      _n(row.get("Last Price")),
             "last_price_chg":  _n(row.get("Last Price Change")),
