@@ -15,7 +15,9 @@ SECRET_PATTERNS=(
     'xox[baprs]-[A-Za-z0-9-]{10,}'              # Slack token
     '-----BEGIN [A-Z ]*PRIVATE KEY'             # any private key
     '\b[A-Z][0-9]{8}\b'                         # Fidelity-style account number
-    '"(account|account_number|accountNumber)"[[:space:]]*:[[:space:]]*"[^"]+"'
+    # Account field with a real value. Values starting with '*' are redaction
+    # markers left in rewritten history and are not a leak.
+    '"(account|account_number|accountNumber)"[[:space:]]*:[[:space:]]*"[^"*][^"]*"'
 )
 
 PATTERN_NAMES=(
