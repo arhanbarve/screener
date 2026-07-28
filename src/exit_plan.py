@@ -215,6 +215,63 @@ def apply_weekly_tightener(plan: dict, health: dict) -> dict:
     return plan
 
 
+def bootstrap_position(pos: dict, df: pd.DataFrame) -> dict:
+    """One-time backfill: init plan at entry, replay history day-by-day.
+    Events are discarded (trims get marked, no emails). Replay mode clears
+    historical SELLs the user held through."""
+    entry_ts = pd.Timestamp(pos["entry_date"])
+    upto_entry = df[df.index <= entry_ts]
+    if upto_entry.empty:
+        upto_entry = df.iloc[:1]
+    pos["plan"] = init_plan(upto_entry, float(pos["entry_price"]))
+    after = df.index[df.index > entry_ts]
+    for ts in after:
+        pos, _ = evaluate_day(pos, df.loc[:ts], replay=True)
+    return pos
+
+
+def run_daily_eval(send_emails: bool = True) -> dict:
+    """Evaluate every position on today's close. Saves positions.json,
+    applies weekly tightener on Fridays, sends action + digest emails.
+    Returns {"events": [...], "evaluated": n, "skipped": [...]}."""
+    from src.positions import load_positions, save_positions, fetch_ohlcv, days_to_next_earnings
+
+    positions = load_positions()
+    if not positions:
+        return {"events": [], "evaluated": 0, "skipped": []}
+
+    spy_df = fetch_ohlcv("SPY", days=600)
+    spy_close = spy_df["close"] if not spy_df.empty else None
+
+    all_events: list[dict] = []
+    skipped: list[str] = []
+    for pos in positions:
+        df = fetch_ohlcv(pos["ticker"], days=600)
+        if df.empty or len(df) < 2:
+            skipped.append(pos["ticker"])   # keep yesterday's state, never fabricate
+            continue
+        if "plan" not in pos or pos["plan"] is None:
+            pos = bootstrap_position(pos, df)
+            print(f"[exit-plan] bootstrapped {pos['ticker']}: "
+                  f"verdict={pos['plan']['verdict']} trims={pos['plan']['trims_fired']}")
+        pos, events = evaluate_day(pos, df)
+        if df.index[-1].weekday() == 4:   # Friday close → weekly tightener
+            pos["plan"] = apply_weekly_tightener(pos["plan"], weekly_health(df, spy_close))
+        pos["plan"]["days_to_earnings"] = days_to_next_earnings(pos["ticker"])
+        all_events.extend(events)
+
+    save_positions(positions)
+
+    result = {"events": all_events, "evaluated": len(positions) - len(skipped),
+              "skipped": skipped}
+    if send_emails:
+        from src.exit_alerts import send_action_alert, send_daily_digest
+        if all_events:
+            send_action_alert(all_events, positions)
+        send_daily_digest(positions, skipped)
+    return result
+
+
 def _weekly_rsi(close: pd.Series) -> float | None:
     """RSI(14) on weekly (Friday) closes. None if under 15 weeks of data or
     the series has no variance (a perfectly constant series carries no
@@ -225,3 +282,15 @@ def _weekly_rsi(close: pd.Series) -> float | None:
         return None
     val = rsi_14(wk)
     return None if math.isnan(val) else float(val)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Standing exit plan daily evaluation")
+    parser.add_argument("--no-email", action="store_true", help="evaluate and save only")
+    args = parser.parse_args()
+    res = run_daily_eval(send_emails=not args.no_email)
+    print(f"[exit-plan] evaluated={res['evaluated']} events={len(res['events'])} "
+          f"skipped={res['skipped']}")
+    for e in res["events"]:
+        print(f"[exit-plan] ACTION {e['type']} {e['ticker']}: {e['reason']}")

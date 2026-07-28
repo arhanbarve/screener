@@ -4,6 +4,7 @@ import pytest
 
 from src.exit_plan import init_plan, evaluate_day
 from src.exit_plan import weekly_health, apply_weekly_tightener
+from src.exit_plan import bootstrap_position, run_daily_eval
 
 
 def trend_df(n, start_price, end_price, **kw):
@@ -296,3 +297,83 @@ class TestWeeklyTightener:
         assert "obv" not in health["parts"]
         assert health["bearish"] == 3   # macd, rs, adx still fired
         assert set(health["parts"]) == {"macd", "rs", "adx"}
+
+
+class TestBootstrap:
+    def test_backfill_marks_earned_trims_and_ratchets(self):
+        # entry at bar 60 @100, runs to 130 (derisk earned), settles at 120
+        closes = [100.0] * 60 + list(np.linspace(100, 130, 30)) + list(np.linspace(130, 120, 10))
+        df = make_df(closes)
+        entry_date = df.index[59].strftime("%Y-%m-%d")
+        pos = {"ticker": "TEST", "entry_date": entry_date, "entry_price": 100.0}
+        pos = bootstrap_position(pos, df)
+        plan = pos["plan"]
+        assert "derisk" in plan["trims_fired"]
+        assert plan["stop_floor"] == pytest.approx(100.0)   # breakeven after derisk
+        assert plan["peak_close"] == pytest.approx(130.0, abs=0.5)
+        assert plan["verdict"] in ("HOLD", "TRIM", "SELL")
+
+    def test_backfill_survivor_of_old_dip_is_hold(self):
+        # dip below initial stop mid-history, then recovery to new highs
+        closes = ([100.0] * 60 + list(np.linspace(100, 90, 10))
+                  + list(np.linspace(90, 140, 40)))
+        df = make_df(closes)
+        entry_date = df.index[59].strftime("%Y-%m-%d")
+        pos = {"ticker": "TEST", "entry_date": entry_date, "entry_price": 100.0}
+        pos = bootstrap_position(pos, df)
+        assert pos["plan"]["verdict"] != "SELL"   # replay clears historical breach
+
+
+class TestRunDailyEval:
+    def test_bootstrap_skip_save_and_evaluated_count(self, monkeypatch):
+        import copy
+
+        aaa_df = flat_df(80, price=100.0)
+        aaa_entry_date = aaa_df.index[59].strftime("%Y-%m-%d")
+
+        bbb_existing_plan = init_plan(flat_df(80, price=50.0), 50.0)
+        bbb_existing_plan["verdict"] = "TRIM"
+        bbb_existing_plan["trims_fired"] = ["derisk"]
+        bbb_plan_before = copy.deepcopy(bbb_existing_plan)
+
+        positions = [
+            {"ticker": "AAA", "entry_date": aaa_entry_date, "entry_price": 100.0},
+            {"ticker": "BBB", "entry_date": "2025-01-02", "entry_price": 50.0,
+             "plan": bbb_existing_plan},
+        ]
+
+        spy_df = trend_df(300, 100, 110)
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            if ticker == "AAA":
+                return aaa_df
+            if ticker == "SPY":
+                return spy_df
+            return pd.DataFrame()   # BBB: simulated data outage
+
+        saved = {}
+
+        def fake_save_positions(pos_list):
+            saved["positions"] = pos_list
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", fake_save_positions)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda ticker: 10)
+
+        result = run_daily_eval(send_emails=False)
+
+        # AAA had no plan key -> bootstrapped and now carries a plan
+        aaa = next(p for p in positions if p["ticker"] == "AAA")
+        assert "plan" in aaa and aaa["plan"] is not None
+
+        # BBB's fetch returned empty -> skipped, never evaluated, plan untouched
+        assert "BBB" in result["skipped"]
+        bbb = next(p for p in positions if p["ticker"] == "BBB")
+        assert bbb["plan"] == bbb_plan_before
+
+        # save_positions called with the mutated list
+        assert saved["positions"] is positions
+
+        # evaluated count excludes the skipped ticker
+        assert result["evaluated"] == 1
