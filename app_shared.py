@@ -1651,17 +1651,18 @@ vs cutting. Rising estimates → institutions are likely accumulating.
 the stock's own historical surprise volatility. Consistently beating = durable edge.
 
 ---
-**Entry / exit timing indicators** (used in Open Positions — also guide when to enter after screening):
+**Entry timing indicators** (guide when to enter after screening). These no longer decide exits — exits are governed by the standing exit plan below. The "weekly role" column shows which of them still feed the weekly health check, whose only power is to tighten a trailing stop:
 
-| Indicator | What it measures | Good entry zone | Exit trigger |
+| Indicator | What it measures | Good entry zone | Weekly role |
 |---|---|---|---|
-| **RSI (14)** | Momentum — overbought/oversold on 0–100 scale | 40–65 (not stretched) | >70 + declining |
-| **MACD** | Trend direction via 12/26 EMA crossover | Bullish cross | Bearish cross |
-| **Stochastic %K/%D** | Short-term price position in recent range | %K < 70, above %D | %K > 80 then crosses below %D |
-| **ADX / DMI (14)** | Trend *strength* + direction | >20 | Weakening >5 pts AND −DI > +DI |
-| **MFI (14)** | Volume-weighted RSI — tracks smart money flow | 40–65 | <50 (money leaving) |
-| **OBV / SMA20-50-200** | Volume accumulation + trend structure | OBV rising, price > MAs | OBV distribution, close < SMA |
-| **Chandelier / ATR stop** | Volatility-scaled trailing stop | — | close < high(22) − 3·ATR |
+| **RSI (14)** | Momentum — overbought/oversold on 0–100 scale | 40–65 (not stretched) | weekly RSI > 80 arms the blowoff trim |
+| **MACD** | Trend direction via 12/26 EMA crossover | Bullish cross | bearish on weekly bars = 1 health point |
+| **Stochastic %K/%D** | Short-term price position in recent range | %K < 70, above %D | entry only |
+| **ADX / DMI (14)** | Trend *strength* + direction | >20 | falling with −DI > +DI = 1 health point |
+| **MFI (14)** | Volume-weighted RSI — tracks smart money flow | 40–65 | entry only |
+| **OBV / SMA20-50-200** | Volume accumulation + trend structure | OBV rising, price > MAs | OBV falling = 1 health point; 50-day drives the trend-break SELL |
+| **Chandelier / ATR stop** | Volatility-scaled trailing stop | — | the plan's trailing stop: peak close − trail-mult × ATR14 |
+| **RS vs SPY** | Relative strength against the index | outperforming | lagging over 13 weeks = 1 health point |
 
 **Standing exit plan** — Each open position is evaluated once per day, on the closing price, during the 4:30pm pipeline run — never on page load — so a verdict can't flip with intraday noise or an ordinary market-wide down/up day the way a live-recomputed snapshot would.
 - **SELL** (terminal — persists until you act) fires on any one of: close below the trailing stop (peak close − trail-mult × ATR14), close below the max-loss floor (entry − 2×ATR14, which ratchets up to breakeven once the de-risk trim fires), or 3+ consecutive closes below the 50-day SMA.
