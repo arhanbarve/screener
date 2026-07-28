@@ -71,8 +71,8 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
     today = df.index[-1].strftime("%Y-%m-%d")
     entry = float(pos["entry_price"])
 
-    # already evaluated this bar in live mode → no-op (idempotent re-fire)
-    if not replay and plan.get("last_eval") == today:
+    # already evaluated this bar → no-op (idempotent re-fire, live or replay)
+    if plan.get("last_eval") == today:
         return pos, events
 
     # ── ratchets (always run, even while verdict is SELL) ──────────────────
@@ -97,10 +97,10 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
 
     # ── SELL triggers ────────────────────────────────────────────────────
     sell_reason = None
-    if price < plan["stop_level"]:
-        sell_reason = f"close {price:.2f} below stop level {plan['stop_level']:.2f}"
-    elif price < plan["stop_floor"]:
+    if price < plan["stop_floor"]:
         sell_reason = f"close {price:.2f} below max-loss floor {plan['stop_floor']:.2f}"
+    elif price < plan["stop_level"]:
+        sell_reason = f"close {price:.2f} below trailing stop {plan['stop_level']:.2f}"
     elif plan["below_50d_streak"] >= TREND_BREAK_DAYS:
         sell_reason = f"{plan['below_50d_streak']} consecutive closes below 50-day SMA {s50:.2f}"
     if sell_reason:

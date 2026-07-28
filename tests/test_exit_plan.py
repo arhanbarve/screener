@@ -57,3 +57,30 @@ class TestHold:
         pos, events = evaluate_day(pos, newdf)
         assert pos["plan"]["verdict"] == "HOLD"
         assert events == []
+
+
+class TestSellReasons:
+    def test_floor_breach_sells_with_max_loss_floor_reason(self):
+        df = flat_df(80)
+        pos = entry_pos(df)  # entry_price = 100
+        # de-risk trim fires and moves stop_floor to breakeven (100)
+        day81 = make_df([100.0] * 80 + [115.0])
+        pos, _ = evaluate_day(pos, day81)
+        assert pos["plan"]["stop_floor"] == pytest.approx(100.0)
+        # close back below entry breaches the floor (and the higher trailing
+        # stop_level too) — the floor reason must win the reason string
+        day82 = make_df([100.0] * 80 + [115.0, 99.0])
+        pos, events = evaluate_day(pos, day82)
+        assert pos["plan"]["verdict"] == "SELL"
+        assert "max-loss floor" in events[0]["reason"]
+
+
+class TestReplayIdempotent:
+    def test_replay_same_bar_twice_does_not_double_count_streak(self):
+        df = flat_df(80)
+        pos = entry_pos(df)
+        newdf = make_df([100.0] * 79 + [50.0])  # single close well below 50-day SMA
+        pos, _ = evaluate_day(pos, newdf, replay=True)
+        streak_after_first = pos["plan"]["below_50d_streak"]
+        pos, _ = evaluate_day(pos, newdf, replay=True)
+        assert pos["plan"]["below_50d_streak"] == streak_after_first
