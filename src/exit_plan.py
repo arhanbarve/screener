@@ -8,6 +8,7 @@ flip on ordinary market-wide moves.
 Spec: docs/superpowers/specs/2026-07-28-standing-exit-plan-design.md
 """
 import math
+from datetime import date
 
 import pandas as pd
 
@@ -49,6 +50,8 @@ def init_plan(df: pd.DataFrame, entry_price: float) -> dict:
         "days_to_earnings": None,
         "last_eval": None,
         "last_close": None,
+        "pending_notify": [],
+        "tightened_asof": None,
     }
 
 
@@ -71,8 +74,11 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
     today = df.index[-1].strftime("%Y-%m-%d")
     entry = float(pos["entry_price"])
 
-    # already evaluated this bar → no-op (idempotent re-fire, live or replay)
-    if plan.get("last_eval") == today:
+    # already evaluated this bar (idempotent re-fire) OR this bar is OLDER
+    # than the last one we evaluated (stale/out-of-order data) → no-op either
+    # way. String dates compare lexicographically same as chronologically.
+    last_eval = plan.get("last_eval")
+    if last_eval is not None and last_eval >= today:
         return pos, events
 
     # ── ratchets (always run, even while verdict is SELL) ──────────────────
@@ -230,45 +236,118 @@ def bootstrap_position(pos: dict, df: pd.DataFrame) -> dict:
     return pos
 
 
-def run_daily_eval(send_emails: bool = True) -> dict:
+def run_daily_eval(send_emails: bool = True, today: date | None = None) -> dict:
     """Evaluate every position on today's close. Saves positions.json,
-    applies weekly tightener on Fridays, sends action + digest emails.
-    Returns {"events": [...], "evaluated": n, "skipped": [...]}."""
+    applies the weekly tightener once per ISO week, sends action + digest
+    emails. Returns {"events": [...], "evaluated": n, "skipped": [...],
+    "stale": [...], "errored": [...]}.
+
+    `today` overrides the wall-clock date used for the staleness and
+    week-closed checks below; defaults to the real current date. Tests pass
+    it explicitly so synthetic historical fixtures aren't flagged stale.
+
+    Per-ticker failures (bad fetch, a throwing indicator, etc.) are caught
+    and recorded in "errored" rather than aborting the whole run — one bad
+    ticker must never cost every other position its daily evaluation and
+    email. A bar more than 4 calendar days behind `today` is distrusted and
+    the ticker is parked in "stale" with its plan left untouched, same as
+    "skipped", rather than evaluated as if it were current.
+    """
     from src.positions import load_positions, save_positions, fetch_ohlcv, days_to_next_earnings
 
     positions = load_positions()
     if not positions:
-        return {"events": [], "evaluated": 0, "skipped": []}
+        return {"events": [], "evaluated": 0, "skipped": [], "stale": [], "errored": []}
 
+    today = today or date.today()
     spy_df = fetch_ohlcv("SPY", days=600)
     spy_close = spy_df["close"] if not spy_df.empty else None
 
     all_events: list[dict] = []
     skipped: list[str] = []
+    stale: list[dict] = []
+    errored: list[dict] = []
     for pos in positions:
-        df = fetch_ohlcv(pos["ticker"], days=600)
-        if df.empty or len(df) < 2:
-            skipped.append(pos["ticker"])   # keep yesterday's state, never fabricate
+        try:
+            df = fetch_ohlcv(pos["ticker"], days=600)
+            if df.empty or len(df) < 2:
+                skipped.append(pos["ticker"])   # keep yesterday's state, never fabricate
+                continue
+
+            last_bar_date = df.index[-1].date()
+            if (today - last_bar_date).days > 4:
+                stale.append({"ticker": pos["ticker"], "bar_date": last_bar_date.strftime("%Y-%m-%d")})
+                continue   # bar too old to trust — leave the plan untouched
+
+            if "plan" not in pos or pos["plan"] is None:
+                pos = bootstrap_position(pos, df)
+                print(f"[exit-plan] bootstrapped {pos['ticker']}: "
+                      f"verdict={pos['plan']['verdict']} trims={pos['plan']['trims_fired']}")
+
+            pos, events = evaluate_day(pos, df)
+
+            # Weekly tightener: fire once per ISO week, on whichever weekday
+            # turns out to be that week's final trading bar. A bar is
+            # "closed" for its week either because it's a Friday, or because
+            # real time has already reached Friday-or-later (same week or a
+            # later one) without a newer bar showing up — i.e. the rest of
+            # the week was a holiday. tightened_asof (keyed by ISO year+week,
+            # not weekday) blocks a duplicate/retry run from double-stepping.
+            iso_last = last_bar_date.isocalendar()[:2]
+            iso_today = today.isocalendar()[:2]
+            week_closed = iso_today != iso_last or today.weekday() >= 4
+            if week_closed:
+                week_key = f"{iso_last[0]}-W{iso_last[1]:02d}"
+                if pos["plan"].get("tightened_asof") != week_key:
+                    pos["plan"] = apply_weekly_tightener(pos["plan"], weekly_health(df, spy_close))
+                    pos["plan"]["tightened_asof"] = week_key
+
+            pos["plan"]["days_to_earnings"] = days_to_next_earnings(pos["ticker"])
+            if events:
+                pos["plan"].setdefault("pending_notify", []).extend(events)
+            all_events.extend(events)
+        except Exception as e:
+            errored.append({"ticker": pos["ticker"], "error": repr(e)})
+            print(f"[exit-plan] ERROR evaluating {pos['ticker']}: {e!r}")
             continue
-        if "plan" not in pos or pos["plan"] is None:
-            pos = bootstrap_position(pos, df)
-            print(f"[exit-plan] bootstrapped {pos['ticker']}: "
-                  f"verdict={pos['plan']['verdict']} trims={pos['plan']['trims_fired']}")
-        pos, events = evaluate_day(pos, df)
-        if df.index[-1].weekday() == 4:   # Friday close → weekly tightener
-            pos["plan"] = apply_weekly_tightener(pos["plan"], weekly_health(df, spy_close))
-        pos["plan"]["days_to_earnings"] = days_to_next_earnings(pos["ticker"])
-        all_events.extend(events)
 
-    save_positions(positions)
+    save_positions(positions)   # ratchets/peaks are real regardless of email outcome
 
-    result = {"events": all_events, "evaluated": len(positions) - len(skipped),
-              "skipped": skipped}
+    result = {
+        "events": all_events,
+        "evaluated": len(positions) - len(skipped) - len(stale) - len(errored),
+        "skipped": skipped,
+        "stale": stale,
+        "errored": errored,
+    }
+
     if send_emails:
-        from src.exit_alerts import send_action_alert, send_daily_digest
-        if all_events:
-            send_action_alert(all_events, positions)
-        send_daily_digest(positions, skipped)
+        # Union of this run's fresh events (already folded into pending_notify
+        # above) and any leftovers a previous run failed to send — a leftover
+        # entry means the previous send failed, so it must go out now too.
+        notify_positions = [p for p in positions if (p.get("plan") or {}).get("pending_notify")]
+        combined_events: list[dict] = []
+        seen = set()
+        for p in notify_positions:
+            for e in p["plan"]["pending_notify"]:
+                key = (e.get("ticker"), e.get("type"), e.get("reason"))
+                if key not in seen:
+                    seen.add(key)
+                    combined_events.append(e)
+        try:
+            from src.exit_alerts import send_action_alert, send_daily_digest
+            if combined_events:
+                send_action_alert(combined_events, positions)
+            send_daily_digest(positions, skipped)
+        except Exception as e:
+            # State is already saved above; leave pending_notify intact so
+            # the next run retries these instructions instead of losing them.
+            print(f"[exit-plan] EMAIL SEND FAILED: {e!r}")
+        else:
+            if notify_positions:
+                for p in notify_positions:
+                    p["plan"]["pending_notify"] = []
+                save_positions(positions)
     return result
 
 

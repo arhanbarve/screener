@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -361,7 +363,10 @@ class TestRunDailyEval:
         monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
         monkeypatch.setattr("src.positions.days_to_next_earnings", lambda ticker: 10)
 
-        result = run_daily_eval(send_emails=False)
+        # Pin "today" to AAA's last bar so the staleness check (a real
+        # wall-clock comparison) doesn't reject this synthetic 2026-01-02
+        # fixture as stale relative to whatever day the suite actually runs.
+        result = run_daily_eval(send_emails=False, today=aaa_df.index[-1].date())
 
         # AAA had no plan key -> bootstrapped and now carries a plan
         aaa = next(p for p in positions if p["ticker"] == "AAA")
@@ -377,3 +382,197 @@ class TestRunDailyEval:
 
         # evaluated count excludes the skipped ticker
         assert result["evaluated"] == 1
+
+
+class TestErrorIsolation:
+    def test_one_ticker_error_does_not_abort_the_run(self, monkeypatch):
+        aaa_df = flat_df(80, price=100.0)
+        aaa_entry_date = aaa_df.index[59].strftime("%Y-%m-%d")
+        positions = [
+            {"ticker": "AAA", "entry_date": aaa_entry_date, "entry_price": 100.0},
+            {"ticker": "BAD", "entry_date": aaa_entry_date, "entry_price": 100.0},
+        ]
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            if ticker == "AAA":
+                return aaa_df
+            if ticker == "SPY":
+                return trend_df(300, 100, 110)
+            if ticker == "BAD":
+                raise RuntimeError("yfinance blew up")
+            return pd.DataFrame()
+
+        saved = {}
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: saved.setdefault("positions", p))
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+
+        result = run_daily_eval(send_emails=False, today=aaa_df.index[-1].date())
+
+        # AAA still evaluated and bootstrapped despite BAD's fetch throwing
+        aaa = next(p for p in positions if p["ticker"] == "AAA")
+        assert "plan" in aaa and aaa["plan"] is not None
+
+        # BAD recorded as errored, not silently dropped, not counted as evaluated
+        assert result["errored"] == [{"ticker": "BAD", "error": repr(RuntimeError("yfinance blew up"))}]
+        assert result["evaluated"] == 1
+
+        # the run still persisted (positions that did evaluate must still save)
+        assert saved["positions"] is positions
+
+
+class TestPendingNotify:
+    def test_pending_notify_persists_on_failed_send_and_clears_on_success(self, monkeypatch):
+        import sys
+        import types
+
+        entry_df = flat_df(80, price=100.0)
+        live_df = make_df([100.0] * 80 + [121.0])   # 21% jump -> fires a TRIM event
+        entry_date = entry_df.index[-1].strftime("%Y-%m-%d")
+        plan = init_plan(entry_df, 100.0)
+        positions = [{"ticker": "AAA", "entry_date": entry_date, "entry_price": 100.0, "plan": plan}]
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            if ticker == "AAA":
+                return live_df
+            if ticker == "SPY":
+                return trend_df(300, 100, 110)
+            return pd.DataFrame()
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: None)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+
+        fail_flag = {"fail": True}
+        captured = {"events": None}
+
+        def fake_send_action_alert(events, positions):
+            if fail_flag["fail"]:
+                raise RuntimeError("smtp down")
+            captured["events"] = list(events)
+
+        def fake_send_daily_digest(positions, skipped):
+            pass
+
+        fake_module = types.ModuleType("src.exit_alerts")
+        fake_module.send_action_alert = fake_send_action_alert
+        fake_module.send_daily_digest = fake_send_daily_digest
+        monkeypatch.setitem(sys.modules, "src.exit_alerts", fake_module)
+
+        today = live_df.index[-1].date()
+
+        run_daily_eval(send_emails=True, today=today)
+        assert positions[0]["plan"]["pending_notify"], "leftover events must survive a failed send"
+
+        fail_flag["fail"] = False
+        run_daily_eval(send_emails=True, today=today)   # retry: same leftover, this time it sends
+        assert positions[0]["plan"]["pending_notify"] == []
+        assert captured["events"], "leftover event must have been retried on the successful send"
+
+
+class TestWeeklyTightenerGuard:
+    _ROLLOVER = list(np.linspace(50, 150, 200)) + list(np.linspace(150, 110, 100))
+
+    def test_duplicate_run_on_same_bar_steps_trail_mult_once(self, monkeypatch):
+        df = make_df(self._ROLLOVER)
+        entry_price = float(df["close"].iloc[-1])
+        entry_date = df.index[-1].strftime("%Y-%m-%d")
+        positions = [{"ticker": "AAA", "entry_date": entry_date, "entry_price": entry_price}]
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            if ticker == "AAA":
+                return df
+            if ticker == "SPY":
+                return trend_df(300, 100, 130)
+            return pd.DataFrame()
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: None)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+
+        last_bar_date = df.index[-1].date()
+        friday = last_bar_date + timedelta(days=(4 - last_bar_date.weekday()) % 7)
+
+        run_daily_eval(send_emails=False, today=friday)
+        assert positions[0]["plan"]["trail_mult"] == 2.5
+
+        # duplicate cron fire / manual retry / Saturday catch-up: same bar,
+        # same week -> must not step a second time
+        run_daily_eval(send_emails=False, today=friday)
+        assert positions[0]["plan"]["trail_mult"] == 2.5
+
+    def test_thursday_final_bar_from_a_holiday_friday_still_tightens(self, monkeypatch):
+        start = pd.Timestamp("2026-01-01")
+        while start.weekday() != 3:   # walk forward to a Thursday
+            start += pd.Timedelta(days=1)
+        closes = list(np.linspace(50, 150, 201)) + list(np.linspace(150, 110, 100))  # 301 bars
+        df = make_df(closes, start=start.strftime("%Y-%m-%d"))
+        assert df.index[-1].weekday() == 3   # sanity: final bar really is a Thursday
+
+        entry_price = float(df["close"].iloc[-1])
+        entry_date = df.index[-1].strftime("%Y-%m-%d")
+        positions = [{"ticker": "AAA", "entry_date": entry_date, "entry_price": entry_price}]
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            if ticker == "AAA":
+                return df
+            if ticker == "SPY":
+                return trend_df(300, 100, 130)
+            return pd.DataFrame()
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: None)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+
+        # Friday (the next calendar day) is a market holiday: no newer bar
+        # ever shows up, so wall-clock "today" reaches Friday while the data's
+        # last close stays on Thursday.
+        friday = df.index[-1].date() + timedelta(days=1)
+        run_daily_eval(send_emails=False, today=friday)
+        assert positions[0]["plan"]["trail_mult"] == 2.5
+
+
+class TestStaleness:
+    def test_stale_bar_lands_in_stale_and_leaves_plan_untouched(self, monkeypatch):
+        import copy
+
+        df = flat_df(80, price=100.0)
+        entry_date = df.index[59].strftime("%Y-%m-%d")
+        existing_plan = init_plan(flat_df(80, price=100.0), 100.0)
+        existing_plan["verdict"] = "TRIM"
+        plan_before = copy.deepcopy(existing_plan)
+        positions = [{"ticker": "STALE", "entry_date": entry_date, "entry_price": 100.0,
+                      "plan": existing_plan}]
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            return df if ticker != "SPY" else pd.DataFrame()
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: None)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+
+        far_future = df.index[-1].date() + timedelta(days=10)   # 10 days stale (> 4)
+        result = run_daily_eval(send_emails=False, today=far_future)
+
+        assert result["stale"] == [{"ticker": "STALE", "bar_date": df.index[-1].strftime("%Y-%m-%d")}]
+        assert result["evaluated"] == 0
+        assert positions[0]["plan"] == plan_before   # untouched, exactly like "skipped"
+
+    def test_evaluate_day_does_not_regress_state_on_an_older_bar(self):
+        import copy
+
+        df = flat_df(80)
+        pos = entry_pos(df)
+        day81 = make_df([100.0] * 81)
+        pos, _ = evaluate_day(pos, day81)   # last_eval is now day81's date
+        plan_before = copy.deepcopy(pos["plan"])
+
+        # a stale re-fetch hands back a frame whose last bar predates last_eval
+        pos, events = evaluate_day(pos, df)
+        assert events == []
+        assert pos["plan"] == plan_before   # nothing regressed backward
