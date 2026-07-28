@@ -96,3 +96,25 @@ def test_action_email_escapes_html_metacharacters_in_reason():
     _, html = build_action_email(events, POSITIONS)
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_action_email_groups_multiple_events_per_ticker_dedupes_detail_block():
+    # evaluate_day can fire both a derisk and a blowoff TRIM for the same
+    # ticker on one bar — the floor/stop/peak/trims detail line must render
+    # once per ticker, not once per event, while both instructions still show.
+    events = [
+        {"ticker": "ANET", "type": "TRIM", "reason": "derisk hit",
+         "instruction": "Sell 1/3 of position at next open (derisk)."},
+        {"ticker": "ANET", "type": "TRIM", "reason": "blowoff extension",
+         "instruction": "Sell 1/3 of position at next open (blowoff)."},
+    ]
+    _, html = build_action_email(events, POSITIONS)
+    assert html.count("floor 100.25") == 1
+    assert "Sell 1/3 of position at next open (derisk)." in html
+    assert "Sell 1/3 of position at next open (blowoff)." in html
+
+
+def test_action_email_with_no_events_is_coherent():
+    subject, html = build_action_email([], POSITIONS)
+    assert subject == subject.strip()   # no trailing "ACTION: " with nothing after it
+    assert "no action" in subject.lower() or "no action" in html.lower()

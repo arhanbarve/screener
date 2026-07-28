@@ -453,7 +453,7 @@ class TestPendingNotify:
                 raise RuntimeError("smtp down")
             captured["events"] = list(events)
 
-        def fake_send_daily_digest(positions, skipped):
+        def fake_send_daily_digest(positions, skipped, stale=None, errored=None):
             pass
 
         fake_module = types.ModuleType("src.exit_alerts")
@@ -576,3 +576,61 @@ class TestStaleness:
         pos, events = evaluate_day(pos, df)
         assert events == []
         assert pos["plan"] == plan_before   # nothing regressed backward
+
+
+class TestDigestWiring:
+    def test_stale_and_errored_tickers_reach_digest_with_not_evaluated_marker(self, monkeypatch):
+        import sys
+        import types
+
+        from src.exit_alerts import build_digest_email as real_build_digest_email
+
+        good_df = flat_df(90, price=100.0)
+        stale_df = good_df.iloc[:-10]   # last bar well over 4 calendar days behind "today"
+
+        positions = [
+            {"ticker": "GOOD", "entry_date": "2025-01-02", "entry_price": 100.0,
+             "plan": init_plan(flat_df(80, price=100.0), 100.0)},
+            {"ticker": "STALE", "entry_date": "2025-01-02", "entry_price": 100.0,
+             "plan": init_plan(flat_df(80, price=100.0), 100.0)},
+            {"ticker": "BAD", "entry_date": "2025-01-02", "entry_price": 100.0,
+             "plan": init_plan(flat_df(80, price=100.0), 100.0)},
+        ]
+
+        def fake_fetch_ohlcv(ticker, days=600):
+            if ticker == "GOOD":
+                return good_df
+            if ticker == "STALE":
+                return stale_df
+            if ticker == "BAD":
+                raise RuntimeError("yfinance timed out")
+            return pd.DataFrame()   # SPY: weekly tightener degrades gracefully with no benchmark
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: None)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+
+        captured = {}
+
+        def fake_send_action_alert(events, positions):
+            pass
+
+        def fake_send_daily_digest(positions, skipped, stale=None, errored=None):
+            # Use the real builder so this test exercises production rendering,
+            # not a second hand-rolled assertion of the call args.
+            captured["subject"], captured["html"] = real_build_digest_email(
+                positions, skipped, stale or [], errored or [])
+
+        fake_module = types.ModuleType("src.exit_alerts")
+        fake_module.send_action_alert = fake_send_action_alert
+        fake_module.send_daily_digest = fake_send_daily_digest
+        monkeypatch.setitem(sys.modules, "src.exit_alerts", fake_module)
+
+        run_daily_eval(send_emails=True, today=good_df.index[-1].date())
+
+        assert "html" in captured, "send_daily_digest must be called with this run's stale/errored lists"
+        html = captured["html"]
+        assert "STALE" in html and "NOT EVALUATED TODAY" in html
+        assert stale_df.index[-1].strftime("%Y-%m-%d") in html
+        assert "BAD" in html and "yfinance timed out" in html

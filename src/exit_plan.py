@@ -338,7 +338,7 @@ def run_daily_eval(send_emails: bool = True, today: date | None = None) -> dict:
             from src.exit_alerts import send_action_alert, send_daily_digest
             if combined_events:
                 send_action_alert(combined_events, positions)
-            send_daily_digest(positions, skipped)
+            send_daily_digest(positions, skipped, stale, errored)
         except Exception as e:
             # State is already saved above; leave pending_notify intact so
             # the next run retries these instructions instead of losing them.

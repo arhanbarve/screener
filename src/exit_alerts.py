@@ -70,7 +70,8 @@ def _plan_row(pos: dict, not_evaluated: bool = False, bar_date: str | None = Non
     p = pos.get("plan") or {}
     close = p.get("last_close")
     stop = p.get("stop_level")
-    dist = (f"{(close - stop) / close:+.1%}" if close and stop else "—")
+    dist = (f"{(close - stop) / close:+.1%}"
+            if close is not None and stop is not None and close != 0 else "—")
     trims = ",".join(p.get("trims_fired") or []) or "—"
     hstr = _health_badge(p.get("health"))
     dte = p.get("days_to_earnings")
@@ -93,17 +94,33 @@ def _plan_row(pos: dict, not_evaluated: bool = False, bar_date: str | None = Non
 
 
 def build_action_email(events: list[dict], positions: list[dict]) -> tuple[str, str]:
+    if not events:
+        body = '<p class="reason">No action required — all positions remain within plan.</p>'
+        return "Exit plan: no action required", _wrap("Exit plan status", body)
+
     parts = sorted({f"{e['type']} {e['ticker']}" for e in events})
     subject = f"\U0001f6a8 ACTION: {' · '.join(parts)}"
     by_ticker = {p["ticker"]: p for p in positions}
-    body = ""
+
+    # Group by ticker: evaluate_day can fire both a derisk TRIM and a blowoff
+    # TRIM for the same ticker on one bar, and each shares the same plan
+    # snapshot — so the floor/stop/peak/trims detail renders once per
+    # ticker, with every fired event's reason + instruction listed under it.
+    grouped: dict[str, list[dict]] = {}
     for e in events:
-        p = (by_ticker.get(e["ticker"], {}).get("plan")) or {}
-        body += (f'<div style="margin-bottom:8px">{_badge(e["type"])} '
+        grouped.setdefault(e["ticker"], []).append(e)
+
+    body = ""
+    for ticker, ticker_events in grouped.items():
+        lead_type = next((e["type"] for e in ticker_events if e["type"] == "SELL"),
+                          ticker_events[0]["type"])
+        body += (f'<div style="margin-bottom:8px">{_badge(lead_type)} '
                  f'<span class="mono" style="font-size:16px;font-weight:700">'
-                 f'{_html.escape(e["ticker"])}</span></div>'
-                 f'<div class="reason">{_html.escape(e["reason"])}</div>'
-                 f'<div class="instruction">{_html.escape(e["instruction"])}</div>')
+                 f'{_html.escape(ticker)}</span></div>')
+        for e in ticker_events:
+            body += (f'<div class="reason">{_html.escape(e["reason"])}</div>'
+                     f'<div class="instruction">{_html.escape(e["instruction"])}</div>')
+        p = (by_ticker.get(ticker, {}).get("plan")) or {}
         if p:
             body += (f'<div class="reason mono">floor {p.get("stop_floor")} &middot; '
                      f'stop {p.get("stop_level")} &middot; peak {p.get("peak_close")} &middot; '
