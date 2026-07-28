@@ -146,6 +146,66 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
     return pos, events
 
 
+def weekly_health(df: pd.DataFrame, spy_close: pd.Series | None) -> dict:
+    """Weekly-bar health check. Returns {"bearish": n, "parts": [...], "asof": date}.
+
+    Four checks on W-FRI resampled bars: MACD state, 13-week RS vs SPY,
+    OBV slope, ADX direction (-DI dominant and ADX falling). Each bearish
+    check adds 1. Used ONLY to tighten trail_mult — never to sell.
+    """
+    parts: list[str] = []
+    wk = df.resample("W-FRI").agg(
+        {"high": "max", "low": "min", "close": "last", "volume": "sum"}
+    ).dropna()
+    asof = df.index[-1].strftime("%Y-%m-%d") if len(df) else None
+    if len(wk) < 15:
+        return {"bearish": 0, "parts": [], "asof": asof}
+
+    try:
+        if macd_state(wk["close"]) in ("bearish", "bearish_cross"):
+            parts.append("macd")
+    except Exception:
+        pass
+    try:
+        if spy_close is not None:
+            spy_wk = spy_close.resample("W-FRI").last().dropna()
+            if len(spy_wk) >= 14 and len(wk) >= 14:
+                stk = float(wk["close"].iloc[-1] / wk["close"].iloc[-14] - 1)
+                spy = float(spy_wk.iloc[-1] / spy_wk.iloc[-14] - 1)
+                if stk < spy:
+                    parts.append("rs")
+    except Exception:
+        pass
+    try:
+        slp = obv_slope(wk["close"], wk["volume"], window=10)
+        if not math.isnan(slp) and slp < 0:
+            parts.append("obv")
+    except Exception:
+        pass
+    try:
+        adx_now, pdi, ndi = directional_indicators(wk["high"], wk["low"], wk["close"])
+        if len(wk) >= 20:
+            adx_past, _, _ = directional_indicators(
+                wk["high"].iloc[:-4], wk["low"].iloc[:-4], wk["close"].iloc[:-4])
+            if (not math.isnan(adx_now) and not math.isnan(adx_past)
+                    and adx_past > adx_now and ndi > pdi):
+                parts.append("adx")
+    except Exception:
+        pass
+    return {"bearish": len(parts), "parts": parts, "asof": asof}
+
+
+def apply_weekly_tightener(plan: dict, health: dict) -> dict:
+    """If ≥2 weekly checks bearish, step trail_mult down one notch (floor 2.0).
+    Never loosens. Stores health on the plan either way."""
+    plan["health"] = health
+    if health["bearish"] >= 2:
+        steps = [m for m in TRAIL_MULT_STEPS if m < plan["trail_mult"]]
+        if steps:
+            plan["trail_mult"] = steps[0]
+    return plan
+
+
 def _weekly_rsi(close: pd.Series) -> float | None:
     """RSI(14) on weekly (Friday) closes. None if under 15 weeks of data or
     the series has no variance (a perfectly constant series carries no

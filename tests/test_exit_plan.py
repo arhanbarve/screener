@@ -3,6 +3,11 @@ import pandas as pd
 import pytest
 
 from src.exit_plan import init_plan, evaluate_day
+from src.exit_plan import weekly_health, apply_weekly_tightener
+
+
+def trend_df(n, start_price, end_price, **kw):
+    return make_df(list(np.linspace(start_price, end_price, n)), **kw)
 
 
 def make_df(closes, start="2026-01-02", spread=0.01, volume=1_000_000):
@@ -227,3 +232,37 @@ class TestInvariants:
         pos, events1 = evaluate_day(pos, up)
         pos, events2 = evaluate_day(pos, up)   # re-fire same date
         assert events1 and events2 == []
+
+
+class TestWeeklyTightener:
+    def test_healthy_uptrend_scores_low_and_keeps_mult(self):
+        df = trend_df(300, 50, 150)          # strong uptrend
+        spy = trend_df(300, 100, 110)["close"]  # weaker than stock
+        health = weekly_health(df, spy)
+        assert health["bearish"] < 2
+        plan = init_plan(df, 150.0)
+        plan2 = apply_weekly_tightener(plan, health)
+        assert plan2["trail_mult"] == 3.0
+
+    def test_deteriorating_tightens_one_step(self):
+        # up then rolling over: bearish weekly MACD + lagging SPY
+        closes = list(np.linspace(50, 150, 200)) + list(np.linspace(150, 110, 100))
+        df = make_df(closes)
+        spy = trend_df(300, 100, 130)["close"]
+        health = weekly_health(df, spy)
+        assert health["bearish"] >= 2
+        plan = init_plan(df, 110.0)
+        plan = apply_weekly_tightener(plan, health)
+        assert plan["trail_mult"] == 2.5
+        plan = apply_weekly_tightener(plan, health)
+        assert plan["trail_mult"] == 2.0
+        plan = apply_weekly_tightener(plan, health)
+        assert plan["trail_mult"] == 2.0   # floor, never below
+
+    def test_recovery_never_loosens(self):
+        df = trend_df(300, 50, 150)
+        spy = trend_df(300, 100, 110)["close"]
+        plan = init_plan(df, 150.0)
+        plan["trail_mult"] = 2.0
+        plan = apply_weekly_tightener(plan, weekly_health(df, spy))
+        assert plan["trail_mult"] == 2.0   # healthy again, but no loosening
