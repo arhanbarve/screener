@@ -52,12 +52,28 @@ if [ "${1:-}" != "--force" ] && [ -f "output/screen_${LATEST_NEEDED}.csv" ]; the
 fi
 
 echo "=== Screener run started: $(date) ===" >> "$LOG_FILE"
+STARTED_ISO=$(date +%Y-%m-%dT%H:%M:%S)
+STARTED_EPOCH=$(date +%s)
+
+# Capture the exit code instead of letting `set -e` abort: a failed run still has
+# to write run_status.json and fire the alert email.
+set +e
 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.run >> "$LOG_FILE" 2>&1
+RUN_RC=$?
+set -e
+
 echo "=== Screener run finished: $(date) ===" >> "$LOG_FILE"
 
-# Commit and push today's output so watchdog/remote monitors can see results
+DURATION=$(( $(date +%s) - STARTED_EPOCH ))
+/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.run_status \
+    --log "$LOG_FILE" --rc "$RUN_RC" --started "$STARTED_ISO" --duration "$DURATION" \
+    >> "$LOG_FILE" 2>&1 || echo "=== run_status failed (non-fatal) ===" >> "$LOG_FILE"
+
+# Commit and push today's output so watchdog/remote monitors can see results.
+# run_status.json is committed on failure too — that's how the cloud dashboard
+# reports a dead run instead of just going stale.
 cd "$SCREENER_DIR"
-COMMIT_PATHS="output/ positions.json data/fidelity/positions_data.json"
+COMMIT_PATHS="output/ positions.json data/fidelity/positions_data.json run_status.json"
 if git diff --quiet HEAD -- $COMMIT_PATHS && [ -z "$(git ls-files --others --exclude-standard $COMMIT_PATHS)" ]; then
     echo "=== No new output to commit ===" >> "$LOG_FILE"
 else
@@ -66,3 +82,6 @@ else
     git commit -m "chore(output): screener results $TODAY" >> "$LOG_FILE" 2>&1
     git push >> "$LOG_FILE" 2>&1 && echo "=== Output committed and pushed ===" >> "$LOG_FILE" || echo "=== git push failed (non-fatal) ===" >> "$LOG_FILE"
 fi
+
+# Surface the real result to launchd (`launchctl list` last-exit-status).
+exit $RUN_RC

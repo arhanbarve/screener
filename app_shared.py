@@ -2353,9 +2353,33 @@ def _current_stage(s: dict) -> int:
     return -1
 
 
+def _load_run_status() -> dict:
+    """Last run's outcome as recorded by run_screener.sh. This is the only run
+    signal that survives to the cloud deploy, where logs/ is gitignored."""
+    p = Path("run_status.json")
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
+
+
 def _run_history(limit: int = 10) -> list[dict]:
     """Chronological summary of the most recent screener runs (cron + manual)."""
     logs_dir = Path("logs")
+    if not logs_dir.exists():
+        # Cloud deploy: no logs to parse, fall back to the committed status file.
+        rs = _load_run_status()
+        if not rs:
+            return []
+        secs = rs.get("duration_secs") or 0
+        return [{
+            "date": rs.get("date", "—"),
+            "status": "COMPLETE" if rs.get("result") == "success" else "FAILED",
+            "duration": f"{secs//3600:02d}:{(secs%3600)//60:02d}:{secs%60:02d}",
+            "selected": rs.get("selected"),
+        }]
     dates: set[str] = set()
     for f in logs_dir.glob("run_*.log"):
         m = re.match(r"run_(\d{4}-\d{2}-\d{2})\.log$", f.name)
@@ -2426,7 +2450,11 @@ def _render_fidelity_and_history_status() -> None:
     _fid_msg    = str(_fid.get("message") or "")
     _now_hour   = datetime.now().hour
 
-    if _fid_date == today_str and _fid_result in ("success", "no_change"):
+    if not Path("logs").exists():
+        # Cloud deploy: logs/ is gitignored, so absence proves nothing. Say that
+        # instead of raising a false "hasn't launched" alarm.
+        fid_html = '<span style="color:var(--muted)">— LOCAL ONLY (no log access on cloud)</span>'
+    elif _fid_date == today_str and _fid_result in ("success", "no_change"):
         fid_html = (f'<span style="color:var(--bull);font-weight:700">✓ SYNCED</span> '
                     f'<span style="color:var(--dim);font-size:0.7rem">{_html.escape(_fid_msg)}</span>')
     elif _fid_date == today_str and _fid_result == "attempted":
@@ -2464,7 +2492,8 @@ def _render_fidelity_and_history_status() -> None:
             unsafe_allow_html=True,
         )
     else:
-        _hist_color = {"COMPLETE": "var(--bull)", "INCOMPLETE": "var(--accent)", "NO DATA": "var(--muted)"}
+        _hist_color = {"COMPLETE": "var(--bull)", "INCOMPLETE": "var(--accent)",
+                       "FAILED": "var(--bear)", "NO DATA": "var(--muted)"}
         hist_rows = []
         for h in history:
             color = _hist_color.get(h["status"], "var(--muted)")
@@ -2498,10 +2527,31 @@ def _render_monitor():
     _render_fidelity_and_history_status()
 
     if log_path is None:
-        st.markdown(
-            '<div style="font-family:var(--mono);font-size:1rem;color:var(--muted)">— NO RUN TODAY</div>',
-            unsafe_allow_html=True,
-        )
+        # No live log (quiet day, or the cloud deploy where logs/ is gitignored).
+        # run_status.json is the fallback signal, and the only way a failed run
+        # ever shows up here rather than silently reading as "no run".
+        _rs = _load_run_status()
+        if _rs.get("result") == "failed":
+            headline = (
+                f'<div style="font-family:var(--mono);font-size:1rem;color:var(--bear);font-weight:700">'
+                f'⚠ LAST RUN FAILED</div>'
+                f'<div style="font-family:var(--mono);font-size:0.7rem;color:var(--dim);margin-top:0.5rem">'
+                f'{_html.escape(str(_rs.get("date","—")))} · exit {_html.escape(str(_rs.get("exit_code","?")))} · '
+                f'{_html.escape(str(_rs.get("error") or "no error line captured"))}</div>'
+            )
+        elif _rs.get("result") == "success":
+            headline = (
+                f'<div style="font-family:var(--mono);font-size:1rem;color:var(--bull);font-weight:700">'
+                f'✓ LAST RUN OK</div>'
+                f'<div style="font-family:var(--mono);font-size:0.7rem;color:var(--dim);margin-top:0.5rem">'
+                f'{_html.escape(str(_rs.get("date","—")))} · '
+                f'{_html.escape(str(_rs.get("selected") or "—"))} selected · '
+                f'{_html.escape(str(_rs.get("duration_secs","?")))}s</div>'
+            )
+        else:
+            headline = ('<div style="font-family:var(--mono);font-size:1rem;color:var(--muted)">'
+                        '— NO RUN TODAY</div>')
+        st.markdown(headline, unsafe_allow_html=True)
         _out = sorted(Path("output").glob("screen_*.csv"), reverse=True)
         if _out:
             st.markdown(

@@ -39,6 +39,8 @@ BATCH_SIZE = 200
 HISTORY_DAYS = 420
 SPY_FETCH_RETRIES = 3
 SPY_FETCH_RETRY_DELAY = 5.0
+# How stale a cached SPY series may be before it's useless for relative strength.
+SPY_STALE_CACHE_MAX_HOURS = 240
 
 
 def _fetch_batch_yfinance(tickers: list[str], start: str | None = None, end: str | None = None) -> dict[str, pd.DataFrame]:
@@ -242,10 +244,17 @@ def fetch_all_prices(
                 time.sleep(SPY_FETCH_RETRY_DELAY)
         if not spy_df.empty:
             put_prices(db_path, "SPY", spy_df)
-        elif spy_cached is not None and not spy_cached.empty:
-            # Rate-limited: fall back to stale cache rather than hard-fail
-            logger.warning("[prices] SPY live fetch failed after retries — using stale cache")
-            spy_df = spy_cached
+        else:
+            # Yahoo outage: fall back to cache past its TTL rather than hard-fail.
+            # spy_cached is TTL-filtered and therefore None in exactly this case,
+            # so re-read with a wider window.
+            stale = get_prices(db_path, "SPY", ttl_hours=SPY_STALE_CACHE_MAX_HOURS)
+            if stale is not None and len(stale) >= 252:
+                logger.warning(
+                    f"[prices] SPY live fetch failed after retries — using stale cache "
+                    f"(last row {stale.index[-1].date()})"
+                )
+                spy_df = stale
     if spy_df is None or spy_df.empty:
         raise RuntimeError("Failed to fetch SPY — cannot compute relative strength")
 
