@@ -6,10 +6,10 @@ Sending reuses notify.send_email (Gmail SMTP, env-var credentials).
 import html as _html
 from datetime import date
 
+from src.exit_plan import health_label
 from src.notify import send_email
 
 _VERDICT_COLOR = {"SELL": "#ef4444", "TRIM": "#f59e0b", "HOLD": "#22c55e"}
-_MIN_HEALTH_WEEKS = 15  # weekly_health() in exit_plan.py treats fewer weeks as "never checked"
 
 _CSS = """
 body{background:#0b0d17;color:#e5e7eb;font-family:-apple-system,Segoe UI,sans-serif;margin:0;padding:24px}
@@ -46,23 +46,22 @@ def _wrap(title: str, body: str) -> str:
 
 
 def _health_badge(health: dict | None) -> str:
-    """Render the weekly-health bearish score. A check that threw (recorded
-    in health["errors"]) must not silently read as clean, and a position with
-    too little history for the weekly check (weeks < _MIN_HEALTH_WEEKS) has
-    never actually been scored — showing "0/4" for either would misrepresent
-    an unknown as a confident all-clear."""
+    """Render the weekly-health bearish score. The label text (what number
+    is shown) comes from src.exit_plan.health_label — the single source of
+    truth shared with the positions page (app_shared.py) so the two
+    surfaces can't disagree on the score. This function owns only the
+    email-specific markup/styling on top of that text."""
+    label = health_label(health)
     if not health:
-        return '<span class="mono">?/4</span>'
-    weeks = health.get("weeks") or 0
+        return f'<span class="mono">{label}</span>'
+    if label == "?/4":
+        return f'<span class="mono" title="short history">{label}</span>'
     errors = health.get("errors") or []
-    if weeks < _MIN_HEALTH_WEEKS:
-        return '<span class="mono" title="short history">?/4</span>'
-    bearish = health.get("bearish", 0)
     if errors:
         err_str = ",".join(_html.escape(e) for e in errors)
         return (f'<span class="mono" style="color:#f59e0b" '
-                f'title="checks errored: {err_str}">{bearish}/4&#42;</span>')
-    return f'<span class="mono">{bearish}/4</span>'
+                f'title="checks errored: {err_str}">{label}</span>')
+    return f'<span class="mono">{label}</span>'
 
 
 def _plan_row(pos: dict, not_evaluated: bool = False, bar_date: str | None = None,

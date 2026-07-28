@@ -1166,6 +1166,7 @@ from src.positions import (
     get_live_quote,
     load_positions,
 )
+from src.exit_plan import health_label
 from src.spy_analysis import compute_spy_regime
 from src.news import (
     get_market_news,
@@ -2014,6 +2015,7 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
     plan          = pos.get("plan") or {}
     not_evaluated = not plan
     verdict       = plan.get("verdict", "—")
+    verdict_reason = plan.get("verdict_reason")
     stop_level    = plan.get("stop_level")
     trims         = plan.get("trims_fired") or []
     health        = plan.get("health") or {}
@@ -2074,32 +2076,40 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
 
     top_c = {"SELL": "var(--bear)", "TRIM": "var(--wait)", "HOLD": "var(--bull)"}.get(verdict, "var(--muted)")
 
-    # Stop chip — distance measured off the live quote when we have one,
-    # else the plan's last evaluated close.
-    ref_price = live_price if live_price is not None else plan.get("last_close")
-    if stop_level is not None and ref_price:
-        dist = (ref_price - stop_level) / ref_price
+    # Stop chip — distance is always measured off the plan's last-close
+    # evaluation (plan["last_close"]), NEVER the live quote. This chip is a
+    # standing-plan number, not a live one: mixing in the live price here is
+    # exactly the bug this whole feature exists to remove — a mid-session dip
+    # would flip this chip red/negative while the verdict beside it, which is
+    # also frozen to last close, still says HOLD in green. Live price has its
+    # own place (the price/P&L display above) where it belongs.
+    plan_close = plan.get("last_close")
+    if stop_level is not None and plan_close:
+        dist = (plan_close - stop_level) / plan_close
         stop_color = "var(--bear)" if dist <= 0 else "var(--muted)"
-        stop_chip = _plan_chip(f'STOP ${stop_level:,.2f} ({dist:+.1%})', stop_color)
+        stop_chip = _plan_chip(f'STOP (close) ${stop_level:,.2f} ({dist:+.1%})', stop_color)
     else:
         stop_chip = _plan_chip("STOP —", "var(--muted)")
 
     trims_str   = "+".join(_html.escape(t) for t in trims) if trims else "none"
     trims_chip  = _plan_chip(f"TRIMS {trims_str}", "var(--wait)" if trims else "var(--muted)")
 
-    # Health chip mirrors src/exit_alerts.py's _health_badge: a check that
-    # errored, or a position too new for the weekly check to have run
-    # (weeks < _MIN_HEALTH_WEEKS), must read as unknown — never a confident "0/4".
+    # Health chip label comes from src.exit_plan.health_label — the single
+    # source of truth also used by src/exit_alerts.py's email digest, so the
+    # page and the email can never disagree on the score. (This used to
+    # hardcode "?/4*" whenever a check errored, discarding the real bearish
+    # count the email showed.) This block owns only the chip's color.
+    h_label  = health_label(health)
     h_weeks  = health.get("weeks") or 0
     h_errors = health.get("errors") or []
     if not health or h_weeks < _MIN_HEALTH_WEEKS:
-        health_chip = _plan_chip("HEALTH ?/4", "var(--muted)")
+        health_chip = _plan_chip(f"HEALTH {h_label}", "var(--muted)")
     elif h_errors:
-        health_chip = _plan_chip("HEALTH ?/4*", "var(--wait)")
+        health_chip = _plan_chip(f"HEALTH {h_label}", "var(--wait)")
     else:
         bearish = health.get("bearish", 0)
         h_color = "var(--bear)" if bearish >= 3 else ("var(--wait)" if bearish >= 1 else "var(--bull)")
-        health_chip = _plan_chip(f"HEALTH {bearish}/4", h_color)
+        health_chip = _plan_chip(f"HEALTH {h_label}", h_color)
 
     # Earnings-proximity risk chip — informational, NOT part of the verdict.
     earn_chip = ""
@@ -2125,21 +2135,37 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
             f'</div>'
         )
     elif verdict == "SELL":
+        # verdict_reason (persisted by evaluate_day at the moment it set this
+        # verdict) is the same trigger the email carries — stop-breach,
+        # floor-breach, or 50-day trend-break each read differently, and
+        # without it the banner can't say which one fired (e.g. a trend-break
+        # SELL pairs with a positive, reassuring stop-chip distance, so the
+        # reason is the only place the user learns why this is a SELL at all).
+        sell_reason_html = (
+            f'<div style="font-family:var(--mono);font-size:0.62rem;color:var(--muted);'
+            f'margin-top:4px">{_html.escape(verdict_reason)}</div>'
+        ) if verdict_reason else ""
         exit_html = (
             f'<div style="margin-top:12px;padding:10px 14px;background:var(--bear-dim);'
             f'border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-sm);'
             f'animation:shockwave 0.55s ease-out 0.25s 1 both">'
             f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
             f'color:var(--bear);letter-spacing:0.08em">SELL — exit remaining position at next open</span>'
+            f'{sell_reason_html}'
             f'</div>'
         )
     elif verdict == "TRIM":
         rungs = f" ({trims_str})" if trims else ""
+        trim_reason_html = (
+            f'<div style="font-family:var(--mono);font-size:0.62rem;color:var(--muted);'
+            f'margin-top:4px">{_html.escape(verdict_reason)}</div>'
+        ) if verdict_reason else ""
         exit_html = (
             f'<div style="margin-top:12px;padding:10px 14px;background:rgba(245,158,11,0.08);'
             f'border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius-sm)">'
             f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
             f'color:var(--wait);letter-spacing:0.08em">TRIM — sell 1/3 at next open{rungs}</span>'
+            f'{trim_reason_html}'
             f'</div>'
         )
 

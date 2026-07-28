@@ -46,6 +46,7 @@ def init_plan(df: pd.DataFrame, entry_price: float) -> dict:
         "trims_fired": [],
         "below_50d_streak": 0,
         "verdict": "HOLD",
+        "verdict_reason": None,
         "health": None,
         "days_to_earnings": None,
         "last_eval": None,
@@ -105,6 +106,7 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
             # the normal SELL trigger checks below so this bar only ends
             # HOLD when no SELL condition is true for it.
             plan["verdict"] = "HOLD"
+            plan["verdict_reason"] = None
         else:
             plan["last_eval"], plan["last_close"] = today, round(price, 4)
             return pos, events
@@ -119,6 +121,7 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
         sell_reason = f"{plan['below_50d_streak']} consecutive closes below 50-day SMA {s50:.2f}"
     if sell_reason:
         plan["verdict"] = "SELL"
+        plan["verdict_reason"] = sell_reason
         events.append({"ticker": pos["ticker"], "type": "SELL", "reason": sell_reason,
                        "instruction": "Sell entire remaining position at next open."})
         plan["last_eval"], plan["last_close"] = today, round(price, 4)
@@ -156,6 +159,7 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
                            "instruction": f"Sell {TRIM_FRACTION} of position at next open.",})
 
     plan["verdict"] = "TRIM" if events else "HOLD"
+    plan["verdict_reason"] = "; ".join(e["reason"] for e in events) if events else None
     plan["last_eval"], plan["last_close"] = today, round(price, 4)
     return pos, events
 
@@ -227,6 +231,31 @@ def apply_weekly_tightener(plan: dict, health: dict) -> dict:
         if steps:
             plan["trail_mult"] = steps[0]
     return plan
+
+
+_MIN_HEALTH_WEEKS = 15  # weekly_health() treats fewer weeks as "never checked"
+
+
+def health_label(health: dict | None) -> str:
+    """Weekly-health score as plain text, shared by the digest email
+    (src/exit_alerts.py) and the positions page (app_shared.py) so the two
+    surfaces can never disagree about what a position's health chip says.
+
+    '?/4' — no health recorded, or too little history for the weekly check
+    to have run yet (weeks < _MIN_HEALTH_WEEKS): unknown, not a clean 0/4.
+    'N/4' — scored cleanly, N of 4 checks bearish.
+    'N/4*' — scored, but one or more checks threw (health["errors"] is
+    non-empty): the asterisk flags an unknown-quality read WITHOUT hiding
+    the real bearish count that the other checks did produce.
+    """
+    if not health:
+        return "?/4"
+    weeks = health.get("weeks") or 0
+    if weeks < _MIN_HEALTH_WEEKS:
+        return "?/4"
+    bearish = health.get("bearish", 0)
+    errors = health.get("errors") or []
+    return f"{bearish}/4*" if errors else f"{bearish}/4"
 
 
 def bootstrap_position(pos: dict, df: pd.DataFrame) -> dict:
@@ -359,6 +388,12 @@ def run_daily_eval(send_emails: bool = True, today: date | None = None) -> dict:
                 if catchup_events:
                     pos["plan"].setdefault("pending_notify", []).extend(catchup_events)
                     all_events.extend(catchup_events)
+                    # Keep the page's verdict_reason in lockstep with the
+                    # catch-up wording the user is emailed — otherwise the
+                    # replay-derived reason (from whichever historical bar
+                    # first tripped it) could read differently than what the
+                    # email says just went out.
+                    pos["plan"]["verdict_reason"] = "; ".join(e["reason"] for e in catchup_events)
 
             pos, events = evaluate_day(pos, df)
 

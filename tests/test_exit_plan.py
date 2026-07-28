@@ -7,6 +7,7 @@ import pytest
 from src.exit_plan import init_plan, evaluate_day
 from src.exit_plan import weekly_health, apply_weekly_tightener
 from src.exit_plan import bootstrap_position, run_daily_eval
+from src.exit_plan import health_label
 
 
 def trend_df(n, start_price, end_price, **kw):
@@ -299,6 +300,31 @@ class TestWeeklyTightener:
         assert "obv" not in health["parts"]
         assert health["bearish"] == 3   # macd, rs, adx still fired
         assert set(health["parts"]) == {"macd", "rs", "adx"}
+
+
+class TestHealthLabel:
+    """health_label() is the single source of truth shared by the digest
+    email (src/exit_alerts.py) and the positions page (app_shared.py) — both
+    callers must show the same score text."""
+
+    def test_none_health_is_unknown(self):
+        assert health_label(None) == "?/4"
+
+    def test_short_history_is_unknown(self):
+        health = {"bearish": 0, "parts": [], "errors": [], "weeks": 8, "asof": "2026-01-02"}
+        assert health_label(health) == "?/4"
+
+    def test_errors_keep_the_real_bearish_count_with_asterisk(self):
+        # A check that threw must not hide the count the other checks did
+        # produce — this is the exact bug that made the page show a bare
+        # "?/4*" while the email showed the real number.
+        health = {"bearish": 3, "parts": ["macd", "rs", "adx"], "errors": ["obv"],
+                   "weeks": 20, "asof": "2026-01-02"}
+        assert health_label(health) == "3/4*"
+
+    def test_clean_count_has_no_asterisk(self):
+        health = {"bearish": 1, "parts": ["macd"], "errors": [], "weeks": 20, "asof": "2026-01-02"}
+        assert health_label(health) == "1/4"
 
 
 class TestBootstrap:
