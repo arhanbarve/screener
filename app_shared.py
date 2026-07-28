@@ -1,6 +1,5 @@
 import html as _html
 import json
-import math
 import re
 import sys
 
@@ -1164,9 +1163,6 @@ def _inject_js_animations() -> None:
 
 
 from src.positions import (
-    compute_exit_signals,
-    days_to_next_earnings,
-    fetch_ohlcv,
     get_live_quote,
     load_positions,
 )
@@ -1249,32 +1245,15 @@ def setup_page(page_id: str, title: str = "Screener") -> None:
 # ── Cached data loaders ───────────────────────────────────────────────────────
 
 @st.cache_data(ttl=900)
-def _cached_position_data(ticker: str) -> tuple[dict, float | None, float | None]:
-    df = fetch_ohlcv(ticker, days=300)
-    spy_df = fetch_ohlcv("SPY", days=300)
-    spy_close = spy_df["close"] if not spy_df.empty and "close" in spy_df.columns else None
-    signals = compute_exit_signals(df, spy_close=spy_close,
-                                   days_to_earn=days_to_next_earnings(ticker))
-    price, prev_close = get_live_quote(ticker)
-    return signals, price, prev_close
-
-
-@st.cache_data(ttl=900)
 def _batch_position_data(tickers: tuple[str, ...]) -> tuple[dict[str, tuple[dict, float | None, float | None]], datetime]:
     import concurrent.futures
 
-    spy_df = fetch_ohlcv("SPY", days=300)
-    spy_close = spy_df["close"] if not spy_df.empty and "close" in spy_df.columns else None
-
     def _fetch_one(ticker: str) -> tuple[str, tuple[dict, float | None, float | None]]:
         try:
-            df = fetch_ohlcv(ticker, days=300)
-            signals = compute_exit_signals(df, spy_close=spy_close,
-                                           days_to_earn=days_to_next_earnings(ticker))
             price, prev_close = get_live_quote(ticker)
             if price is None:
                 print(f"[positions] live quote fetch returned no price for {ticker} — falling back to Fidelity snapshot", flush=True)
-            return ticker, (signals, price, prev_close)
+            return ticker, ({}, price, prev_close)
         except Exception as e:
             print(f"[positions] live quote fetch failed for {ticker}: {e!r}", flush=True)
             return ticker, ({}, None, None)
@@ -1961,22 +1940,16 @@ def _render_regime() -> None:
 
 # ── Open Positions ────────────────────────────────────────────────────────────
 
-def _signal_badge(label: str, triggered: bool | None, val: float | None = None) -> str:
-    if triggered is None:
-        dot_c, lbl_c = "var(--dim)", "var(--dim)"
-    elif triggered:
-        dot_c, lbl_c = "var(--bear)", "var(--bear)"
-    else:
-        dot_c, lbl_c = "var(--bull)", "var(--muted)"
-    val_str = ""
-    if val is not None and not (isinstance(val, float) and math.isnan(val)):
-        val_str = f" {val:.0f}"
+_MIN_HEALTH_WEEKS = 15  # mirrors weekly_health() in src/exit_plan.py + src/exit_alerts.py
+
+
+def _plan_chip(text: str, color: str = "var(--muted)") -> str:
     return (
         f'<span style="display:inline-flex;align-items:center;gap:5px;'
         f'padding:5px 10px;border-radius:var(--radius-sm);background:var(--surface-2);'
         f'border:1px solid var(--border)">'
-        f'<span style="width:7px;height:7px;border-radius:50%;background:{dot_c};flex-shrink:0"></span>'
-        f'<span style="font-family:var(--mono);font-size:0.65rem;color:{lbl_c}">{label}{val_str}</span>'
+        f'<span style="width:7px;height:7px;border-radius:50%;background:{color};flex-shrink:0"></span>'
+        f'<span style="font-family:var(--mono);font-size:0.65rem;color:{color}">{text}</span>'
         f'</span>'
     )
 
@@ -2036,12 +2009,16 @@ def _live_fid_metrics(fid: dict, live_price: float | None, prev_close: float | N
 
 def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float | None, float | None] | None = None) -> None:
     ticker  = pos["ticker"]
-    signals, live_price, prev_close = cached if cached is not None else _cached_position_data(ticker)
-    grade      = signals.get("grade", "HOLD")
-    soft_score = signals.get("soft_score", 0)
-    soft_max   = signals.get("soft_max", 12)
-    hard_exit  = bool(signals.get("hard_exit"))
-    hard_reasons = signals.get("hard_reasons") or []
+    _, live_price, prev_close = cached if cached is not None else ({}, None, None)
+
+    plan          = pos.get("plan") or {}
+    not_evaluated = not plan
+    verdict       = plan.get("verdict", "—")
+    stop_level    = plan.get("stop_level")
+    trims         = plan.get("trims_fired") or []
+    health        = plan.get("health") or {}
+    dte           = plan.get("days_to_earnings")
+    last_eval     = plan.get("last_eval") or "never"
 
     entry_price = pos.get("entry_price", 0)
     entry_date  = pos.get("entry_date", "")
@@ -2095,32 +2072,36 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
         gl_row   = ""
         desc_html = ""
 
-    top_c = {
-        "STRONG EXIT": "var(--bear)", "TRIM": "var(--wait)",
-        "WATCH": "var(--muted)", "HOLD": "var(--bull)",
-    }.get(grade, "var(--bull)")
+    top_c = {"SELL": "var(--bear)", "TRIM": "var(--wait)", "HOLD": "var(--bull)"}.get(verdict, "var(--muted)")
 
-    # Hard-tier badges (trend-confirmed vol stop, death-cross regime) shown
-    # first, then the weighted soft signals.
-    hard_badges = (
-        _signal_badge("STOP",  signals.get("chandelier"))
-        + " " + _signal_badge("DEATH✗", signals.get("death_cross"))
-    )
-    soft_badges = (
-        _signal_badge("MACD",  signals.get("macd"))
-        + " " + _signal_badge("SMA50", signals.get("sma50_break"))
-        + " " + _signal_badge("SMA20", signals.get("sma20_break"))
-        + " " + _signal_badge("RSI",   signals.get("rsi"),   signals.get("rsi_val"))
-        + " " + _signal_badge("Stoch", signals.get("stoch"), signals.get("stoch_k"))
-        + " " + _signal_badge("MFI",   signals.get("mfi"),   signals.get("mfi_val"))
-        + " " + _signal_badge("OBV",   signals.get("obv_dist"))
-        + " " + _signal_badge("ADX",   signals.get("adx"),   signals.get("adx_val"))
-        + " " + _signal_badge("BB",    signals.get("bb_blowoff"))
-        + " " + _signal_badge("RS",    signals.get("rs_decay"))
-    )
+    # Stop chip — distance measured off the live quote when we have one,
+    # else the plan's last evaluated close.
+    ref_price = live_price if live_price is not None else plan.get("last_close")
+    if stop_level is not None and ref_price:
+        dist = (ref_price - stop_level) / ref_price
+        stop_color = "var(--bear)" if dist <= 0 else "var(--muted)"
+        stop_chip = _plan_chip(f'STOP ${stop_level:,.2f} ({dist:+.1%})', stop_color)
+    else:
+        stop_chip = _plan_chip("STOP —", "var(--muted)")
 
-    # Earnings-proximity risk chip — informational, NOT part of the sell score.
-    dte = signals.get("days_to_earnings")
+    trims_str   = "+".join(_html.escape(t) for t in trims) if trims else "none"
+    trims_chip  = _plan_chip(f"TRIMS {trims_str}", "var(--wait)" if trims else "var(--muted)")
+
+    # Health chip mirrors src/exit_alerts.py's _health_badge: a check that
+    # errored, or a position too new for the weekly check to have run
+    # (weeks < _MIN_HEALTH_WEEKS), must read as unknown — never a confident "0/4".
+    h_weeks  = health.get("weeks") or 0
+    h_errors = health.get("errors") or []
+    if not health or h_weeks < _MIN_HEALTH_WEEKS:
+        health_chip = _plan_chip("HEALTH ?/4", "var(--muted)")
+    elif h_errors:
+        health_chip = _plan_chip("HEALTH ?/4*", "var(--wait)")
+    else:
+        bearish = health.get("bearish", 0)
+        h_color = "var(--bear)" if bearish >= 3 else ("var(--wait)" if bearish >= 1 else "var(--bull)")
+        health_chip = _plan_chip(f"HEALTH {bearish}/4", h_color)
+
+    # Earnings-proximity risk chip — informational, NOT part of the verdict.
     earn_chip = ""
     if isinstance(dte, (int, float)) and 0 <= dte <= 14:
         earn_chip = (
@@ -2132,29 +2113,43 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
             f'</span>'
         )
 
-    badges = hard_badges + " " + soft_badges + (" " + earn_chip if earn_chip else "")
+    badges = stop_chip + " " + trims_chip + " " + health_chip + (" " + earn_chip if earn_chip else "")
 
     exit_html = ""
-    if hard_exit or grade == "STRONG EXIT":
-        detail = "; ".join(hard_reasons) if hard_reasons else f"soft score {soft_score}/{soft_max}"
+    if not_evaluated:
+        exit_html = (
+            f'<div style="margin-top:12px;padding:10px 14px;background:var(--surface-2);'
+            f'border:1px solid var(--border);border-radius:var(--radius-sm)">'
+            f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
+            f'color:var(--muted);letter-spacing:0.08em">NOT YET EVALUATED — awaiting first nightly close</span>'
+            f'</div>'
+        )
+    elif verdict == "SELL":
         exit_html = (
             f'<div style="margin-top:12px;padding:10px 14px;background:var(--bear-dim);'
             f'border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-sm);'
             f'animation:shockwave 0.55s ease-out 0.25s 1 both">'
             f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
-            f'color:var(--bear);letter-spacing:0.08em">STRONG EXIT — {_html.escape(detail)}</span>'
+            f'color:var(--bear);letter-spacing:0.08em">SELL — exit remaining position at next open</span>'
             f'</div>'
         )
-    elif grade == "TRIM":
+    elif verdict == "TRIM":
+        rungs = f" ({trims_str})" if trims else ""
         exit_html = (
             f'<div style="margin-top:12px;padding:10px 14px;background:rgba(245,158,11,0.08);'
             f'border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius-sm)">'
             f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
-            f'color:var(--wait);letter-spacing:0.08em">TRIM — soft score {soft_score}/{soft_max}</span>'
+            f'color:var(--wait);letter-spacing:0.08em">TRIM — sell 1/3 at next open{rungs}</span>'
             f'</div>'
         )
 
     card_s = f"background:var(--surface-1);border:1px solid var(--border);border-top:2px solid {top_c};border-radius:var(--radius-lg);padding:18px;margin-bottom:10px;position:relative;overflow:hidden"
+
+    verdict_line = (
+        f'<div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);letter-spacing:0.09em;margin-bottom:8px">NOT YET EVALUATED</div>'
+        if not_evaluated else
+        f'<div style="font-family:var(--mono);font-size:0.55rem;color:{top_c};letter-spacing:0.09em;margin-bottom:8px">VERDICT {_html.escape(str(verdict))} · evaluated {_html.escape(str(last_eval))}</div>'
+    )
 
     # All HTML on single lines — Streamlit's markdown parser treats 4+ leading
     # spaces as a code block, so indented multi-line HTML breaks rendering.
@@ -2174,7 +2169,7 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
         f'</div>'
         f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);margin-bottom:6px">{_html.escape(meta_row)}</div>'
         f'<div style="font-family:var(--mono);font-size:0.6rem;margin-bottom:10px">{gl_row}</div>'
-        f'<div style="font-family:var(--mono);font-size:0.55rem;color:{top_c};letter-spacing:0.09em;margin-bottom:8px">EXIT {_html.escape(grade)} · soft {soft_score}/{soft_max}</div>'
+        f'{verdict_line}'
         f'<div style="display:flex;flex-wrap:wrap;gap:6px">{badges}</div>'
         f'{exit_html}'
         f'</div>'
@@ -2227,15 +2222,19 @@ def _render_positions() -> None:
         unsafe_allow_html=True,
     )
 
+    # Rank by the standing plan's verdict: SELL first, then TRIM, then HOLD.
+    # A position with no plan yet (never evaluated by the nightly job) gets
+    # its own bucket below HOLD — it must not be conflated with an actual
+    # HOLD verdict, which is a real, evaluated "stay in" decision.
+    _order = {"SELL": 2, "TRIM": 1, "HOLD": 0}
     enriched = []
     for p in positions:
-        signals, _, _ = batch.get(p["ticker"], ({}, None, None))
-        # Rank: hard exits float to the top, then by weighted soft score.
-        rank = (100 if signals.get("hard_exit") else 0) + signals.get("soft_score", 0)
-        enriched.append({**p, "_score": rank, "_grade": signals.get("grade", "HOLD")})
+        plan = p.get("plan") or {}
+        v = plan.get("verdict") if plan else "UNEVALUATED"
+        enriched.append({**p, "_score": _order.get(v, -1), "_grade": v})
     enriched.sort(key=lambda x: x["_score"], reverse=True)
 
-    exits = sum(1 for e in enriched if e["_grade"] == "STRONG EXIT")
+    exits = sum(1 for e in enriched if e["_grade"] == "SELL")
     exit_cls = "bear" if exits > 0 else ""
 
     # Portfolio totals recomputed from live quotes (falls back to Fidelity snapshot per-position)
