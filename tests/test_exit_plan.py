@@ -133,15 +133,30 @@ class TestSell:
 
 
 class TestTrim:
+    # Ramp to +21% over 25 sessions rather than the plan's original
+    # single-day 100 -> 121 jump. Two separate things go wrong with a
+    # single-day jump (or a perfectly monotonic multi-day replacement):
+    #   1. It trips the blowoff burst rule too (>3xATR within 5 sessions —
+    #      3xATR is far smaller than a 20%+ move for this fixture's vol),
+    #      firing a second TRIM alongside derisk.
+    #   2. A monotonic ramp has zero down weeks in its weekly resample, so
+    #      rsi_14 hits its own zero-avg-loss branch and reports a degenerate
+    #      RSI of 100 (formula edge case, not a real overbought read) —
+    #      firing blowoff again, this time via the "overheated" path.
+    # This ramp rises to 114 by day 10, pulls back to 106 by day 15 (a
+    # genuine down week — real weekly RSI ~78, under the 80 threshold), then
+    # climbs to 121 by day 24 and flattens near the end so the last 5-session
+    # window stays under 3xATR. Net effect: only the derisk rung fires.
+    _DERISK_RAMP = list(np.interp(
+        np.arange(25),
+        [0, 5, 10, 15, 20, 24],
+        [101.0, 108.0, 114.0, 106.0, 120.0, 121.0],
+    ))
+
     def test_derisk_fires_once_at_20pct_and_moves_stop_to_breakeven(self):
         df = flat_df(80)
         pos = entry_pos(df)
-        # Ramp to +21% over 20 sessions rather than a single-day teleport: a
-        # one-day +21% jump also trips the blowoff burst rule (>3xATR within
-        # 5 sessions, since 3xATR << 21 for this fixture's vol), which would
-        # confound the "derisk fires alone" assertion below. Spread over 20
-        # sessions, the 5-day-window move (~5.25) stays under 3xATR (~6.6).
-        ramp = list(np.linspace(100.0, 121.0, 21))[1:]
+        ramp = self._DERISK_RAMP
         up = make_df([100.0] * 80 + ramp)
         pos, events = evaluate_day(pos, up)
         assert pos["plan"]["verdict"] == "TRIM"
@@ -198,6 +213,9 @@ class TestInvariants:
         for _ in range(60):
             price = max(50.0, price * float(rng.normal(1.0, 0.02)))
             closes.append(round(price, 2))
+            # replay=True so a SELL triggered by this random walk can clear
+            # and re-enter HOLD; stop_level must still never decrease across
+            # that transition (the ratchet math itself is replay-agnostic).
             pos, _ = evaluate_day(pos, make_df(closes), replay=True)
             assert pos["plan"]["stop_level"] >= prev_stop - 1e-9
             prev_stop = pos["plan"]["stop_level"]

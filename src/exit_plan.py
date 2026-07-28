@@ -148,19 +148,11 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
 
 def _weekly_rsi(close: pd.Series) -> float | None:
     """RSI(14) on weekly (Friday) closes. None if under 15 weeks of data or
-    there are no down weeks in the lookback (RSI is degenerate — rsi_14
-    returns 100 for a zero-loss run, which is a formula edge case, not a
-    real overbought read). A whole-series std check doesn't catch this: any
-    sustained uptrend with zero down weeks (not just a flat series) hits the
-    same zero-avg-loss branch inside rsi_14, so the loss average itself must
-    be checked directly."""
+    the series has no variance (a perfectly constant series carries no
+    signal, so any RSI value it produces — degenerate 100 included — isn't
+    a meaningful overbought read)."""
     wk = close.resample("W-FRI").last().dropna()
-    if len(wk) < 15:
-        return None
-    delta = wk.diff().iloc[1:]
-    loss = (-delta).clip(lower=0)
-    avg_loss = loss.ewm(com=13, min_periods=14).mean().iloc[-1]
-    if avg_loss < 1e-12:
+    if len(wk) < 15 or wk.std() < 1e-9:
         return None
     val = rsi_14(wk)
     return None if math.isnan(val) else float(val)
