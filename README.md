@@ -47,6 +47,18 @@ Output is a `.md` file and `.csv` file written to `output/`, plus a summary prin
 
 ---
 
+## Exiting: the standing exit plan
+
+Screening decides what to buy; a separate engine (`src/exit_plan.py`) decides when to sell. Open positions in `positions.json` are evaluated **once per day on the closing price** — not on page load — and each carries a persisted plan anchored to its own entry, risk unit, and peak.
+
+- **SELL** on a close below the trailing stop (`peak_close` − mult × ATR14), a close below the max-loss floor (entry − 2×ATR14, ratcheting to breakeven after the first trim), or **3+ consecutive** closes below the 50-day SMA.
+- **TRIM** on either of two rungs, each firing at most once ever and each meaning sell one third: de-risk at +2R or +20%, and blowoff extension.
+- A **weekly** health check (MACD, RS vs SPY, OBV, ADX on weekly bars) can only *tighten* the trailing multiplier — never loosen it, never sell on its own.
+
+Stops only ratchet up, trims are append-only, and a SELL is terminal, so a verdict cannot flip back and forth with day-to-day market moves. `src/exit_alerts.py` emails the instruction and its reason the day it fires, plus a daily digest; positions whose data was stale or failed to fetch are reported as not evaluated rather than shown with a stale verdict. See `STRATEGY.md` §5.1 for the full specification.
+
+---
+
 ## Output
 
 ### Terminal
