@@ -325,6 +325,153 @@ class TestBootstrap:
         pos = bootstrap_position(pos, df)
         assert pos["plan"]["verdict"] != "SELL"   # replay clears historical breach
 
+    def test_backfill_ends_sell_when_trend_break_survives_a_cleared_price_sell(self):
+        # Day 1 after entry: crash through the max-loss floor -> fresh SELL.
+        # Day 2: partial recovery, still under the (unmoved) stop -> stays SELL.
+        # Day 3: recovers just above the stop_level (clears the price-based
+        # SELL under replay) while ALSO closing below the 50-day SMA for the
+        # 3rd straight day. The clear must not skip the trend-break check for
+        # that same bar -- this is the SPY case from the dry-run: a price
+        # recovery cleared the SELL while the trend-break condition, which is
+        # genuinely true on that final bar, went unexamined.
+        closes = [100.0] * 80 + [80.0, 95.0, 99.0]
+        df = make_df(closes)
+        entry_date = df.index[79].strftime("%Y-%m-%d")
+        pos = {"ticker": "TEST", "entry_date": entry_date, "entry_price": 100.0}
+        pos = bootstrap_position(pos, df)
+        plan = pos["plan"]
+        assert plan["below_50d_streak"] >= 3
+        assert plan["last_close"] > plan["stop_level"]   # price-based SELL did clear
+        assert plan["verdict"] == "SELL"   # but the trend-break condition still holds
+
+
+class TestBootstrapCatchup:
+    """DEFECT 1: a bootstrap that ends SELL (or a fresh TRIM on the final
+    replayed bar) must actually reach the user via run_daily_eval, not just
+    sit silently in the plan. These drive run_daily_eval end-to-end with
+    monkeypatched src.positions calls and a fake src.exit_alerts module,
+    following the pattern in TestPendingNotify."""
+
+    def test_bootstrap_ending_sell_emits_one_catchup_event_and_reaches_action_email(self, monkeypatch):
+        import sys
+        import types
+
+        # Entry at 100 over 80 flat bars, then a single bar that crashes
+        # through the max-loss floor -> bootstrap's only replay day fires a
+        # fresh SELL and it never clears, so the plan ends SELL.
+        crash_df = make_df([100.0] * 80 + [70.0])
+        entry_date = crash_df.index[79].strftime("%Y-%m-%d")
+        positions = [{"ticker": "AAA", "entry_date": entry_date, "entry_price": 100.0}]  # no "plan" -> bootstrap runs
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            if ticker == "AAA":
+                return crash_df
+            if ticker == "SPY":
+                return trend_df(300, 100, 110)
+            return pd.DataFrame()
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: None)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+
+        captured = {"events": None}
+
+        def fake_send_action_alert(events, positions):
+            captured["events"] = list(events)
+
+        def fake_send_daily_digest(positions, skipped, stale=None, errored=None):
+            pass
+
+        fake_module = types.ModuleType("src.exit_alerts")
+        fake_module.send_action_alert = fake_send_action_alert
+        fake_module.send_daily_digest = fake_send_daily_digest
+        monkeypatch.setitem(sys.modules, "src.exit_alerts", fake_module)
+
+        today = crash_df.index[-1].date()
+        result = run_daily_eval(send_emails=True, today=today)
+
+        assert positions[0]["plan"]["verdict"] == "SELL"
+        assert len(result["events"]) == 1
+        assert result["events"][0]["ticker"] == "AAA"
+        assert result["events"][0]["type"] == "SELL"
+        assert "history" in result["events"][0]["reason"]
+        assert "70.00" in result["events"][0]["reason"]   # concrete last close
+
+        # reached the action email
+        assert captured["events"], "the catch-up SELL must reach send_action_alert"
+        assert captured["events"][0]["type"] == "SELL"
+
+        # and pending_notify cleared after the successful send (same
+        # persist/clear contract as any other event)
+        assert positions[0]["plan"]["pending_notify"] == []
+
+    def test_bootstrap_ending_hold_emits_no_catchup_event(self, monkeypatch):
+        import sys
+        import types
+
+        # A clean winner: modest, steady gain with no stop breach, no trim
+        # rung, no trend break. Short history (< 15 weeks) so the weekly-RSI
+        # blowoff check can't fire spuriously on a degenerate read.
+        winner_df = make_df([100.0] * 20 + [101, 101.5, 102, 102.5, 103, 103,
+                                             103.5, 104, 104.5, 105])
+        entry_date = winner_df.index[19].strftime("%Y-%m-%d")
+        positions = [{"ticker": "BBB", "entry_date": entry_date, "entry_price": 100.0}]
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            if ticker == "BBB":
+                return winner_df
+            if ticker == "SPY":
+                return trend_df(300, 100, 110)
+            return pd.DataFrame()
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: None)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+
+        captured = {"events": None}
+
+        def fake_send_action_alert(events, positions):
+            captured["events"] = list(events)
+
+        def fake_send_daily_digest(positions, skipped, stale=None, errored=None):
+            pass
+
+        fake_module = types.ModuleType("src.exit_alerts")
+        fake_module.send_action_alert = fake_send_action_alert
+        fake_module.send_daily_digest = fake_send_daily_digest
+        monkeypatch.setitem(sys.modules, "src.exit_alerts", fake_module)
+
+        today = winner_df.index[-1].date()
+        result = run_daily_eval(send_emails=True, today=today)
+
+        assert positions[0]["plan"]["verdict"] == "HOLD"
+        assert result["events"] == []
+        assert positions[0]["plan"]["pending_notify"] == []
+        assert captured["events"] is None, "no events -> send_action_alert must not even be called"
+
+    def test_bootstrap_ending_trim_on_final_bar_emits_a_catchup_event(self):
+        # A derisk rung that fires on the LAST replayed bar specifically is
+        # freshly actionable (unlike one that fired months earlier and is
+        # merely a trims_fired state record) -- see report for the decision
+        # to also catch this up.
+        ramp = list(np.linspace(100.0, 109.0, 5))   # ATR~2 -> 2R=+8 hits on the way up
+        df = make_df([100.0] * 80 + ramp)
+        entry_date = df.index[79].strftime("%Y-%m-%d")
+        pos = {"ticker": "AAA", "entry_date": entry_date, "entry_price": 100.0}
+        pos = bootstrap_position(pos, df)
+        assert pos["plan"]["verdict"] == "TRIM"
+        assert "derisk" in pos["plan"]["trims_fired"]
+
+        from src.exit_plan import _bootstrap_catchup_events
+        final_events = pos.pop("_bootstrap_final_events")
+        events = _bootstrap_catchup_events(pos, final_events)
+        assert len(events) == 1
+        assert events[0]["type"] == "TRIM"
+        assert "history" in events[0]["reason"]
+        assert "derisk" in events[0]["reason"] or "de-risk" in events[0]["reason"]
+
 
 class TestRunDailyEval:
     def test_bootstrap_skip_save_and_evaluated_count(self, monkeypatch):

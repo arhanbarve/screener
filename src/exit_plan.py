@@ -96,10 +96,18 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
 
     # ── terminal SELL handling ─────────────────────────────────────────────
     if plan["verdict"] == "SELL":
-        if replay and price > plan["stop_level"]:
-            plan["verdict"] = "HOLD"   # held through it; plan resumes
-        plan["last_eval"], plan["last_close"] = today, round(price, 4)
-        return pos, events
+        cleared = replay and price > plan["stop_level"]
+        if cleared:
+            # Held through it; plan resumes — but do NOT early-return here.
+            # Clearing one (price-based) SELL condition says nothing about
+            # whether a *different* SELL condition (trend-break streak, or a
+            # fresh stop breach) also holds on this same bar. Fall through to
+            # the normal SELL trigger checks below so this bar only ends
+            # HOLD when no SELL condition is true for it.
+            plan["verdict"] = "HOLD"
+        else:
+            plan["last_eval"], plan["last_close"] = today, round(price, 4)
+            return pos, events
 
     # ── SELL triggers ────────────────────────────────────────────────────
     sell_reason = None
@@ -223,17 +231,80 @@ def apply_weekly_tightener(plan: dict, health: dict) -> dict:
 
 def bootstrap_position(pos: dict, df: pd.DataFrame) -> dict:
     """One-time backfill: init plan at entry, replay history day-by-day.
-    Events are discarded (trims get marked, no emails). Replay mode clears
-    historical SELLs the user held through."""
+    Historical events are discarded (trims get marked, no emails) — the user
+    must never be emailed a trim/sell that fired months ago. Replay mode
+    clears historical SELLs the user held through.
+
+    The final replayed bar's events are kept, transiently, on
+    `pos["_bootstrap_final_events"]` (not part of the persisted plan) so the
+    caller (run_daily_eval) can tell whether today's standing verdict is
+    freshly actionable — as opposed to a stale replay artifact — without
+    resurrecting any other historical event.
+    """
     entry_ts = pd.Timestamp(pos["entry_date"])
     upto_entry = df[df.index <= entry_ts]
     if upto_entry.empty:
         upto_entry = df.iloc[:1]
     pos["plan"] = init_plan(upto_entry, float(pos["entry_price"]))
     after = df.index[df.index > entry_ts]
+    final_events: list[dict] = []
     for ts in after:
-        pos, _ = evaluate_day(pos, df.loc[:ts], replay=True)
+        pos, final_events = evaluate_day(pos, df.loc[:ts], replay=True)
+    pos["_bootstrap_final_events"] = final_events
     return pos
+
+
+def _bootstrap_catchup_events(pos: dict, final_replay_events: list[dict]) -> list[dict]:
+    """Turn a freshly-bootstrapped plan's standing verdict into the action
+    event(s) needed to actually notify the user, without resurrecting any
+    *historical* event bootstrap correctly discarded.
+
+    SELL: reconstructed from the plan's own persisted numbers (last_close vs
+    stop_floor/stop_level/below_50d_streak). These describe the position's
+    CURRENT state — they don't depend on which bar first crossed them — so
+    they're honestly reconstructable even when the SELL verdict has been
+    sitting terminal since a bar many days before the final one (the common
+    case: bootstrap's replay never cleared it).
+
+    TRIM: NOT reconstructed from persisted numbers — trims_fired is a state
+    record with no per-rung date, so guessing "why" from current numbers
+    could misattribute an old, already-settled trim to today. Instead this
+    uses `final_replay_events`, the actual events evaluate_day produced on
+    the *last* replayed bar specifically. That's reliable because (unlike
+    SELL) TRIM/HOLD is recomputed from scratch every single day — a plan
+    only ends bootstrap as TRIM if a rung fired on that literal final bar,
+    so final_replay_events, when non-empty, is exactly that rung's own event.
+    """
+    plan = pos["plan"]
+    verdict = plan["verdict"]
+    events: list[dict] = []
+
+    if verdict == "SELL":
+        last_close = plan["last_close"]
+        stop_floor = plan["stop_floor"]
+        stop_level = plan["stop_level"]
+        streak = plan["below_50d_streak"]
+        if last_close < stop_floor:
+            breach = f"below the max-loss floor {stop_floor:.2f}"
+        elif last_close < stop_level:
+            breach = f"below the trailing stop {stop_level:.2f}"
+        else:
+            breach = f"the {streak}th straight close below the 50-day SMA"
+        events.append({
+            "ticker": pos["ticker"], "type": "SELL",
+            "reason": (f"standing exit plan just established from history: "
+                       f"last close {last_close:.2f} is already {breach}"),
+            "instruction": "Sell entire remaining position at next open.",
+        })
+    elif verdict == "TRIM":
+        for fe in final_replay_events:
+            events.append({
+                "ticker": pos["ticker"], "type": fe["type"],
+                "reason": f"standing exit plan just established from history: {fe['reason']}",
+                "instruction": fe["instruction"],
+            })
+
+    return events
 
 
 def run_daily_eval(send_emails: bool = True, today: date | None = None) -> dict:
@@ -281,8 +352,13 @@ def run_daily_eval(send_emails: bool = True, today: date | None = None) -> dict:
 
             if "plan" not in pos or pos["plan"] is None:
                 pos = bootstrap_position(pos, df)
+                final_replay_events = pos.pop("_bootstrap_final_events", [])
                 print(f"[exit-plan] bootstrapped {pos['ticker']}: "
                       f"verdict={pos['plan']['verdict']} trims={pos['plan']['trims_fired']}")
+                catchup_events = _bootstrap_catchup_events(pos, final_replay_events)
+                if catchup_events:
+                    pos["plan"].setdefault("pending_notify", []).extend(catchup_events)
+                    all_events.extend(catchup_events)
 
             pos, events = evaluate_day(pos, df)
 
