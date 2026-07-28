@@ -84,3 +84,128 @@ class TestReplayIdempotent:
         streak_after_first = pos["plan"]["below_50d_streak"]
         pos, _ = evaluate_day(pos, newdf, replay=True)
         assert pos["plan"]["below_50d_streak"] == streak_after_first
+
+
+class TestSell:
+    def test_gap_down_through_stop_sells_and_is_terminal(self):
+        df = flat_df(80)
+        pos = entry_pos(df)
+        crash = make_df([100.0] * 80 + [80.0])
+        pos, events = evaluate_day(pos, crash)
+        assert pos["plan"]["verdict"] == "SELL"
+        assert len(events) == 1 and events[0]["type"] == "SELL"
+        # recovery next day does NOT un-sell in live mode
+        recover = make_df([100.0] * 80 + [80.0, 105.0])
+        pos, events = evaluate_day(pos, recover)
+        assert pos["plan"]["verdict"] == "SELL"
+        assert events == []
+
+    def test_replay_mode_clears_sell_on_recovery(self):
+        df = flat_df(80)
+        pos = entry_pos(df)
+        crash = make_df([100.0] * 80 + [80.0])
+        pos, _ = evaluate_day(pos, crash, replay=True)
+        assert pos["plan"]["verdict"] == "SELL"
+        recover = make_df([100.0] * 80 + [80.0, 105.0])
+        pos, _ = evaluate_day(pos, recover, replay=True)
+        assert pos["plan"]["verdict"] == "HOLD"
+
+    # High-vol fixture (±5% bars → ATR≈10): the trailing stop sits far below
+    # the 50d SMA, so the trend-break rule is the binding SELL trigger.
+    # Entry at end of a 60-bar plateau @120: initial stop 100, s50 = 120.
+    _HV = [100.0] * 80 + list(np.linspace(100, 120, 20)) + [120.0] * 60
+
+    def test_50d_break_needs_3_consecutive_closes(self):
+        pos = entry_pos(make_df(self._HV, spread=0.05))
+        for i in range(1, 4):
+            df = make_df(self._HV + [112.0] * i, spread=0.05)
+            pos, events = evaluate_day(pos, df)
+        assert pos["plan"]["verdict"] == "SELL"
+        assert "50-day" in events[0]["reason"]
+
+    def test_50d_streak_resets_on_close_above(self):
+        pos = entry_pos(make_df(self._HV, spread=0.05))
+        seq = [112.0, 112.0, 121.0, 112.0, 112.0]  # 121 > s50: never 3 in a row
+        for i in range(1, len(seq) + 1):
+            df = make_df(self._HV + seq[:i], spread=0.05)
+            pos, events = evaluate_day(pos, df)
+        assert pos["plan"]["verdict"] == "HOLD"
+
+
+class TestTrim:
+    def test_derisk_fires_once_at_20pct_and_moves_stop_to_breakeven(self):
+        df = flat_df(80)
+        pos = entry_pos(df)
+        # Ramp to +21% over 20 sessions rather than a single-day teleport: a
+        # one-day +21% jump also trips the blowoff burst rule (>3xATR within
+        # 5 sessions, since 3xATR << 21 for this fixture's vol), which would
+        # confound the "derisk fires alone" assertion below. Spread over 20
+        # sessions, the 5-day-window move (~5.25) stays under 3xATR (~6.6).
+        ramp = list(np.linspace(100.0, 121.0, 21))[1:]
+        up = make_df([100.0] * 80 + ramp)
+        pos, events = evaluate_day(pos, up)
+        assert pos["plan"]["verdict"] == "TRIM"
+        assert [e["type"] for e in events] == ["TRIM"]
+        assert "derisk" in pos["plan"]["trims_fired"]
+        assert pos["plan"]["stop_floor"] == pytest.approx(100.0)
+        # next day, still up: no second derisk event
+        up2 = make_df([100.0] * 80 + ramp + [122.0])
+        pos, events = evaluate_day(pos, up2)
+        assert events == []
+        assert pos["plan"]["verdict"] == "HOLD"
+
+    def test_derisk_fires_at_2R_before_20pct(self):
+        df = flat_df(80)          # ATR≈2 → R≈4 → 2R = +8 = +8% (< 20%)
+        pos = entry_pos(df)
+        up = make_df([100.0] * 80 + [109.0])
+        pos, events = evaluate_day(pos, up)
+        assert "derisk" in pos["plan"]["trims_fired"]
+
+    def test_blowoff_burst_fires_once(self):
+        df = flat_df(80)
+        pos = entry_pos(df)
+        # +15 move in 3 days on ATR≈2 → burst (>3×ATR within 5 sessions)
+        up = make_df([100.0] * 80 + [105.0, 110.0, 115.0])
+        pos, events = evaluate_day(pos, up)
+        assert "blowoff" in pos["plan"]["trims_fired"]
+        types = [e["type"] for e in events]
+        assert types.count("TRIM") >= 1
+
+
+class TestInvariants:
+    def test_whipsaw_market_never_flips_verdict(self):
+        """Alternating ±3% days around entry: verdict must stay HOLD throughout.
+
+        Absolute alternation (97 / 103, not compounding) so closes straddle the
+        50d SMA — the below-50d streak resets every other day, and neither the
+        96 stop nor the +8 (2R) derisk rung is ever touched."""
+        df = flat_df(80)
+        pos = entry_pos(df)
+        closes = [100.0] * 80
+        for i in range(20):
+            closes.append(97.0 if i % 2 == 0 else 103.0)
+            pos, events = evaluate_day(pos, make_df(closes))
+            assert pos["plan"]["verdict"] == "HOLD", f"flipped on day {i}"
+            assert events == []
+
+    def test_stop_level_never_decreases(self):
+        df = flat_df(80)
+        pos = entry_pos(df)
+        closes = [100.0] * 80
+        rng = np.random.default_rng(7)
+        prev_stop = pos["plan"]["stop_level"]
+        price = 100.0
+        for _ in range(60):
+            price = max(50.0, price * float(rng.normal(1.0, 0.02)))
+            closes.append(round(price, 2))
+            pos, _ = evaluate_day(pos, make_df(closes), replay=True)
+            assert pos["plan"]["stop_level"] >= prev_stop - 1e-9
+            prev_stop = pos["plan"]["stop_level"]
+
+    def test_same_day_reeval_is_noop(self):
+        df = flat_df(80)
+        pos = entry_pos(df)
+        up = make_df([100.0] * 80 + [121.0])
+        pos, events1 = evaluate_day(pos, up)
+        pos, events2 = evaluate_day(pos, up)   # re-fire same date
+        assert events1 and events2 == []
