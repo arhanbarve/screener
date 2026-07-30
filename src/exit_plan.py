@@ -47,6 +47,7 @@ def init_plan(df: pd.DataFrame, entry_price: float) -> dict:
         "below_50d_streak": 0,
         "verdict": "HOLD",
         "verdict_reason": None,
+        "evidence": None,
         "health": None,
         "days_to_earnings": None,
         "last_eval": None,
@@ -162,6 +163,90 @@ def evaluate_day(pos: dict, df: pd.DataFrame, replay: bool = False) -> tuple[dic
     plan["verdict_reason"] = "; ".join(e["reason"] for e in events) if events else None
     plan["last_eval"], plan["last_close"] = today, round(price, 4)
     return pos, events
+
+
+_HEALTH_CHECK_LABELS = {
+    "macd": "weekly MACD bearish",
+    "rs":   "lagging SPY over 13 weeks",
+    "obv":  "weekly OBV falling",
+    "adx":  "ADX falling with −DI dominant",
+}
+
+
+def build_evidence(pos: dict, df: pd.DataFrame) -> dict:
+    """Deterministic numbers behind the plan's current verdict.
+
+    Recomputed from the plan and the same bars evaluate_day just judged, so
+    every figure here is the one the verdict was actually made on — no live
+    quote leaks in. Purely derived: it holds no state of its own and is safe
+    to rebuild on any bar.
+
+    "triggers" lists all three SELL conditions, fired or not, each with the
+    level it watches and the gap to it. A trend-break SELL pairs with a
+    comfortable-looking stop gap, so showing only the one that fired is what
+    made the old one-line reason read as unexplained.
+    """
+    plan = pos["plan"]
+    close = df["close"]
+    price = float(close.iloc[-1])
+    entry = float(pos["entry_price"])
+    s50 = sma(close, 50)
+    peak = float(plan["peak_close"])
+    risk_R = float(plan["risk_R"])
+    stop_level = plan.get("stop_level")
+    stop_floor = plan.get("stop_floor")
+    streak = int(plan.get("below_50d_streak") or 0)
+
+    def _gap(level) -> float | None:
+        """Signed distance from level as a fraction of the close. Negative
+        means the close is below the level, i.e. breached."""
+        if level is None or not price:
+            return None
+        return (price - float(level)) / price
+
+    triggers = [
+        {
+            "name": "max_loss_floor",
+            "label": "Max-loss floor",
+            "level": stop_floor,
+            "gap": _gap(stop_floor),
+            "fired": stop_floor is not None and price < float(stop_floor),
+        },
+        {
+            "name": "trailing_stop",
+            "label": "Trailing stop",
+            "level": stop_level,
+            "gap": _gap(stop_level),
+            "fired": stop_level is not None and price < float(stop_level),
+            "detail": f"peak {peak:,.2f} − {plan['trail_mult']:g}×ATR14",
+        },
+        {
+            "name": "trend_break_50d",
+            "label": "50-day trend break",
+            "level": None if math.isnan(s50) else round(float(s50), 4),
+            "gap": None if math.isnan(s50) else _gap(s50),
+            "fired": streak >= TREND_BREAK_DAYS,
+            "detail": f"{streak} of {TREND_BREAK_DAYS} consecutive closes below",
+        },
+    ]
+
+    health = plan.get("health") or {}
+    bearish_parts = [_HEALTH_CHECK_LABELS.get(p, p) for p in (health.get("parts") or [])]
+
+    return {
+        "close": round(price, 4),
+        "entry": round(entry, 4),
+        "peak_close": round(peak, 4),
+        "drawdown_from_peak": round((price - peak) / peak, 6) if peak else None,
+        "gain_pct": round((price - entry) / entry, 6) if entry else None,
+        "r_multiple": round((price - entry) / risk_R, 3) if risk_R else None,
+        "risk_R": round(risk_R, 4),
+        "sma50": None if math.isnan(s50) else round(float(s50), 4),
+        "triggers": triggers,
+        "health_bearish": bearish_parts,
+        "health_label": health_label(health),
+        "terminal": plan.get("verdict") == "SELL",
+    }
 
 
 def weekly_health(df: pd.DataFrame, spy_close: pd.Series | None) -> dict:
@@ -397,6 +482,16 @@ def run_daily_eval(send_emails: bool = True, today: date | None = None) -> dict:
 
             pos, events = evaluate_day(pos, df)
 
+            # Health is scored on EVERY eval so the page and digest always
+            # show a current read. Only the *tightener* is once-weekly — a
+            # plan bootstrapped mid-week used to sit at health=null (chip
+            # "?/4") until the next Friday, which read as broken rather than
+            # as "not due yet". Scoring here changes no stop: apply_weekly_
+            # tightener below is still the only thing that can touch
+            # trail_mult, and still only once per ISO week.
+            health = weekly_health(df, spy_close)
+            pos["plan"]["health"] = health
+
             # Weekly tightener: fire once per ISO week, on whichever weekday
             # turns out to be that week's final trading bar. A bar is
             # "closed" for its week either because it's a Friday, or because
@@ -410,8 +505,12 @@ def run_daily_eval(send_emails: bool = True, today: date | None = None) -> dict:
             if week_closed:
                 week_key = f"{iso_last[0]}-W{iso_last[1]:02d}"
                 if pos["plan"].get("tightened_asof") != week_key:
-                    pos["plan"] = apply_weekly_tightener(pos["plan"], weekly_health(df, spy_close))
+                    pos["plan"] = apply_weekly_tightener(pos["plan"], health)
                     pos["plan"]["tightened_asof"] = week_key
+
+            # Built last so it reflects the final plan for this bar — after
+            # any ratchet, trim, verdict and tightener above have landed.
+            pos["plan"]["evidence"] = build_evidence(pos, df)
 
             pos["plan"]["days_to_earnings"] = days_to_next_earnings(pos["ticker"])
             if events:

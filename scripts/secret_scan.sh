@@ -8,6 +8,9 @@
 # and a bypassed hook protects nothing.
 SECRET_PATTERNS=(
     'sk-ant-[A-Za-z0-9_-]{20,}'                 # Anthropic key
+    'sk-proj-[A-Za-z0-9_-]{20,}'                # OpenAI project key
+    'sk-(svcacct|admin)-[A-Za-z0-9_-]{20,}'     # OpenAI service-account / admin key
+    'sk-[A-Za-z0-9]{40,}'                       # OpenAI legacy key
     'ghp_[A-Za-z0-9]{36}'                       # GitHub PAT (classic)
     'github_pat_[A-Za-z0-9_]{30,}'              # GitHub PAT (fine-grained)
     'AKIA[0-9A-Z]{16}'                          # AWS access key
@@ -22,6 +25,9 @@ SECRET_PATTERNS=(
 
 PATTERN_NAMES=(
     "Anthropic API key"
+    "OpenAI project key"
+    "OpenAI service-account/admin key"
+    "OpenAI legacy key"
     "GitHub PAT (classic)"
     "GitHub PAT (fine-grained)"
     "AWS access key"

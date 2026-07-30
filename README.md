@@ -88,9 +88,12 @@ pip install -r requirements.txt
 ```
 FINNHUB_API_KEY=your_key_here
 SEC_USER_AGENT=YourName your@email.com
+OPENAI_API_KEY=your_key_here
 ```
 
 Get a free Finnhub key at [finnhub.io](https://finnhub.io). The SEC user agent just needs your name and email.
+
+`OPENAI_API_KEY` powers the Stage 4.5 news overlay (`src/llm.py`). It is optional — without it the overlay is skipped and the run still produces a full ranked list, just with no `entry_signal` column. Models are set in `config.yaml` under `news.model` / `news.prefilter_model`.
 
 ### 3. Run
 ```bash

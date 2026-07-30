@@ -101,8 +101,13 @@ def write_markdown(
         entry     = str(row.get("entry", ""))
         rationale = _rationale(row)
         es = str(row.get("entry_signal", "") or "")
-        es_badge = {"confirm_entry": "✅", "wait": "⏳", "avoid": "🚫"}.get(es, "")
-        es_str = f"{es_badge} {es}" if es_badge else "—"
+        # no_news / unavailable are the ABSENCE of a signal — rendered with a
+        # neutral glyph and their own label so neither can be misread as the
+        # "⏳ wait" judgment they used to be collapsed into.
+        es_badge = {"confirm_entry": "✅", "wait": "⏳", "avoid": "🚫",
+                    "no_news": "○", "unavailable": "⚠"}.get(es, "")
+        es_label = {"no_news": "no news", "unavailable": "n/a"}.get(es, es)
+        es_str = f"{es_badge} {es_label}" if es_badge else "—"
         wt_cell = ""
         if has_weight:
             wt = row.get("weight_pct")
@@ -184,7 +189,7 @@ def print_top10(df: pd.DataFrame):
         cons    = int(row.get("streak_consecutive", 0) or 0)
         streak_s = f"streak={cons}d" if cons >= 2 else ""
         es      = str(row.get("entry_signal", "") or "")
-        es_s    = f"  signal={es}" if es and es != "wait" else ""
+        es_s    = f"  signal={es}" if es and es not in ("wait", "no_news") else ""
         print(
             f"  {i:2d}. {row['ticker']:<8} composite={comp:+.3f}  ${price:.2f}"
             f"  conv={conv_s}  entry={entry:<6}  {rsi_s}  {mfi_s}  {stoch_s}  {adx_s}  macd={macd}"

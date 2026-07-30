@@ -74,6 +74,8 @@ finnhub:
 news:
   enabled: true
   analyze_top_n: 20
+  model: gpt-5.4-mini            # per-stock + market analysis
+  prefilter_model: gpt-5.4-nano  # material-vs-noise classification only
 
 lazy_prices:
   # Neglect universe band used by event_backtest.py's neglected-universe gate:

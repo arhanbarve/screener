@@ -8,6 +8,7 @@ from src.exit_plan import init_plan, evaluate_day
 from src.exit_plan import weekly_health, apply_weekly_tightener
 from src.exit_plan import bootstrap_position, run_daily_eval
 from src.exit_plan import health_label
+from src.exit_plan import build_evidence
 
 
 def trend_df(n, start_price, end_price, **kw):
@@ -807,3 +808,139 @@ class TestDigestWiring:
         assert "STALE" in html and "NOT EVALUATED TODAY" in html
         assert stale_df.index[-1].strftime("%Y-%m-%d") in html
         assert "BAD" in html and "yfinance timed out" in html
+
+
+class TestHealthIsScoredEveryEval:
+    """Health drives a display chip as well as the tightener. Scoring it only
+    on the tightener's once-a-week schedule left a plan bootstrapped mid-week
+    reading "?/4" (unknown) for days — indistinguishable from a broken check.
+    """
+    _ROLLOVER = list(np.linspace(50, 150, 200)) + list(np.linspace(150, 110, 100))
+
+    def _run_on(self, monkeypatch, df, today):
+        entry_price = float(df["close"].iloc[-1])
+        entry_date = df.index[-1].strftime("%Y-%m-%d")
+        positions = [{"ticker": "AAA", "entry_date": entry_date, "entry_price": entry_price}]
+
+        def fake_fetch_ohlcv(ticker, days=60):
+            if ticker == "AAA":
+                return df
+            if ticker == "SPY":
+                return trend_df(300, 100, 130)
+            return pd.DataFrame()
+
+        monkeypatch.setattr("src.positions.load_positions", lambda: positions)
+        monkeypatch.setattr("src.positions.save_positions", lambda p: None)
+        monkeypatch.setattr("src.positions.fetch_ohlcv", fake_fetch_ohlcv)
+        monkeypatch.setattr("src.positions.days_to_next_earnings", lambda t: None)
+        run_daily_eval(send_emails=False, today=today)
+        return positions[0]["plan"]
+
+    def _midweek_df(self):
+        """Rollover fixture whose final bar lands on a Wednesday."""
+        start = pd.Timestamp("2026-01-01")
+        while True:
+            df = make_df(self._ROLLOVER, start=start.strftime("%Y-%m-%d"))
+            if df.index[-1].weekday() == 2:
+                return df
+            start += pd.Timedelta(days=1)
+
+    def test_midweek_eval_scores_health_without_tightening(self, monkeypatch):
+        df = self._midweek_df()
+        wednesday = df.index[-1].date()
+        assert wednesday.weekday() == 2
+
+        plan = self._run_on(monkeypatch, df, wednesday)
+
+        # Health present and genuinely scored (not the <15-week unknown case)
+        assert plan["health"] is not None
+        assert plan["health"]["weeks"] >= 15
+        assert health_label(plan["health"]) != "?/4"
+        # ...but the week isn't closed, so no stop may have moved.
+        assert plan["trail_mult"] == 3.0
+        assert plan["tightened_asof"] is None
+
+    def test_friday_eval_still_tightens(self, monkeypatch):
+        df = make_df(self._ROLLOVER)
+        last = df.index[-1].date()
+        friday = last + timedelta(days=(4 - last.weekday()) % 7)
+        plan = self._run_on(monkeypatch, df, friday)
+        assert plan["health"] is not None
+        assert plan["trail_mult"] == 2.5      # tightener did fire
+        assert plan["tightened_asof"] is not None
+
+
+class TestBuildEvidence:
+    def test_lists_all_three_triggers_with_only_the_fired_one_marked(self):
+        # Gap straight through the trailing stop but stay above the 50-day and
+        # above the max-loss floor: exactly the case where showing only the
+        # fired trigger hides how close (or far) the other two were.
+        df = trend_df(80, 100, 130)
+        pos = entry_pos(df)
+        pos["plan"]["stop_level"] = 125.0
+        pos["plan"]["stop_floor"] = 90.0
+        crashed = make_df(list(df["close"]) + [120.0], start="2026-01-02")
+        pos, _ = evaluate_day(pos, crashed)
+
+        ev = build_evidence(pos, crashed)
+        by_name = {t["name"]: t for t in ev["triggers"]}
+        assert set(by_name) == {"max_loss_floor", "trailing_stop", "trend_break_50d"}
+        assert by_name["trailing_stop"]["fired"] is True
+        assert by_name["max_loss_floor"]["fired"] is False
+        # every trigger reports its level and gap whether or not it fired
+        assert by_name["max_loss_floor"]["level"] == 90.0
+        assert by_name["max_loss_floor"]["gap"] > 0      # close is above the floor
+        assert by_name["trailing_stop"]["gap"] < 0       # close is below the stop
+
+    def test_position_math_matches_the_plan(self):
+        df = trend_df(80, 100, 130)
+        pos = entry_pos(df, entry_price=100.0)
+        pos, _ = evaluate_day(pos, make_df(list(df["close"]) + [150.0], start="2026-01-02"))
+        ev = build_evidence(pos, make_df(list(df["close"]) + [150.0], start="2026-01-02"))
+
+        assert ev["close"] == 150.0
+        assert ev["entry"] == 100.0
+        assert ev["gain_pct"] == pytest.approx(0.5)
+        # r_multiple is rounded to 3dp for display, so compare at that precision
+        assert ev["r_multiple"] == pytest.approx(50.0 / pos["plan"]["risk_R"], abs=1e-3)
+        assert ev["peak_close"] == pytest.approx(pos["plan"]["peak_close"])
+        assert ev["drawdown_from_peak"] == pytest.approx(0.0)
+
+    def test_drawdown_is_measured_off_the_ratcheted_peak(self):
+        # Enter at the top of the ramp (200) so peak_close is 200, then take a
+        # single bar down to 160. Drawdown must be quoted off the retained peak,
+        # not off the entry and not off the current bar.
+        closes = list(np.linspace(100, 200, 80)) + [160.0]
+        df = make_df(closes)
+        pos = entry_pos(make_df(closes[:80]))
+        assert pos["plan"]["peak_close"] == pytest.approx(200.0)
+        pos, _ = evaluate_day(pos, df)
+        ev = build_evidence(pos, df)
+        assert ev["peak_close"] == pytest.approx(200.0)
+        assert ev["drawdown_from_peak"] == pytest.approx((160.0 - 200.0) / 200.0)
+
+    def test_health_checks_are_named_not_just_counted(self):
+        closes = list(np.linspace(50, 150, 200)) + list(np.linspace(150, 110, 100))
+        df = make_df(closes)
+        spy = trend_df(300, 100, 130)["close"]
+        pos = entry_pos(df)
+        pos["plan"] = apply_weekly_tightener(pos["plan"], weekly_health(df, spy))
+        ev = build_evidence(pos, df)
+        assert ev["health_bearish"]                       # non-empty
+        assert all(" " in part for part in ev["health_bearish"])   # human phrases
+        assert ev["health_label"] == health_label(pos["plan"]["health"])
+
+    def test_terminal_flag_tracks_the_sell_verdict(self):
+        df = trend_df(80, 100, 130)
+        pos = entry_pos(df)
+        assert build_evidence(pos, df)["terminal"] is False
+        pos["plan"]["verdict"] = "SELL"
+        assert build_evidence(pos, df)["terminal"] is True
+
+    def test_evidence_uses_last_close_never_a_live_price(self):
+        # The whole feature exists so a mid-session dip can't contradict the
+        # verdict: evidence must key off the final BAR, not anything else.
+        df = trend_df(80, 100, 130)
+        pos = entry_pos(df)
+        ev = build_evidence(pos, df)
+        assert ev["close"] == pytest.approx(float(df["close"].iloc[-1]))

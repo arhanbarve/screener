@@ -415,6 +415,18 @@ a:hover { text-decoration: underline !important; }
   font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
   letter-spacing: 0.06em;
 }
+/* Absence of a signal (no coverage, or the analysis failed). Deliberately
+   flat and unsaturated — it must not read as one of the three verdicts. */
+.sig-none {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--surface-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
+  letter-spacing: 0.06em;
+}
 
 /* ── Tooltip system ──────────────────────────────────────────────────────── */
 .th-tip {
@@ -1009,7 +1021,7 @@ var _TH_TIPS = {
   score:  { title: 'COMPOSITE SCORE', body: 'Weighted z-score: 28% 12-mo momentum, 20% analyst revision breadth, 17% earnings surprise, 15% 6-mo RS vs SPY, 10% technical alignment, 5% RS slope, 5% streak bonus.', hint: 'Higher = stronger setup' },
   conv:   { title: 'CONVICTION 1–10', body: 'Four layers: rank position (top 3 = 3pts), streak ≥7d = 3pts, technical alignment ≥6/8 green = 2pts, fundamental quality — gross profitability, insider buying, short float.', hint: 'Use for position sizing — high conviction = larger starter' },
   streak: { title: 'STREAK', body: "Consecutive trading days in the screener's top results. 5+ days = proven staying power. 1 day = may be noise.", hint: 'Longer = higher confidence in the setup' },
-  signal: { title: 'NEWS SIGNAL', body: 'AI-analyzed entry signal. CONFIRM = news supports thesis. WAIT = mixed signals. AVOID = news contradicts thesis or negative catalyst detected.', hint: 'Hover the badge for full reasoning' },
+  signal: { title: 'NEWS SIGNAL', body: 'AI-analyzed entry signal. CONFIRM = news supports thesis. WAIT = mixed signals. AVOID = news contradicts thesis or negative catalyst detected. NO NEWS = nothing material published, which is neither support nor a veto. N/A = the analysis itself failed.', hint: 'Hover the badge for full reasoning' },
   cat:    { title: 'CATALYST', body: 'Primary news catalyst. EST↑ = analyst estimate raised. EST↓ = estimate cut. Drives institutional accumulation or distribution.', hint: 'Estimate revisions precede price moves' },
   mom:    { title: 'MOM 12-1 — 12-MONTH MOMENTUM', body: 'Price return over the past year, excluding the most recent month. Skipping the last month removes mean-reversion noise — what remains is slow-moving institutional momentum that persists 3–12 months.', hint: 'Academic consensus: strongest near-term return predictor' },
   rs:     { title: 'RS 6M — RELATIVE STRENGTH vs SPY', body: 'How much the stock outperformed the S&P 500 over 6 months. +300% = beat the index by 300 percentage points — not a rising tide lift.', hint: 'Positive = beating the market on its own merit' }
@@ -1365,10 +1377,14 @@ def _top3_card(rank: int, row: pd.Series) -> str:
         return '<span class="conv-dot low"></span>'
     conv_dots = "".join(_dot(i) for i in range(1, 11))
 
+    # sig-none is the muted treatment: no_news and unavailable are the absence
+    # of a judgment, so they must not borrow the amber "wait" styling.
     _sig_map = {
         "confirm_entry": ("CONFIRM", "sig-confirm", "confirm"),
         "wait":          ("WAIT",    "sig-wait",    "wait"),
         "avoid":         ("AVOID",   "sig-avoid",   "avoid"),
+        "no_news":       ("NO NEWS", "sig-none",    ""),
+        "unavailable":   ("N/A",     "sig-none",    ""),
     }
     if es in _sig_map:
         sig_label, sig_cls, tip_type = _sig_map[es]
@@ -1451,10 +1467,15 @@ def _screener_html_table(df: pd.DataFrame) -> str:
     if max_score <= 0:
         max_score = 1.0
 
+    # NO NEWS and N/A are absences of a signal, not verdicts: both render in
+    # the muted colour, never the amber "sig-wait" treatment, so a stock with
+    # no coverage doesn't look like one the analysis told you to hold off on.
     _sig_badge = {
         "confirm_entry": '<span class="sig-confirm">CONFIRM</span>',
         "wait":          '<span class="sig-wait">WAIT</span>',
         "avoid":         '<span class="sig-avoid">AVOID</span>',
+        "no_news":       '<span style="font-family:var(--mono);font-size:0.66rem;color:var(--muted)">NO NEWS</span>',
+        "unavailable":   '<span style="font-family:var(--mono);font-size:0.66rem;color:var(--muted)">N/A</span>',
     }
     _cat_badge = {
         "estimate_up":   '<span style="font-family:var(--mono);font-size:0.7rem;color:var(--bull)">EST&#8593;</span>',
@@ -1686,13 +1707,19 @@ the stock's own historical surprise volatility. Consistently beating = durable e
             "avoid":         ("#ef4444", "rgba(239,68,68,0.08)"),
         }
         _cat_icons = {"estimate_up": "EST UP", "estimate_down": "EST DOWN"}
+        # no_news rows are skipped outright: an expander per uncovered stock
+        # saying "nothing was published" is noise. unavailable rows DO show,
+        # because a failed analysis is something to know about, not hide.
         for _, row in df.head(10).iterrows():
             es = str(row.get("entry_signal", "") or "")
-            if not es or (es == "wait" and not row.get("news_reasoning")):
+            if not es or es == "no_news":
+                continue
+            if es == "wait" and not row.get("news_reasoning"):
                 continue
             ticker = str(row.get("ticker", ""))
             fg, bg = _es_colors.get(es, ("#94a3b8", "rgba(148,163,184,0.08)"))
-            es_label = {"confirm_entry": "CONFIRM", "wait": "WAIT", "avoid": "AVOID"}.get(es, es)
+            es_label = {"confirm_entry": "CONFIRM", "wait": "WAIT", "avoid": "AVOID",
+                        "unavailable": "ANALYSIS FAILED"}.get(es, es)
             cat = str(row.get("catalyst", "") or "")
             cat_str = _cat_icons.get(cat, "")
             tc = str(row.get("thesis_consistency", "") or "")
@@ -1957,6 +1984,88 @@ def _plan_chip(text: str, color: str = "var(--muted)") -> str:
     )
 
 
+def _evidence_html(ev: dict, verdict: str) -> str:
+    """Render plan["evidence"] as the numbers behind the verdict.
+
+    Every one of the three SELL triggers is listed whether it fired or not,
+    with the level it watches and the gap to it. Showing only the trigger that
+    fired is what made a SELL read as unexplained: a 50-day trend-break SELL
+    sits next to a perfectly healthy-looking stop distance, so the user had no
+    way to see which condition was actually responsible — or how close the
+    other two were.
+
+    All figures come off the plan's own last-close evaluation, never the live
+    quote, so this block can't contradict the verdict beside it.
+    """
+    if not ev:
+        return ""
+
+    def _pct(v, digits=1) -> str:
+        return "—" if v is None else f"{v * 100:+.{digits}f}%"
+
+    rows = []
+    for t in ev.get("triggers", []):
+        fired = bool(t.get("fired"))
+        color = "var(--bear)" if fired else "var(--muted)"
+        level = t.get("level")
+        level_s = "—" if level is None else f"${float(level):,.2f}"
+        gap = t.get("gap")
+        if gap is None:
+            gap_s = "—"
+        else:
+            # Subject-first so the direction can't be misread: it is the CLOSE
+            # that sits above or below the trigger level, not the reverse.
+            # Denominator is the close, matching the STOP chip above, so the
+            # two never quote different percentages for the same distance.
+            gap_s = f"close {abs(gap) * 100:.1f}% {'below' if gap < 0 else 'above'}"
+        detail = t.get("detail", "")
+        mark = "TRIGGERED" if fired else ""
+        rows.append(
+            f'<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;'
+            f'border-bottom:1px solid var(--border)">'
+            f'<span style="flex:0 0 128px;color:{color}">{_html.escape(str(t.get("label", "")))}</span>'
+            f'<span style="flex:0 0 78px;color:var(--text)">{level_s}</span>'
+            f'<span style="flex:0 0 132px;color:{color}">{gap_s}</span>'
+            f'<span style="flex:1;color:var(--muted);font-size:0.58rem">{_html.escape(str(detail))}</span>'
+            f'<span style="flex:0 0 74px;text-align:right;color:{color};font-weight:700">{mark}</span>'
+            f'</div>'
+        )
+
+    r_mult = ev.get("r_multiple")
+    r_s = "—" if r_mult is None else f"{r_mult:+.2f}R"
+    math_line = (
+        f'close ${ev.get("close", 0):,.2f} · '
+        f'entry ${ev.get("entry", 0):,.2f} ({_pct(ev.get("gain_pct"))}, {r_s}) · '
+        f'peak ${ev.get("peak_close", 0):,.2f} ({_pct(ev.get("drawdown_from_peak"))} off peak)'
+    )
+
+    bearish = ev.get("health_bearish") or []
+    label = ev.get("health_label", "?/4")
+    if bearish:
+        health_line = f'weekly health {label} bearish — {"; ".join(bearish)}'
+    elif label.startswith("?"):
+        health_line = f'weekly health {label} — not enough weekly history to score yet'
+    else:
+        health_line = f'weekly health {label} — all weekly checks clear'
+
+    terminal_note = (
+        '<div style="color:var(--muted);font-size:0.58rem;margin-top:5px">'
+        'A SELL is terminal: the plan will not reverse it on a bounce.</div>'
+        if verdict == "SELL" else ""
+    )
+
+    return (
+        f'<div style="margin-top:10px;font-family:var(--mono);font-size:0.62rem">'
+        f'<div style="color:var(--muted);font-size:0.55rem;letter-spacing:0.09em;'
+        f'margin-bottom:5px">EVIDENCE · measured on the close the verdict was made from</div>'
+        f'{"".join(rows)}'
+        f'<div style="color:var(--muted);margin-top:6px">{math_line}</div>'
+        f'<div style="color:var(--muted);margin-top:2px">{_html.escape(health_line)}</div>'
+        f'{terminal_note}'
+        f'</div>'
+    )
+
+
 def _load_fidelity_data() -> tuple[list[dict], str]:
     """Load rich Fidelity positions data. Returns (positions, synced_at_str)."""
     p = Path("data/fidelity/positions_data.json")
@@ -2018,6 +2127,7 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
     not_evaluated = not plan
     verdict       = plan.get("verdict", "—")
     verdict_reason = plan.get("verdict_reason")
+    evidence      = plan.get("evidence") or {}
     stop_level    = plan.get("stop_level")
     trims         = plan.get("trims_fired") or []
     health        = plan.get("health") or {}
@@ -2154,6 +2264,7 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
             f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
             f'color:var(--bear);letter-spacing:0.08em">SELL — exit remaining position at next open</span>'
             f'{sell_reason_html}'
+            f'{_evidence_html(evidence, verdict)}'
             f'</div>'
         )
     elif verdict == "TRIM":
@@ -2168,8 +2279,22 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
             f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
             f'color:var(--wait);letter-spacing:0.08em">TRIM — sell 1/3 at next open{rungs}</span>'
             f'{trim_reason_html}'
+            f'{_evidence_html(evidence, verdict)}'
             f'</div>'
         )
+    elif verdict == "HOLD":
+        # A HOLD is a decision too, and the same evidence answers "why am I
+        # still in this?" — including how much room is left before each
+        # trigger. Rendered without the alarm styling.
+        body = _evidence_html(evidence, verdict)
+        exit_html = (
+            f'<div style="margin-top:12px;padding:10px 14px;background:var(--surface-2);'
+            f'border:1px solid var(--border);border-radius:var(--radius-sm)">'
+            f'<span style="font-family:var(--mono);font-size:0.7rem;font-weight:700;'
+            f'color:var(--bull);letter-spacing:0.08em">HOLD — no trigger met</span>'
+            f'{body}'
+            f'</div>'
+        ) if body else ""
 
     card_s = f"background:var(--surface-1);border:1px solid var(--border);border-top:2px solid {top_c};border-radius:var(--radius-lg);padding:18px;margin-bottom:10px;position:relative;overflow:hidden"
 

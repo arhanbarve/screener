@@ -2,10 +2,10 @@
 
 Confirms or kills each thesis-A/B event category (see
 handoff-thesis-pivot-2026-07-02.md) before any live watcher, UI, or
-meaningful Claude spend. Full design:
+meaningful LLM spend. Full design:
 docs/superpowers/specs/2026-07-02-event-backtest-design.md
 
-Phase 1 — pure event study, $0, no Claude calls. Pulls 8-K Item 1.01/3.01,
+Phase 1 — pure event study, $0, no LLM calls. Pulls 8-K Item 1.01/3.01,
 NT 10-K/10-Q → real-filing pairs (delinquent filer regains status), SC TO-I
 (odd-lot tenders), and going-concern-removed 10-K pairs from EDGAR's free
 submissions API over the liquidity-gated universe, computes 5/20/60-day
@@ -14,12 +14,12 @@ a one-sample t-test.
 
 Phase 2 — materiality validation on a hard-capped sample (<=300 events),
 only for categories that passed Phase 1. Default path is a CSV export for
-hand-labeling (zero marginal cost). --claude-batch opts into a Haiku
-Message-Batches-API submission, capped and pre-flight cost-gated at $5.
+hand-labeling (zero marginal cost). --llm-batch opts into an OpenAI
+Batch-API submission, capped and pre-flight cost-gated at $5.
 
 Usage:
     python -m src.event_backtest phase1 [--days 730] [--limit N] [--dry-run]
-    python -m src.event_backtest phase2 --events-csv PATH --summary-csv PATH [--claude-batch] [--dry-run]
+    python -m src.event_backtest phase2 --events-csv PATH --summary-csv PATH [--llm-batch] [--dry-run]
     python -m src.event_backtest phase2-fetch --batch-id ID --sample-csv PATH
 """
 import argparse
@@ -43,7 +43,7 @@ from src.universe import build_universe
 from src.prices import fetch_all_prices, _fetch_batch_yfinance
 from src.universe import apply_neglect_gate
 from src.filings import fetch_submissions, fetch_filing_doc, plain_text, _sec_headers, ARCHIVES_URL, _cik10
-from src.news import _parse_json
+from src.llm import client as llm_client, object_schema
 
 logger = logging.getLogger(__name__)
 
@@ -120,10 +120,24 @@ GATE_HORIZONS = (20, 60)
 # Phase 2 hard caps — do not raise without editing this constant deliberately.
 MAX_PHASE2_SAMPLE = 300
 PHASE2_ABORT_USD = 5.0
-HAIKU_BATCH_IN_PER_MTOK = 0.50   # ~50% off the $1/MTok sync rate
-HAIKU_BATCH_OUT_PER_MTOK = 2.50  # ~50% off the $5/MTok sync rate
+PHASE2_MODEL = "gpt-5.4-mini"
+# Batch-API rates, $/MTok. UNVERIFIED against the current OpenAI price sheet —
+# carried over from the previous Haiku figures so the abort threshold keeps its
+# shape. Confirm at openai.com/api/pricing before relying on the estimate; the
+# PHASE2_ABORT_USD guard below is what actually stops an expensive submit.
+BATCH_IN_PER_MTOK = 0.50
+BATCH_OUT_PER_MTOK = 2.50
 PHASE2_MAX_INPUT_TOKENS_PER_FILING = 8000
-PHASE2_MAX_OUTPUT_TOKENS_PER_FILING = 300
+# Headroom over the 3 short fields the schema asks for. Was 300; a ceiling
+# that tight is how a response gets truncated mid-object, which now shows up
+# as status="truncated" instead of a silently empty row.
+PHASE2_MAX_OUTPUT_TOKENS_PER_FILING = 800
+
+_PHASE2_SCHEMA = object_schema({
+    "dollar_value": {"type": ["number", "null"]},
+    "counterparty": {"type": ["string", "null"]},
+    "materiality_note": {"type": "string"},
+})
 
 
 # ── EDGAR submissions flattening ─────────────────────────────────────────────
@@ -488,7 +502,7 @@ def summarize(events_df: pd.DataFrame, horizons: tuple = HORIZONS,
     return pd.DataFrame(rows).sort_values("n_events", ascending=False).reset_index(drop=True)
 
 
-# ── Phase 2: sampling, cost estimate, Claude batch ───────────────────────────
+# ── Phase 2: sampling, cost estimate, LLM batch ──────────────────────────────
 
 def select_phase2_sample(events_df: pd.DataFrame, summary_df: pd.DataFrame,
                          horizon: int = 20, max_total: int = MAX_PHASE2_SAMPLE,
@@ -552,7 +566,7 @@ def estimate_phase2_cost(sample_df: pd.DataFrame,
     n = len(sample_df)
     total_in = n * tokens_in_per_filing
     total_out = n * tokens_out_per_filing
-    cost = (total_in / 1e6) * HAIKU_BATCH_IN_PER_MTOK + (total_out / 1e6) * HAIKU_BATCH_OUT_PER_MTOK
+    cost = (total_in / 1e6) * BATCH_IN_PER_MTOK + (total_out / 1e6) * BATCH_OUT_PER_MTOK
     return {"n_events": n, "input_tokens": total_in, "output_tokens": total_out,
             "estimated_cost_usd": round(cost, 4)}
 
@@ -618,7 +632,7 @@ def _section_for_category(html: str, category: str, max_chars: int) -> str:
 
 def submit_phase2_batch(sample_df: pd.DataFrame, db_path: str,
                         dry_run: bool = False, abort_usd: float = PHASE2_ABORT_USD) -> dict | None:
-    """Pre-flight cost check, then submit a Haiku Message-Batches-API job.
+    """Pre-flight cost check, then submit an OpenAI Batch-API job.
 
     Batch API is asynchronous and gives no mid-run usage signal, so the $5
     ceiling is enforced BEFORE submission (projected cost), not as a
@@ -640,9 +654,6 @@ def submit_phase2_batch(sample_df: pd.DataFrame, db_path: str,
         print("[phase2] --dry-run: not submitting")
         return None
 
-    import anthropic
-    client = anthropic.Anthropic()
-
     batch_requests = []
     for _, ev in sample_df.iterrows():
         if not ev.get("accession") or not ev.get("primary_doc"):
@@ -654,16 +665,22 @@ def submit_phase2_batch(sample_df: pd.DataFrame, db_path: str,
         prompt = (
             f"Filing excerpt for {ev['ticker']} ({ev['category']}):\n{section}\n\n"
             "Extract the disclosed or estimable dollar value of this event and any "
-            "named counterparty. Return ONLY JSON: "
-            '{"dollar_value": <number or null>, "counterparty": "<string or null>", '
-            '"materiality_note": "<1 sentence>"}'
+            "named counterparty. Use null for either when the filing does not "
+            "disclose it. Add a one-sentence materiality note."
         )
         batch_requests.append({
             "custom_id": f"{ev['ticker']}-{ev['accession']}",
-            "params": {
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": PHASE2_MAX_OUTPUT_TOKENS_PER_FILING,
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": {
+                "model": PHASE2_MODEL,
+                "max_completion_tokens": PHASE2_MAX_OUTPUT_TOKENS_PER_FILING,
                 "messages": [{"role": "user", "content": prompt}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "filing_value", "strict": True,
+                                    "schema": _PHASE2_SCHEMA},
+                },
             },
         })
 
@@ -671,27 +688,47 @@ def submit_phase2_batch(sample_df: pd.DataFrame, db_path: str,
         print("[phase2] no requests to submit (no fetchable filing docs)")
         return None
 
-    batch = client.messages.batches.create(requests=batch_requests)
+    # OpenAI batches take a JSONL *file* rather than an inline request list.
+    client = llm_client()
+    jsonl = "\n".join(json.dumps(r) for r in batch_requests).encode()
+    upload = client.files.create(file=("phase2_batch.jsonl", jsonl), purpose="batch")
+    batch = client.batches.create(
+        input_file_id=upload.id,
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+    )
     print(f"[phase2] submitted batch {batch.id} ({len(batch_requests)} requests)")
     return {"batch_id": batch.id, "custom_ids": [r["custom_id"] for r in batch_requests]}
 
 
 def fetch_phase2_results(batch_id: str) -> pd.DataFrame:
-    import anthropic
-    client = anthropic.Anthropic()
-    batch = client.messages.batches.retrieve(batch_id)
-    if batch.processing_status != "ended":
-        print(f"[phase2] batch {batch_id} still '{batch.processing_status}' — try again later")
+    client = llm_client()
+    batch = client.batches.retrieve(batch_id)
+    if batch.status != "completed":
+        print(f"[phase2] batch {batch_id} still '{batch.status}' — try again later")
+        return pd.DataFrame()
+    if not batch.output_file_id:
+        print(f"[phase2] batch {batch_id} completed with no output file")
         return pd.DataFrame()
 
     rows = []
-    for result in client.messages.batches.results(batch_id):
-        row = {"custom_id": result.custom_id, "status": result.result.type}
-        if result.result.type == "succeeded":
-            text = next((b.text for b in reversed(result.result.message.content) if b.type == "text"), "")
-            parsed = _parse_json(text)
-            if parsed:
-                row.update(parsed)
+    for line in client.files.content(batch.output_file_id).text.splitlines():
+        if not line.strip():
+            continue
+        obj = json.loads(line)
+        custom_id = obj.get("custom_id")
+        resp = obj.get("response") or {}
+        status = "succeeded" if resp.get("status_code") == 200 else "errored"
+        row = {"custom_id": custom_id, "status": status}
+        if status == "succeeded":
+            choice = resp["body"]["choices"][0]
+            # Strict schema guarantees valid JSON, but a length-truncated
+            # response still arrives as a partial string — record that as a
+            # failed row rather than silently dropping the fields.
+            if choice.get("finish_reason") == "length":
+                row["status"] = "truncated"
+            else:
+                row.update(json.loads(choice["message"]["content"]))
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -725,7 +762,7 @@ def run_phase1(args):
         gated = gated.head(args.limit)
     print(f"[phase1] {len(gated)} tickers in gated universe, {args.days}d lookback")
 
-    # Phase 1 never calls the Claude API, so --dry-run has nothing to cost-gate.
+    # Phase 1 never calls the LLM API, so --dry-run has nothing to cost-gate.
     # It still runs the (free) EDGAR scan to report real per-category event
     # counts, per spec, but skips the yfinance forward-return pass and file
     # writes so a quick check doesn't also fetch years of price history.
@@ -774,11 +811,11 @@ def run_phase2(args):
     export_hand_label_csv(sample_df, sample_path)
     print(f"[phase2] {len(sample_df)} events sampled → {sample_path}")
 
-    if not args.claude_batch:
+    if not args.llm_batch:
         print("[phase2] default zero-cost path: hand-label the CSV above. Rows are sorted by "
               "20-day abnormal return; the top/bottom 50 are flagged hand_label_priority=True — "
               "start there (largest/smallest apparent-return events) before doing the rest. "
-              "Pass --claude-batch to use the Haiku Batches API instead.")
+              "Pass --llm-batch to use the OpenAI Batch API instead.")
         return
 
     result = submit_phase2_batch(sample_df, DB_PATH, dry_run=args.dry_run)
@@ -814,7 +851,7 @@ def main():
     p2.add_argument("--events-csv", required=True)
     p2.add_argument("--summary-csv", required=True)
     p2.add_argument("--include-category", action="append", default=[])
-    p2.add_argument("--claude-batch", action="store_true")
+    p2.add_argument("--llm-batch", action="store_true")
     p2.add_argument("--dry-run", action="store_true")
     p2.add_argument("--out-dir", default="output")
     p2.set_defaults(func=run_phase2)

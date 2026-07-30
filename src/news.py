@@ -1,7 +1,5 @@
 """News analysis pipeline: entry signal overlay for momentum screener."""
-import json
 import os
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,6 +9,7 @@ import finnhub
 import pandas as pd
 
 from src.cache import get_news_sentiment, put_news_sentiment
+from src.llm import LLMError, available as llm_available, complete_json, object_schema
 
 # z-score column → human label for context injection
 _FACTOR_LABELS = {
@@ -28,15 +27,36 @@ _FACTOR_LABELS = {
     "z_momo_osc_score": "momentum oscillator alignment",
 }
 
-_ENTRY_FALLBACK: dict = {
-    "entry_signal": "wait",
+DEFAULT_MODEL = "gpt-5.4-mini"            # per-stock + market analysis
+DEFAULT_PREFILTER_MODEL = "gpt-5.4-nano"  # material-vs-noise classification only
+
+# entry_signal vocabulary. The first three are judgments the model actually
+# made; the last two are the ABSENCE of a judgment and must never be rendered
+# as one. Collapsing all five into "wait" is what made 13 of 20 rows on
+# 2026-07-29 read as a deliberate "hold off" when 8 simply had no coverage
+# and 5 were outright API failures.
+SIGNAL_CONFIRM = "confirm_entry"
+SIGNAL_WAIT = "wait"
+SIGNAL_AVOID = "avoid"
+SIGNAL_NO_NEWS = "no_news"          # nothing material published — not a veto
+SIGNAL_UNAVAILABLE = "unavailable"  # the analysis failed — not a veto either
+
+_NEUTRAL_OVERLAY: dict = {
     "catalyst": "none",
     "priced_in": False,
     "duration": "noise",
     "thesis_consistency": "neutral",
     "conviction_delta": 0,
-    "reasoning": "Analysis unavailable.",
 }
+
+
+def _no_news(reasoning: str) -> dict:
+    return {**_NEUTRAL_OVERLAY, "entry_signal": SIGNAL_NO_NEWS, "reasoning": reasoning}
+
+
+def _unavailable(reasoning: str) -> dict:
+    return {**_NEUTRAL_OVERLAY, "entry_signal": SIGNAL_UNAVAILABLE, "reasoning": reasoning}
+
 
 _CARD_FALLBACK: dict = {
     "sentiment": "neutral",
@@ -103,38 +123,55 @@ def get_stock_news(ticker: str, days: int = 7) -> list[dict]:
         return []
 
 
-# ── Claude helpers ────────────────────────────────────────────────────────────
+# ── Response schemas (OpenAI strict mode) ─────────────────────────────────────
 
-def _parse_json(text: str) -> dict | None:
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except Exception:
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group())
-            except Exception:
-                pass
-    return None
+_PREFILTER_SCHEMA = object_schema({
+    "material": {"type": "array", "items": {"type": "integer"},
+                 "description": "1-based indices of the material articles"},
+})
 
+_ENTRY_SCHEMA = object_schema({
+    "entry_signal": {"type": "string", "enum": [SIGNAL_CONFIRM, SIGNAL_WAIT, SIGNAL_AVOID]},
+    "catalyst": {"type": "string", "enum": ["estimate_up", "estimate_down", "none"]},
+    "priced_in": {"type": "boolean"},
+    "duration": {"type": "string", "enum": ["noise", "days", "weeks"]},
+    "thesis_consistency": {"type": "string", "enum": ["confirms", "neutral", "contradicts"]},
+    "conviction_delta": {"type": "integer", "description": "-1, 0 or +1"},
+    "reasoning": {"type": "string"},
+})
 
-def _claude(model: str, prompt: str, max_tokens: int) -> str:
-    import anthropic
-    msg = anthropic.Anthropic().messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return next((b.text for b in reversed(msg.content) if b.type == "text"), "")
+# sector_signals is a LIST, not a keyed object: strict mode requires
+# additionalProperties:false, which cannot express "arbitrary sector names as
+# keys". Converted back to a dict by _analyze_market.
+_MARKET_SCHEMA = object_schema({
+    "regime_note": {"type": "string"},
+    "sector_signals": {
+        "type": "array",
+        "items": object_schema({
+            "sector": {"type": "string"},
+            "direction": {"type": "string", "enum": ["headwind", "tailwind"]},
+            "strength": {"type": "string", "enum": ["strong", "mild"]},
+            "reason": {"type": "string"},
+        }),
+    },
+})
+
+_CARD_SCHEMA = object_schema({
+    "sentiment": {"type": "string", "enum": ["bullish", "bearish", "neutral", "mixed"]},
+    "summary": {"type": "string"},
+    "key_risks": {"type": "array", "items": {"type": "string"}},
+})
 
 
 # ── Pipeline: pre-filter → context → analyze ─────────────────────────────────
 
-def _prefilter_articles(ticker: str, articles: list[dict]) -> list[dict]:
-    """Haiku: classify each article as material or noise. Returns material subset."""
+def _prefilter_articles(ticker: str, articles: list[dict], model: str) -> list[dict]:
+    """Classify each article as material or noise. Returns the material subset.
+
+    Fails OPEN (returns everything) — a broken filter must not manufacture a
+    "no material news" result, because that reads as an editorial judgment
+    about the stock rather than as the tooling failure it is.
+    """
     if not articles:
         return []
     lines = []
@@ -148,18 +185,17 @@ def _prefilter_articles(ticker: str, articles: list[dict]) -> list[dict]:
         "competitive position, or institutional flows.\n"
         "Noise = price-recap ('X rose 4%'), listicles, boilerplate, options-volume bots.\n\n"
         "Articles:\n" + "\n".join(lines) + "\n\n"
-        'Return ONLY JSON: {"material":[1,3]}'
+        "Return the 1-based indices of the material articles."
     )
     try:
-        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=150)
-        parsed = _parse_json(text)
-        if parsed and "material" in parsed:
-            indices = {int(i) - 1 for i in parsed["material"] if str(i).isdigit()}
-            result = [a for i, a in enumerate(articles) if i in indices]
-            return result if result else articles
-    except Exception:
-        pass
-    return articles  # fail-open
+        parsed = complete_json(prompt, _PREFILTER_SCHEMA, model,
+                              max_tokens=500, name="prefilter")
+    except LLMError as e:
+        print(f"[news] {ticker} prefilter failed ({e}) — keeping all {len(articles)} articles")
+        return articles
+    indices = {int(i) - 1 for i in parsed.get("material", [])}
+    result = [a for i, a in enumerate(articles) if i in indices]
+    return result
 
 
 def _build_context_block(rank: int, total: int, row: pd.Series, sector_signal: dict | None) -> str:
@@ -185,11 +221,17 @@ def _build_context_block(rank: int, total: int, row: pd.Series, sector_signal: d
     return "\n".join(lines)
 
 
-def _analyze_stock(ticker: str, articles: list[dict], context_block: str) -> dict:
-    """Sonnet: cross-reference news against screener context. Returns entry overlay."""
-    material = _prefilter_articles(ticker, articles)
+def _analyze_stock(ticker: str, articles: list[dict], context_block: str,
+                   model: str, prefilter_model: str) -> dict:
+    """Cross-reference news against screener context. Returns entry overlay."""
+    if not articles:
+        return _no_news(f"No news published for {ticker} in the last 7 days.")
+    material = _prefilter_articles(ticker, articles, prefilter_model)
     if not material:
-        return {**_ENTRY_FALLBACK, "reasoning": f"No material news found for {ticker}."}
+        return _no_news(
+            f"{len(articles)} article{'s' if len(articles) != 1 else ''} found for {ticker}, "
+            f"none material (price recaps / boilerplate)."
+        )
 
     now = datetime.now()
     article_lines = []
@@ -218,30 +260,24 @@ Reason through in order:
 4. DURATION: noise (1-day), days, or multi-week catalyst?
 5. Does the sector context amplify or offset the company news?
 
-Return ONLY JSON:
-{{
-  "entry_signal": "confirm_entry|wait|avoid",
-  "catalyst": "estimate_up|estimate_down|none",
-  "priced_in": false,
-  "duration": "noise|days|weeks",
-  "thesis_consistency": "confirms|neutral|contradicts",
-  "conviction_delta": 0,
-  "reasoning": "2-3 plain-English sentences: what the news actually says, why it matters for this stock right now, and what specific risk or opportunity it creates. Be specific and nuanced but avoid finance jargon — write for a smart investor who does not speak Wall Street."
-}}"""
+For "reasoning": 2-3 plain-English sentences covering what the news actually
+says, why it matters for this stock right now, and what specific risk or
+opportunity it creates. Be specific and nuanced but avoid finance jargon —
+write for a smart investor who does not speak Wall Street.
+
+"conviction_delta" must be -1, 0 or +1."""
 
     try:
-        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=600)
-        parsed = _parse_json(text)
-        if parsed:
-            parsed["conviction_delta"] = max(-1, min(1, int(parsed.get("conviction_delta", 0))))
-            return parsed
-    except Exception:
-        pass
-    return dict(_ENTRY_FALLBACK)
+        parsed = complete_json(prompt, _ENTRY_SCHEMA, model, max_tokens=3000, name="entry_overlay")
+    except LLMError as e:
+        print(f"[news] {ticker} analysis failed: {e}")
+        return _unavailable(f"Analysis failed for {ticker}: {e}")
+    parsed["conviction_delta"] = max(-1, min(1, int(parsed.get("conviction_delta", 0))))
+    return parsed
 
 
-def _analyze_market(articles: list[dict], sectors_in_play: list[str]) -> dict:
-    """Sonnet: produce sector_signals map from market headlines."""
+def _analyze_market(articles: list[dict], sectors_in_play: list[str], model: str) -> dict:
+    """Produce a sector_signals map from market headlines."""
     if not articles:
         return {"regime_note": "", "sector_signals": {}}
     headlines = "\n".join(f"- {a['headline']}" for a in articles[:15] if a.get("headline"))
@@ -255,52 +291,65 @@ Sectors in today's screener top picks: {sectors_str}
 
 Which of these sectors face near-term headwinds or tailwinds based on today's news?
 
-Return ONLY JSON:
-{{
-  "regime_note": "1 sentence on broad tape",
-  "sector_signals": {{
-    "Technology": {{"direction": "headwind|tailwind", "strength": "strong|mild", "reason": "brief"}}
-  }}
-}}
-Only emit entries when news genuinely shifts a sector's outlook. Restrict to: {sectors_str}"""
+"regime_note" is 1 sentence on the broad tape. Emit a sector_signals entry
+ONLY when the news genuinely shifts that sector's outlook — an empty list is
+the correct answer on a quiet tape. Restrict sectors to: {sectors_str}"""
     try:
-        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=800)
-        parsed = _parse_json(text)
-        if parsed:
-            return parsed
-    except Exception:
-        pass
-    return {"regime_note": "", "sector_signals": {}}
+        parsed = complete_json(prompt, _MARKET_SCHEMA, model, max_tokens=3000, name="market")
+    except LLMError as e:
+        print(f"[news] market analysis failed: {e}")
+        return {"regime_note": "", "sector_signals": {}}
+    signals = {
+        str(s["sector"]): {"direction": s["direction"], "strength": s["strength"],
+                           "reason": s["reason"]}
+        for s in parsed.get("sector_signals", []) if s.get("sector")
+    }
+    return {"regime_note": parsed.get("regime_note", ""), "sector_signals": signals}
 
 
 def _process_one(args: tuple) -> tuple[str, dict]:
     """Thread worker: fetch + analyze one stock."""
-    ticker, row, rank, total, sector_signal, finnhub_rate, db_path, ttl_hours = args
+    (ticker, row, rank, total, sector_signal, finnhub_rate, db_path, ttl_hours,
+     model, prefilter_model) = args
     cached = get_news_sentiment(db_path, ticker, ttl_hours)
     if cached:
         return ticker, cached
+    fetch_failed = False
     try:
         _get_bucket(finnhub_rate).consume()
         fh = _fh()
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         articles = (fh.company_news(ticker, _from=start, to=end) or [])[:10]
-    except Exception:
-        articles = []
+    except Exception as e:
+        print(f"[news] {ticker} article fetch failed: {e!r}")
+        articles, fetch_failed = [], True
+
+    # A failed Finnhub fetch is not "no news" — the distinction matters
+    # because "no news" is a fact about the stock and this is a fact about
+    # our plumbing. Don't cache it either; retry on the next run.
+    if fetch_failed:
+        return ticker, _unavailable(f"Could not fetch news for {ticker} (Finnhub request failed).")
+
     context = _build_context_block(rank, total, row, sector_signal)
-    result = _analyze_stock(ticker, articles, context)
-    put_news_sentiment(db_path, ticker, result)
+    result = _analyze_stock(ticker, articles, context, model, prefilter_model)
+    # Only cache real outcomes. Caching a transient LLM failure for the TTL
+    # would pin a whole row to "unavailable" for hours.
+    if result.get("entry_signal") != SIGNAL_UNAVAILABLE:
+        put_news_sentiment(db_path, ticker, result)
     return ticker, result
 
 
 def attach_news_overlay(ranked_df: pd.DataFrame, cfg: dict, db_path: str) -> pd.DataFrame:
     """Stage 4.5: add entry_signal overlay and conviction adjustment. Fail-open."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("[news] ANTHROPIC_API_KEY not set — skipping news overlay")
+    if not llm_available():
+        print("[news] OPENAI_API_KEY not set — skipping news overlay")
         return ranked_df
 
     news_cfg = cfg.get("news", {})
     top_n = int(news_cfg.get("analyze_top_n", 10))
+    model = str(news_cfg.get("model", DEFAULT_MODEL))
+    prefilter_model = str(news_cfg.get("prefilter_model", DEFAULT_PREFILTER_MODEL))
     ttl_hours = int(cfg.get("cache", {}).get("news_ttl_hours", 4))
     finnhub_rate = int(cfg.get("finnhub", {}).get("calls_per_minute", 60))
 
@@ -315,7 +364,7 @@ def attach_news_overlay(ranked_df: pd.DataFrame, cfg: dict, db_path: str) -> pd.
         print("[news] market analysis: cache hit")
     else:
         try:
-            market_result = _analyze_market(get_market_news(20), sectors_in_play)
+            market_result = _analyze_market(get_market_news(20), sectors_in_play, model)
             put_news_sentiment(db_path, "__MARKET__", market_result)
             print(f"[news] market: {str(market_result.get('regime_note', ''))[:80]}")
         except Exception as e:
@@ -329,7 +378,8 @@ def attach_news_overlay(ranked_df: pd.DataFrame, cfg: dict, db_path: str) -> pd.
     for i, (_, row) in enumerate(df.head(top_n).iterrows(), 1):
         ticker = str(row.get("ticker", ""))
         sig = sector_signals.get(str(row.get("sector", "")))
-        worker_args.append((ticker, row, i, total, sig, finnhub_rate, db_path, ttl_hours))
+        worker_args.append((ticker, row, i, total, sig, finnhub_rate, db_path, ttl_hours,
+                           model, prefilter_model))
 
     results: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -340,14 +390,22 @@ def attach_news_overlay(ranked_df: pd.DataFrame, cfg: dict, db_path: str) -> pd.
                 t, r = future.result()
                 results[t] = r
             except Exception as e:
-                print(f"[news] {ticker} failed: {e}")
-                results[ticker] = dict(_ENTRY_FALLBACK)
+                print(f"[news] {ticker} failed: {e!r}")
+                results[ticker] = _unavailable(f"Analysis failed for {ticker}: {e!r}")
 
-    print(f"[news] overlay: {len(results)}/{top_n} stocks processed")
+    tally: dict[str, int] = {}
+    for r in results.values():
+        sig_name = str(r.get("entry_signal", "?"))
+        tally[sig_name] = tally.get(sig_name, 0) + 1
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(tally.items()))
+    print(f"[news] overlay: {len(results)}/{top_n} stocks processed ({breakdown})")
 
-    # Initialise new columns with defaults
+    # Initialise new columns with defaults. entry_signal defaults to EMPTY,
+    # not "wait": a row past analyze_top_n was never looked at, and the UI
+    # already treats an empty signal as "nothing to show". Defaulting it to a
+    # real verdict invents an opinion nobody formed.
     for col, default in [
-        ("entry_signal", "wait"), ("catalyst", "none"), ("priced_in", False),
+        ("entry_signal", ""), ("catalyst", "none"), ("priced_in", False),
         ("duration", "noise"), ("thesis_consistency", "neutral"),
         ("conviction_delta", 0), ("conviction_news", None), ("news_reasoning", ""),
     ]:
@@ -383,9 +441,9 @@ def attach_news_overlay(ranked_df: pd.DataFrame, cfg: dict, db_path: str) -> pd.
 
 # ── Legacy UI helpers (Market Regime tab + on-demand stock cards) ─────────────
 
-def analyze_market_news(articles: list[dict]) -> dict:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return {**_CARD_FALLBACK, "summary": "Add ANTHROPIC_API_KEY to .env to enable AI news analysis."}
+def analyze_market_news(articles: list[dict], model: str = DEFAULT_MODEL) -> dict:
+    if not llm_available():
+        return {**_CARD_FALLBACK, "summary": "Add OPENAI_API_KEY to .env to enable AI news analysis."}
     if not articles:
         return {**_CARD_FALLBACK, "summary": "No news articles available."}
     headlines = "\n".join(f"- {a['headline']}" for a in articles[:15] if a.get("headline"))
@@ -394,19 +452,16 @@ def analyze_market_news(articles: list[dict]) -> dict:
 Headlines:
 {headlines}
 
-Return ONLY valid JSON:
-{{"sentiment": "bullish|bearish|neutral|mixed", "summary": "2-3 sentences on key themes", "key_risks": ["risk 1", "risk 2"]}}"""
+Give a 2-3 sentence summary of the key themes, plus the main risks."""
     try:
-        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=600)
-        parsed = _parse_json(text)
-        return parsed if parsed else {**_CARD_FALLBACK, "summary": text[:300]}
-    except Exception as e:
+        return complete_json(prompt, _CARD_SCHEMA, model, max_tokens=3000, name="market_card")
+    except LLMError as e:
         return {**_CARD_FALLBACK, "summary": f"Analysis error: {e}"}
 
 
-def analyze_stock_news(ticker: str, articles: list[dict]) -> dict:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return {**_CARD_FALLBACK, "summary": "Add ANTHROPIC_API_KEY to .env to enable AI news analysis."}
+def analyze_stock_news(ticker: str, articles: list[dict], model: str = DEFAULT_MODEL) -> dict:
+    if not llm_available():
+        return {**_CARD_FALLBACK, "summary": "Add OPENAI_API_KEY to .env to enable AI news analysis."}
     if not articles:
         return {**_CARD_FALLBACK, "summary": f"No recent news found for {ticker}."}
     headlines = "\n".join(f"- {a['headline']}" for a in articles[:8] if a.get("headline"))
@@ -415,11 +470,8 @@ def analyze_stock_news(ticker: str, articles: list[dict]) -> dict:
 Headlines:
 {headlines}
 
-Return ONLY valid JSON:
-{{"sentiment": "bullish|bearish|neutral|mixed", "summary": "1-2 sentences on momentum impact", "key_risks": ["risk 1"]}}"""
+Give a 1-2 sentence summary of the momentum impact, plus the main risks."""
     try:
-        text = _claude("claude-haiku-4-5-20251001", prompt, max_tokens=400)
-        parsed = _parse_json(text)
-        return parsed if parsed else {**_CARD_FALLBACK, "summary": text[:300]}
-    except Exception as e:
+        return complete_json(prompt, _CARD_SCHEMA, model, max_tokens=3000, name="stock_card")
+    except LLMError as e:
         return {**_CARD_FALLBACK, "summary": f"Analysis error: {e}"}
