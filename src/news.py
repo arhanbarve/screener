@@ -209,9 +209,17 @@ def _build_context_block(rank: int, total: int, row: pd.Series, sector_signal: d
             found_any = True
     if not found_any:
         lines.append("  - (moderate across all factors — no single dominant driver)")
-    entry = row.get("entry", "?")
+    # The technical entry grade is deliberately NOT included. A controlled A/B
+    # over 20 tickers (identical articles and material subset, grade the only
+    # variable) found it dominated the verdict rather than informing it: among
+    # 17 WAIT-graded names the `wait` rate ran 19/34 with the grade present vs
+    # 8/34 without, and every single flip went wait -> confirm_entry. That made
+    # entry_signal largely a restatement of entry_grade(), so the page showed
+    # one signal twice instead of the independent timing overlay STRATEGY.md
+    # §"role of the news overlay" specifies. Caution now has to be earned from
+    # the news itself — see the priced-in test in the prompt below.
     conv = int(row.get("conviction", 5) or 5)
-    lines.append(f"Technical entry grade: {entry}   Conviction: {conv}/10")
+    lines.append(f"Current conviction: {conv}/10")
     if sector_signal:
         sector = str(row.get("sector", ""))
         d = sector_signal.get("direction", "")
@@ -253,17 +261,48 @@ def _analyze_stock(ticker: str, articles: list[dict], context_block: str,
 Material news (last 7 days):
 {chr(10).join(article_lines)}
 
+You judge the NEWS only. You are not being shown this stock's chart or entry
+setup, and you must not speculate about them — a second, independent technical
+model already grades the setup, and your job is to add information it cannot
+see, not to guess at its verdict.
+
 Reason through in order:
-1. Does any item change the EARNINGS TRAJECTORY (likely to trigger sell-side revisions)?
-2. Is this PRICED IN (stock already ran on this) or fresh?
-3. Does any item CONTRADICT the ranking drivers above?
-4. DURATION: noise (1-day), days, or multi-week catalyst?
-5. Does the sector context amplify or offset the company news?
+1. EARNINGS TRAJECTORY — does any item change it in a way likely to trigger
+   sell-side revisions? A price-target change or a reiterated rating is an
+   opinion about the same facts, NOT a change to the trajectory. A guidance
+   revision, an earnings beat/miss, a contract win, or trial data IS.
+2. PRICED IN — this is the decisive test, so be strict about it, but be
+   precise about what it means. Ask: was this information already known to
+   the market BEFORE the move, or is the move a reaction to fresh news? A
+   stock jumping THE SAME DAY on a genuine earnings beat, guidance raise, or
+   contract win is NOT priced in — that is the market correctly reacting to
+   new information, and is exactly the pattern this signal exists to catch.
+   Priced in means the opposite: the news is several days old and the
+   reaction has already happened and faded, the item merely restates
+   something already public (a reiterated rating, a repeated thesis), or the
+   move is a sector-wide rally the whole group is riding rather than
+   something specific to this company.
+3. CONTRADICTION — does any item cut against the ranking drivers above (e.g. a
+   downgrade on a name that ranked on upgrade breadth)?
+4. DURATION — noise (1 day), days, or a multi-week catalyst?
+5. SECTOR — does the sector context amplify or offset the company news?
+
+Then choose entry_signal by these rules:
+- "confirm_entry" — the news improves the earnings trajectory AND is fresh
+  rather than priced in. Requires both.
+- "wait" — the news is positive but already priced in, merely reiterates a
+  known view, is sector-wide rather than company-specific, or is 1-day noise.
+  A price-target raise with no new operating information belongs here.
+- "avoid" — the news damages the earnings trajectory, or contradicts the
+  ranking drivers. Use this whenever the balance of material news is
+  negative; do not soften a genuine negative into "wait".
 
 For "reasoning": 2-3 plain-English sentences covering what the news actually
 says, why it matters for this stock right now, and what specific risk or
-opportunity it creates. Be specific and nuanced but avoid finance jargon —
-write for a smart investor who does not speak Wall Street.
+opportunity it creates. Say explicitly whether you judged it fresh or already
+priced in, and why. Be specific and nuanced but avoid finance jargon — write
+for a smart investor who does not speak Wall Street. Do not mention entry
+grades, chart setups or technical indicators; you have not been shown them.
 
 "conviction_delta" must be -1, 0 or +1."""
 
