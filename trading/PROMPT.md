@@ -18,6 +18,21 @@ decision and must justify each one in the journal.
   and never edit files outside `trading/`.
 - If `status` errors or data looks corrupt, make NO trades; write a
   journal entry explaining what failed.
+- **Write your reasoning to the journal BEFORE placing a single order.**
+  No order may be submitted until today's journal exists on disk with the
+  decisions and rationale in it. See step 5.
+
+## Why the journal comes first
+
+On 2026-08-03 this session placed six orders and then died before writing
+anything. The account held two new positions and a $15,000 SPY allocation
+for a day with no recorded justification, and the reasoning was recovered
+only by luck. Four of the seven sessions that started in the account's first
+nine trading days crashed mid-flight — this is a normal outcome, not an edge
+case, so the order is: reason on disk first, then trade, then record fills.
+
+A journal that says what you were about to do is worth a great deal. A set
+of fills with no journal is close to worthless.
 
 ## Procedure
 
@@ -34,14 +49,34 @@ decision and must justify each one in the journal.
 4. Decide. Consider: current positions vs their screener ranks today,
    better-ranked replacements, concentration, regime (SPY trend), news.
    Doing nothing is a valid decision — say why.
-5. Execute: `PY -m src.trader_cli buy TICKER --notional 8000`,
+5. **Journal first.** Write `trading/journal/YYYY-MM-DD.md` (today's date, ET)
+   with everything you already know — snapshot, context, decisions,
+   rationale, and the orders you are *about* to place. Head it
+   `**Status:** PLANNED — no orders placed yet`. Place no order before this
+   file is on disk.
+
+   If a journal for today already exists, an earlier attempt crashed. Read
+   it, then **supersede it**: keep anything still accurate, rewrite what has
+   changed, and do not append a second day's worth of entries to one file.
+   Check `PY -m src.trader_cli orders --status all` for fills from that
+   attempt before assuming the book is untouched.
+
+6. Execute: `PY -m src.trader_cli buy TICKER --notional 8000`,
    `... sell TICKER --notional 4000`, or `... close TICKER`.
    Sells/closes BEFORE buys (frees cash; orders fill at next open in
    sequence). Verify with `PY -m src.trader_cli orders --status all`.
-6. Journal to `trading/journal/YYYY-MM-DD.md` (today's date, ET):
+
+7. **Update the journal** with what actually happened: flip the status line
+   to `EXECUTED` (or `PARTIAL` if some orders did not fill), fill in the
+   orders table with real fills and order ids, then the post-trade book and
+   scorecard. Note any fill that landed materially away from the price you
+   decided on — pre-market indications have been off by ~10%.
+
+   Journal shape:
 
    ```
    # Trading Journal — YYYY-MM-DD
+   **Status:** PLANNED | EXECUTED | PARTIAL | NO TRADES
    ## Snapshot (pre-decision)
    Equity / cash / positions table with unrealized P&L
    ## Market context
@@ -49,14 +84,27 @@ decision and must justify each one in the journal.
    ## Decisions
    One block per action AND per considered-but-rejected action: what,
    why, screener evidence (rank/composite/conviction), news evidence
-   ## Orders placed
-   Table: side, ticker, notional or qty, order id, status
+   ## Planned orders                       <- written in step 5
+   Table: side, ticker, notional or qty, and the price you are deciding at
+   ## Orders placed                        <- filled in at step 7
+   Table: side, ticker, notional or qty, filled qty, avg price, order id,
+   status; realized P&L for any sell
+   ## Post-trade book                      <- filled in at step 7
    ## Scorecard
    Account equity vs $100,000 baseline (%); SPY vs its price at
    experiment start (record SPY's current price each day)
    ```
 
-7. Fridays: also write `trading/journal/weekly/YYYY-Www.md` — week's
+   Decide nothing new in step 7. If executing changed your mind about a
+   later order, say so in Decisions rather than quietly acting differently
+   from what you wrote.
+
+8. Fridays: also write `trading/journal/weekly/YYYY-Www.md` — week's
    equity change vs SPY, best/worst call, one lesson, current book.
 
-Keep total session focused: read, decide, execute, journal, stop.
+Keep total session focused: read, decide, journal, execute, record, stop.
+
+If you run out of turns or hit an error mid-session, the journal on disk is
+the deliverable — the runner commits `trading/` whether or not you finished,
+so a `PLANNED` entry with no fills is an honest and useful record. Never
+leave a `PLANNED` status on a day where orders did in fact fill.

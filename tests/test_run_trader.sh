@@ -155,6 +155,68 @@ else
 fi
 teardown
 
+# ── 3c. crash after fills with a PLANNED journal gets corrected ───────────────
+# PROMPT.md has the session journal before trading, so a crash between executing
+# and recording leaves a journal marked PLANNED when fills happened. The dead
+# session cannot fix that; the runner must.
+setup
+mkdir -p "$SANDBOX/trading/journal"
+cat > "$SANDBOX/trading/journal/$TODAY.md" <<'J'
+# Trading Journal — today
+**Status:** PLANNED — no orders placed yet
+## Decisions
+Buy MYE because reasons.
+J
+trader CLAUDE_RC=1 ACT_SAFE=false ACT_COUNT=3
+if grep -q "STATUS CORRECTED BY THE RUNNER" "$SANDBOX/trading/journal/$TODAY.md"; then
+    ok "PLANNED journal is corrected when fills happened"
+else
+    bad "PLANNED journal is corrected when fills happened" \
+        "journal: $(tr '\n' '|' < "$SANDBOX/trading/journal/$TODAY.md" | cut -c1-200)"
+fi
+# The session's own reasoning must survive untouched.
+if grep -q "Buy MYE because reasons" "$SANDBOX/trading/journal/$TODAY.md"; then
+    ok "runner correction preserves the session's reasoning"
+else
+    bad "runner correction preserves the session's reasoning" "original text gone"
+fi
+# The header must not still claim PLANNED on a day that traded.
+if grep -q 'Status:\*\* EXECUTED' "$SANDBOX/trading/journal/$TODAY.md" \
+   && ! grep -q 'Status:\*\* PLANNED' "$SANDBOX/trading/journal/$TODAY.md"; then
+    ok "status header flipped to EXECUTED"
+else
+    bad "status header flipped to EXECUTED" \
+        "header: $(grep -m1 'Status' "$SANDBOX/trading/journal/$TODAY.md")"
+fi
+teardown
+
+# A clean crash with no fills must NOT touch the journal — it is honestly PLANNED.
+setup
+mkdir -p "$SANDBOX/trading/journal"
+printf '# Trading Journal\n**Status:** PLANNED — no orders placed yet\n' \
+    > "$SANDBOX/trading/journal/$TODAY.md"
+before=$(cat "$SANDBOX/trading/journal/$TODAY.md")
+trader CLAUDE_RC=1 ACT_SAFE=true ACT_COUNT=0
+if [ "$(cat "$SANDBOX/trading/journal/$TODAY.md")" = "$before" ]; then
+    ok "PLANNED journal untouched when no orders filled"
+else
+    bad "PLANNED journal untouched when no orders filled" "journal was modified"
+fi
+teardown
+
+# An EXECUTED journal must never be second-guessed by the runner.
+setup
+mkdir -p "$SANDBOX/trading/journal"
+printf '# Trading Journal\n**Status:** EXECUTED\n## Orders placed\nall filled\n' \
+    > "$SANDBOX/trading/journal/$TODAY.md"
+trader CLAUDE_RC=1 ACT_SAFE=false ACT_COUNT=3
+if grep -q "STATUS CORRECTED" "$SANDBOX/trading/journal/$TODAY.md"; then
+    bad "EXECUTED journal left alone" "runner appended a correction anyway"
+else
+    ok "EXECUTED journal left alone"
+fi
+teardown
+
 # ── 4. an already-stamped day is skipped ──────────────────────────────────────
 setup
 echo "$TODAY" > "$SANDBOX/logs/trader_last_run"

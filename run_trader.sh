@@ -131,6 +131,36 @@ else
         echo "$TODAY" > "$STAMP_FILE"
         echo "=== Orders already placed today — stamping, will NOT retry ===" >> "$LOG_FILE"
         echo "=== Activity: $ACTIVITY ===" >> "$LOG_FILE"
+
+        # PROMPT.md has the session write its rationale BEFORE trading, so a
+        # crash between executing and recording leaves a journal still marked
+        # PLANNED even though fills happened. The session is dead and cannot
+        # correct it, so do it here — a journal that understates what it did is
+        # exactly the kind of misleading record the write-first order exists to
+        # prevent.
+        JOURNAL="trading/journal/$TODAY.md"
+        if [ -f "$JOURNAL" ] && grep -q 'Status:\*\* PLANNED' "$JOURNAL"; then
+            # Fix the header too, not just the footnote. Someone scanning the top
+            # of the file must not read PLANNED on a day that traded.
+            sed -i '' 's|\*\*Status:\*\* PLANNED.*|**Status:** EXECUTED — orders filled but never recorded by the session; see the runner correction at the end of this file|' "$JOURNAL"
+            {
+                echo ""
+                echo "> **STATUS CORRECTED BY THE RUNNER.** This entry was left marked PLANNED"
+                echo "> because the session crashed between placing its orders and recording"
+                echo "> them. Orders *did* fill on this date — \`run_trader.sh\` verified it via"
+                echo "> \`trader_cli activity-today\`, which returned:"
+                echo "> "
+                echo "> \`\`\`"
+                echo "> $ACTIVITY" | tr -d '\n' | sed 's/  */ /g'
+                echo ""
+                echo "> \`\`\`"
+                echo "> "
+                echo "> The decisions above are the session's own and were written before it"
+                echo "> traded, so they are trustworthy. The fills, post-trade book and"
+                echo "> scorecard were never written — reconcile against Alpaca order history."
+            } >> "$JOURNAL"
+            echo "=== Journal still marked PLANNED despite fills — appended runner correction ===" >> "$LOG_FILE"
+        fi
     fi
 fi
 
