@@ -36,6 +36,12 @@ of fills with no journal is close to worthless.
 
 ## Procedure
 
+0. **Clear resting stops first:** `PY -m src.trader_cli cancel-all`. Protective
+   stops rest against your shares, so a stop holds the very shares a sell needs
+   and the sell is rejected for insufficient quantity. You re-place them in
+   step 8. Note what was cancelled — if `status` then shows an order you did not
+   expect, an earlier attempt was mid-flight.
+
 1. `PY -m src.trader_cli status` (PY = /Library/Frameworks/Python.framework/Versions/3.14/bin/python3)
    — equity, cash, positions with unrealized P&L, open orders, market clock.
 2. Find the latest `output/screen_YYYY-MM-DD.csv`. If it is older than the
@@ -65,6 +71,19 @@ of fills with no journal is close to worthless.
    `... sell TICKER --notional 4000`, or `... close TICKER`.
    Sells/closes BEFORE buys (frees cash; orders fill at next open in
    sequence). Verify with `PY -m src.trader_cli orders --status all`.
+
+   **Order type is chosen for you.** `buy`/`sell` default to `--auto`: a market
+   order inside regular hours, otherwise a marketable limit that queues with a
+   price cap. A bare `--type market` outside regular hours is refused — on
+   2026-08-04 five market orders sat unpriced for 14 hours ahead of the open, and
+   this account has seen a 9.6% gap between a pre-market print and the fill. The
+   response reports the type chosen and why; put that in the journal. Override
+   with `--limit PRICE` when you have a level in mind, `--buffer-bps N` to widen
+   or tighten the cap, `--extended` only if you actually want a thin pre/post
+   market fill.
+
+   `close TICKER` is always a market liquidation, so only use it during regular
+   hours; outside them use `sell TICKER --qty <full position>`, which prices it.
 
 7. **Update the journal** with what actually happened: flip the status line
    to `EXECUTED` (or `PARTIAL` if some orders did not fill), fill in the
@@ -99,7 +118,21 @@ of fills with no journal is close to worthless.
    later order, say so in Decisions rather than quietly acting differently
    from what you wrote.
 
-8. Fridays: also write `trading/journal/weekly/YYYY-Www.md` — week's
+8. **Re-place protective stops:** `PY -m src.trader_cli sync-stops --apply`.
+   This rests a stop at each position's **max-loss floor** — computed by the same
+   `src/exit_plan.py` logic, from Alpaca's own cost basis, stored in
+   `data/alpaca/plans.json`. It is idempotent, so running it twice is harmless.
+
+   Only the floor is rested. The trailing stop and the 50-day trend break stay
+   yours to judge on closes: a resting intraday stop fires on a wick, which is the
+   flip-flopping the standing-verdict design removed. The floor exists so that a
+   catastrophic move still exits when a session never runs — four of the first
+   nine sessions crashed, so that is a real scenario, not a hypothetical.
+
+   Record in the journal what was placed and anything skipped. A position whose
+   shares are all committed to another open order legitimately gets no stop.
+
+9. Fridays: also write `trading/journal/weekly/YYYY-Www.md` — week's
    equity change vs SPY, best/worst call, one lesson, current book.
 
 Keep total session focused: read, decide, journal, execute, record, stop.

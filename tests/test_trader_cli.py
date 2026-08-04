@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+import pytest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -54,19 +55,102 @@ def test_gate_after_cutoff_skips():
     assert out["run"] is False
 
 
-def test_buy_prints_order_json(capsys):
-    with patch("src.trader_cli.broker.submit_order", return_value={"id": "ord1"}) as s:
+# buy/sell now route through cmd_order, which picks the order type from the
+# session. Inside regular hours that is still a market order; outside, it is a
+# marketable limit — a bare market order resting overnight is the failure these
+# tests exist to prevent.
+
+def _open_clock():
+    return {"is_open": True, "next_open": "2026-08-05T09:30:00-04:00",
+            "next_close": "2026-08-04T16:00:00-04:00"}
+
+
+def _closed_clock():
+    return {"is_open": False, "next_open": "2026-08-05T09:30:00-04:00",
+            "next_close": "2026-08-05T16:00:00-04:00"}
+
+
+def test_buy_in_regular_hours_is_a_market_order(capsys):
+    with patch("src.trader_cli.broker.get_clock", return_value=_open_clock()), \
+         patch("src.trader_cli.broker.get_latest_trade", return_value={"price": 850.0}), \
+         patch("src.trader_cli.broker.submit_order", return_value={"id": "ord1"}) as s:
         rc = trader_cli.main(["buy", "STX", "--notional", "5000"])
     assert rc == 0
-    s.assert_called_once_with("STX", "buy", notional=5000.0, qty=None)
-    assert json.loads(capsys.readouterr().out) == {"id": "ord1"}
+    s.assert_called_once_with(symbol="STX", side="buy", notional=5000.0,
+                              order_type="market")
+    out = json.loads(capsys.readouterr().out)
+    assert out["session"] == "open"
+    assert out["order"] == {"id": "ord1"}
+    assert "market" in out["reason"]
 
 
-def test_sell_qty(capsys):
-    with patch("src.trader_cli.broker.submit_order", return_value={"id": "ord2"}) as s:
+def test_sell_qty_in_regular_hours(capsys):
+    with patch("src.trader_cli.broker.get_clock", return_value=_open_clock()), \
+         patch("src.trader_cli.broker.get_latest_trade", return_value={"price": 770.0}), \
+         patch("src.trader_cli.broker.submit_order", return_value={"id": "ord2"}) as s:
         rc = trader_cli.main(["sell", "SPY", "--qty", "3"])
     assert rc == 0
-    s.assert_called_once_with("SPY", "sell", notional=None, qty=3.0)
+    s.assert_called_once_with(symbol="SPY", side="sell", qty=3.0,
+                              order_type="market")
+
+
+def test_buy_outside_hours_becomes_a_marketable_limit(capsys):
+    """The 2026-08-04 regression: five market orders queued 14h before the open."""
+    with patch("src.trader_cli.broker.get_clock", return_value=_closed_clock()), \
+         patch("src.trader_cli.broker.get_latest_trade", return_value={"price": 100.0}), \
+         patch("src.trader_cli.broker.submit_order", return_value={"id": "ord3"}) as s:
+        rc = trader_cli.main(["buy", "VSXY", "--notional", "4000"])
+    assert rc == 0
+    kwargs = s.call_args.kwargs
+    assert kwargs["order_type"] == "limit"
+    assert kwargs["limit_price"] == 100.5          # 50bp entry buffer
+    assert kwargs["qty"] == pytest.approx(4000 / 100.5, abs=1e-6)
+    assert "notional" not in kwargs                # limits must be share-sized
+    assert kwargs.get("extended_hours") is None    # thin books are opt-in
+
+
+def test_explicit_market_order_refused_outside_hours(capsys):
+    with patch("src.trader_cli.broker.get_clock", return_value=_closed_clock()), \
+         patch("src.trader_cli.broker.submit_order") as s:
+        rc = trader_cli.main(["buy", "VSXY", "--notional", "4000", "--type", "market"])
+    assert rc == 1
+    s.assert_not_called()
+    assert "refusing a market order" in capsys.readouterr().err
+
+
+def test_explicit_limit_is_passed_through(capsys):
+    with patch("src.trader_cli.broker.get_clock", return_value=_closed_clock()), \
+         patch("src.trader_cli.broker.submit_order", return_value={"id": "ord4"}) as s:
+        rc = trader_cli.main(["buy", "VSXY", "--notional", "4000",
+                              "--type", "limit", "--limit", "88.00"])
+    assert rc == 0
+    assert s.call_args.kwargs["limit_price"] == 88.0
+
+
+def test_buffer_bps_override(capsys):
+    with patch("src.trader_cli.broker.get_clock", return_value=_closed_clock()), \
+         patch("src.trader_cli.broker.get_latest_trade", return_value={"price": 100.0}), \
+         patch("src.trader_cli.broker.submit_order", return_value={"id": "ord5"}) as s:
+        rc = trader_cli.main(["buy", "VSXY", "--notional", "4000",
+                              "--buffer-bps", "10"])
+    assert rc == 0
+    assert s.call_args.kwargs["limit_price"] == 100.1
+
+
+def test_cancel_and_cancel_all(capsys):
+    with patch("src.trader_cli.broker.cancel_order", return_value={"ok": True}) as c:
+        assert trader_cli.main(["cancel", "abc-123"]) == 0
+    c.assert_called_once_with("abc-123")
+    with patch("src.trader_cli.broker.cancel_all_orders", return_value={"ok": True}) as c:
+        assert trader_cli.main(["cancel-all"]) == 0
+    c.assert_called_once_with()
+
+
+def test_quote_command(capsys):
+    with patch("src.trader_cli.broker.get_latest_trade",
+               return_value={"symbol": "SPY", "price": 771.7}):
+        assert trader_cli.main(["quote", "SPY"]) == 0
+    assert json.loads(capsys.readouterr().out)["price"] == 771.7
 
 
 def test_close_position(capsys):

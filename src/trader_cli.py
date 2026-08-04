@@ -8,6 +8,16 @@ Commands:
   close SYM           liquidate entire position
   orders [--status open|closed|all]
   activity-today      {"count": int, "safe_to_retry": bool} — did today touch the book?
+  quote SYM           last printed trade
+  cancel ORDER_ID     cancel one open order
+  cancel-all          cancel every open order
+  sync-stops          rest protective stops at each position's max-loss floor
+
+Order types. buy/sell default to --auto, which picks the order that fits the
+current session: market inside regular hours, otherwise a marketable limit that
+queues with a price cap. A bare market order outside regular hours is refused —
+on 2026-08-04 five of them sat unpriced for 14 hours ahead of the open. Override
+with --type/--limit/--stop when you mean something specific.
 """
 import argparse
 import json
@@ -81,6 +91,129 @@ def cmd_activity_today(today: str | None = None) -> dict:
     }
 
 
+def cmd_quote(symbol: str) -> dict:
+    return broker.get_latest_trade(symbol)
+
+
+def cmd_order(
+    symbol: str,
+    side: str,
+    notional: float | None = None,
+    qty: float | None = None,
+    order_type: str = "auto",
+    limit_price: float | None = None,
+    stop_price: float | None = None,
+    buffer_bps: float | None = None,
+    allow_extended: bool = False,
+) -> dict:
+    """Place an order, choosing the type from the session unless told otherwise.
+
+    "auto" is the default because the failure this guards against is not a bad
+    limit price, it is an unpriced market order resting overnight.
+    """
+    from src import orders as orders_mod
+
+    session = orders_mod.market_session(broker.get_clock())
+
+    if order_type == "auto":
+        plan = orders_mod.plan_order(
+            symbol, side, session,
+            last=broker.get_latest_trade(symbol)["price"],
+            notional=notional, qty=qty, buffer_bps=buffer_bps,
+            allow_extended=allow_extended,
+        )
+    else:
+        if order_type == "market" and session != "open":
+            raise broker.BrokerError(
+                f"refusing a market order while the market is {session}: it would "
+                f"rest unpriced until the next auction. Use --auto (marketable "
+                f"limit), or --type limit --limit PRICE if you have a level in mind."
+            )
+        plan = {"symbol": symbol.upper(), "side": side, "order_type": order_type,
+                "notional": notional, "qty": qty, "limit_price": limit_price,
+                "stop_price": stop_price,
+                "_why": f"{order_type}: explicitly requested"}
+        if allow_extended:
+            plan["extended_hours"] = True
+
+    why = plan.pop("_why", "")
+    plan = {k: v for k, v in plan.items() if v is not None}
+    result = broker.submit_order(**plan)
+    return {"session": session, "reason": why, "submitted": plan, "order": result}
+
+
+def cmd_sync_stops(apply: bool = False) -> dict:
+    """Rest a protective stop at each position's max-loss floor.
+
+    Idempotent: running twice places nothing the second time. Without that the
+    retry path would stack duplicate stops until they oversold the position.
+    """
+    from src import orders as orders_mod
+    from src import paper_stops
+
+    positions = broker.get_positions()
+    tickers = [(p.get("symbol") or "").upper() for p in positions]
+    if not tickers:
+        return {"place": [], "cancel": [], "keep": [], "skip": [], "applied": False,
+                "note": "no positions"}
+
+    earliest = min((p.get("held_since") or date.today().isoformat())
+                   for p in _with_held_since(positions))
+    history = paper_stops.fetch_history(tickers, earliest)
+    plans = paper_stops.build_plans(_with_held_since(positions), history)
+    paper_stops.save_plans(plans)
+    floors = paper_stops.floors_from_plans(plans)
+
+    # Drop any floor that would fire on placement — that is a plan error, and
+    # dumping a position on a bad plan is worse than resting no stop.
+    rejected = []
+    for p in positions:
+        sym = (p.get("symbol") or "").upper()
+        if sym not in floors:
+            continue
+        problem = paper_stops.sanity_check_floor(
+            floors[sym], float(p.get("current_price") or 0))
+        if problem:
+            rejected.append({"ticker": sym, "floor": floors.pop(sym), "reason": problem})
+
+    result = orders_mod.reconcile_stops(positions, floors, broker.get_orders("open"))
+    result["rejected"] = rejected
+    result["floors"] = floors
+    result["applied"] = False
+
+    if apply:
+        cancelled, placed = [], []
+        for o in result["cancel"]:
+            cancelled.append(broker.cancel_order(o["id"]))
+        for spec in result["place"]:
+            spec = {k: v for k, v in spec.items() if k != "_why"}
+            placed.append(broker.submit_order(**spec))
+        result.update(applied=True, cancelled=cancelled, placed=placed)
+    return result
+
+
+def _with_held_since(positions: list[dict]) -> list[dict]:
+    """Attach FIFO held_since from the paper snapshot when available.
+
+    After a partial sale the shares still held began later than the first fill,
+    and the plan's ATR must be taken at the entry that actually applies.
+    """
+    from src import paper
+
+    snap = paper.load_snapshot() or {}
+    by_ticker = {p["ticker"]: p for p in (snap.get("positions") or [])}
+    out = []
+    for p in positions:
+        sym = (p.get("symbol") or "").upper()
+        snapped = by_ticker.get(sym, {})
+        out.append({
+            "ticker": sym,
+            "avg_cost": p.get("avg_entry_price"),
+            "held_since": snapped.get("held_since"),
+        })
+    return out
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="trader_cli", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -92,11 +225,29 @@ def main(argv=None) -> int:
         g = sp.add_mutually_exclusive_group(required=True)
         g.add_argument("--notional", type=float)
         g.add_argument("--qty", type=float)
+        sp.add_argument("--type", dest="order_type", default="auto",
+                        choices=["auto", "market", "limit", "stop", "stop_limit"],
+                        help="auto (default) picks by session; market is refused "
+                             "outside regular hours")
+        sp.add_argument("--limit", dest="limit_price", type=float)
+        sp.add_argument("--stop", dest="stop_price", type=float)
+        sp.add_argument("--buffer-bps", dest="buffer_bps", type=float,
+                        help="max slippage for an auto limit (default 50bp buy / 200bp sell)")
+        sp.add_argument("--extended", dest="allow_extended", action="store_true",
+                        help="allow filling in pre/post-market (thin books)")
     sp = sub.add_parser("close")
     sp.add_argument("symbol")
     sp = sub.add_parser("orders")
     sp.add_argument("--status", default="open", choices=["open", "closed", "all"])
     sub.add_parser("activity-today")
+    sp = sub.add_parser("quote")
+    sp.add_argument("symbol")
+    sp = sub.add_parser("cancel")
+    sp.add_argument("order_id")
+    sub.add_parser("cancel-all")
+    sp = sub.add_parser("sync-stops")
+    sp.add_argument("--apply", action="store_true",
+                    help="actually place/cancel stops (default reports only)")
     args = p.parse_args(argv)
 
     try:
@@ -105,12 +256,25 @@ def main(argv=None) -> int:
         elif args.cmd == "gate":
             out = cmd_gate()
         elif args.cmd in ("buy", "sell"):
-            out = broker.submit_order(args.symbol.upper(), args.cmd,
-                                      notional=args.notional, qty=args.qty)
+            out = cmd_order(args.symbol.upper(), args.cmd,
+                            notional=args.notional, qty=args.qty,
+                            order_type=args.order_type,
+                            limit_price=args.limit_price,
+                            stop_price=args.stop_price,
+                            buffer_bps=args.buffer_bps,
+                            allow_extended=args.allow_extended)
         elif args.cmd == "close":
             out = broker.close_position(args.symbol.upper())
         elif args.cmd == "activity-today":
             out = cmd_activity_today()
+        elif args.cmd == "quote":
+            out = cmd_quote(args.symbol.upper())
+        elif args.cmd == "cancel":
+            out = broker.cancel_order(args.order_id)
+        elif args.cmd == "cancel-all":
+            out = broker.cancel_all_orders()
+        elif args.cmd == "sync-stops":
+            out = cmd_sync_stops(apply=args.apply)
         else:  # orders
             out = broker.get_orders(args.status)
     except broker.BrokerError as e:
