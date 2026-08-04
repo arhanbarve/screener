@@ -61,18 +61,39 @@ STATUS_LABEL = {
 }
 
 
+def _sessions(text: str | None) -> list[str]:
+    """Split a day's log into one chunk per launched session.
+
+    run_trader.sh appends every attempt to the same per-day file, and since it is
+    now retried on a poll, a single day's log can hold a crash followed by a
+    success. Judging the file as a whole would find the first attempt's
+    "exited nonzero" and report the day as crashed even though it later
+    completed — so the outcome must come from the last session, not the file.
+    """
+    if not text:
+        return []
+    parts = text.split(_M_STARTED)
+    return [_M_STARTED + p for p in parts[1:]]
+
+
 def classify_log(text: str | None) -> str:
-    """Map one day's trader log to a status. None/absent text means no_log."""
+    """Map one day's trader log to a status. None/absent text means no_log.
+
+    The outcome is that of the *final* session launched that day.
+    """
     if text is None:
         return "no_log"
+
+    sessions = _sessions(text)
+    if sessions:
+        last = sessions[-1]
+        if _M_NONZERO in last:
+            return "crashed"
+        return "ok" if _M_FINISHED in last else "running"
+
+    # Nothing ever started. A gate crash outranks the quieter reasons.
     if _M_GATE_FAILED in text:
         return "gate_failed"
-    started = _M_STARTED in text
-    if started:
-        if _M_NONZERO in text:
-            return "crashed"
-        return "ok" if _M_FINISHED in text else "running"
-    # Never started. Distinguish "gate said no" from "stamp already set".
     if _M_ALREADY_RAN in text or _M_ALREADY_RUNNING in text:
         return "skipped"
     if _M_GATE in text:
@@ -81,10 +102,17 @@ def classify_log(text: str | None) -> str:
 
 
 def log_wrote_journal(text: str | None) -> bool:
-    """Whether the run committed a journal. False when the marker says it didn't."""
+    """Whether the day's final session committed a journal.
+
+    Scoped to the last session for the same reason as classify_log: a failed
+    first attempt leaves "No journal changes to commit" in the file, which would
+    otherwise mask a successful retry that did write one.
+    """
     if not text:
         return False
-    return _M_NO_JOURNAL not in text
+    sessions = _sessions(text)
+    scope = sessions[-1] if sessions else text
+    return _M_NO_JOURNAL not in scope
 
 
 def _session_times(text: str | None) -> tuple[str | None, str | None]:
@@ -98,6 +126,17 @@ def _session_times(text: str | None) -> tuple[str | None, str | None]:
         elif _M_FINISHED in line:
             finished = line.split(_M_FINISHED, 1)[1].strip().rstrip("=").strip()
     return started, finished
+
+
+def attempt_count(text: str | None) -> int:
+    """How many sessions were launched that day.
+
+    run_trader.sh appends to one log per day and is polled every 15 minutes, so a
+    day that crashed and retried has several start markers. A day that burned all
+    five attempts is a different problem from a day that failed once, and only
+    this count distinguishes them.
+    """
+    return (text or "").count(_M_STARTED)
 
 
 def build_day(
@@ -115,6 +154,7 @@ def build_day(
         "severity": _SEVERITY[status],
         "started_at": started,
         "finished_at": finished,
+        "attempts": attempt_count(log_text),
         "journal": journal_exists,
         # A run that completed but left no journal is still a partial failure:
         # the decisions it made were never recorded.

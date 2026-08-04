@@ -7,11 +7,12 @@ Commands:
   sell SYM (--notional D | --qty N)
   close SYM           liquidate entire position
   orders [--status open|closed|all]
+  activity-today      {"count": int, "safe_to_retry": bool} — did today touch the book?
 """
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from src import broker
@@ -45,6 +46,41 @@ def cmd_gate(now: datetime | None = None) -> dict:
     return {"run": True, "reason": "trading day, within 08:30-15:45 ET window"}
 
 
+def orders_today(orders: list[dict], today: str | None = None) -> list[dict]:
+    """Orders submitted today, in any state — filled, pending, cancelled, rejected.
+
+    Deliberately not just fills. A cancelled or rejected order still means the
+    session reached the point of acting on the book, and re-running from scratch
+    after that risks duplicating intent.
+    """
+    today = today or date.today().isoformat()
+    out = []
+    for o in orders:
+        stamp = o.get("submitted_at") or o.get("created_at") or o.get("filled_at") or ""
+        if stamp[:10] == today:
+            out.append(o)
+    return out
+
+
+def cmd_activity_today(today: str | None = None) -> dict:
+    """Whether a crashed session may safely be retried.
+
+    run_trader.sh used to stamp the day *before* the session so a crash could
+    never retry, on the reasoning that partial orders plus a retry is worse than
+    a missed day. That is right, but it turned every transient disconnect into a
+    permanently skipped trading day — 4 of the account's first 7 sessions.
+
+    Retrying is safe only when the crashed session never touched the book. This
+    is the check that makes the difference decidable instead of assumed.
+    """
+    orders = orders_today(broker.get_orders("all"), today)
+    return {
+        "count": len(orders),
+        "safe_to_retry": len(orders) == 0,
+        "symbols": sorted({(o.get("symbol") or "").upper() for o in orders}),
+    }
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="trader_cli", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -60,6 +96,7 @@ def main(argv=None) -> int:
     sp.add_argument("symbol")
     sp = sub.add_parser("orders")
     sp.add_argument("--status", default="open", choices=["open", "closed", "all"])
+    sub.add_parser("activity-today")
     args = p.parse_args(argv)
 
     try:
@@ -72,6 +109,8 @@ def main(argv=None) -> int:
                                       notional=args.notional, qty=args.qty)
         elif args.cmd == "close":
             out = broker.close_position(args.symbol.upper())
+        elif args.cmd == "activity-today":
+            out = cmd_activity_today()
         else:  # orders
             out = broker.get_orders(args.status)
     except broker.BrokerError as e:

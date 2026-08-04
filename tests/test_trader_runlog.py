@@ -8,6 +8,7 @@ import pytest
 
 from src.trader_runlog import (
     STATUS_LABEL,
+    attempt_count,
     STATUS_ORDER,
     build_day,
     classify_log,
@@ -258,3 +259,87 @@ def test_collect_reads_logs_and_journals(tmp_path):
 def test_collect_missing_dirs_yields_no_log(tmp_path):
     rec = collect(["2026-08-04"], tmp_path / "nope", tmp_path / "nada")
     assert rec["days"][0]["status"] == "no_log"
+
+
+# ── attempt counting ──────────────────────────────────────────────────────────
+# run_trader.sh appends to one log per day and is polled every 15 minutes, so a
+# retried day has several start markers. Five burned attempts is a different
+# problem from one failure.
+
+def test_attempt_count_single_session():
+    assert attempt_count(LOG_OK) == 1
+
+
+def test_attempt_count_counts_retries():
+    assert attempt_count(LOG_CRASHED + LOG_CRASHED + LOG_OK) == 3
+
+
+def test_attempt_count_zero_without_log():
+    assert attempt_count(None) == 0
+    assert attempt_count(LOG_GATE_FAILED) == 0
+
+
+def test_build_day_carries_attempts():
+    d = build_day("2026-08-04", LOG_CRASHED + LOG_CRASHED, journal_exists=False)
+    assert d["attempts"] == 2
+    # A retried day that still ended crashed is reported as crashed.
+    assert d["status"] == "crashed"
+
+
+def test_retry_then_success_is_ok():
+    """Crash, then a retry that completes, must read as a completed day."""
+    d = build_day("2026-08-04", LOG_CRASHED + LOG_OK, journal_exists=True)
+    assert d["attempts"] == 2
+    assert d["status"] == "ok"
+    assert d["journal_missing"] is False
+
+
+# ── retries append to one log, so outcome must come from the LAST session ──────
+# Before retries existed each day had one session and reading the whole file was
+# fine. Now a crash followed by a successful retry lives in the same file, and
+# judging the file as a whole reports the day as crashed.
+
+def test_crash_then_retry_success_reads_as_completed():
+    assert classify_log(LOG_CRASHED + LOG_OK) == "ok"
+
+
+def test_success_then_nothing_stays_completed():
+    assert classify_log(LOG_OK) == "ok"
+
+
+def test_two_crashes_read_as_crashed():
+    assert classify_log(LOG_CRASHED + LOG_CRASHED) == "crashed"
+
+
+def test_crash_then_still_running_reads_as_running():
+    assert classify_log(LOG_CRASHED + LOG_RUNNING) == "running"
+
+
+def test_gate_failure_then_successful_retry_reads_as_completed():
+    """The gate can fail on one poll and succeed on the next."""
+    assert classify_log(LOG_GATE_FAILED + LOG_OK) == "ok"
+
+
+def test_gate_failure_alone_still_reads_as_gate_failed():
+    assert classify_log(LOG_GATE_FAILED) == "gate_failed"
+
+
+def test_journal_marker_scoped_to_last_session():
+    """A failed first attempt must not mask a retry that did write a journal."""
+    assert log_wrote_journal(LOG_CRASHED + LOG_OK) is True
+    assert log_wrote_journal(LOG_OK + LOG_CRASHED) is False
+
+
+def test_conservative_stamp_marker_reads_as_crashed():
+    """The 'could not verify' branch still exited nonzero — report it as crashed."""
+    log = (LOG_RUNNING
+           + "=== Trader session finished: Tue Aug  4 09:26:32 EDT 2026 ===\n"
+             "=== claude session exited nonzero (rc=1) ===\n"
+             "=== Could not verify order activity — stamping conservatively, will NOT retry ===\n")
+    assert classify_log(log) == "crashed"
+
+
+def test_new_nonzero_marker_with_rc_still_matches():
+    """run_trader.sh now appends (rc=N); the marker check must still fire."""
+    log = LOG_RUNNING + "=== claude session exited nonzero (rc=137) ===\n"
+    assert classify_log(log) == "crashed"

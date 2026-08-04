@@ -12,6 +12,20 @@
     </array>
     <key>RunAtLoad</key>
     <true/>
+    <!--
+      StartInterval polls every 15 minutes so the session starts as soon as the
+      Mac is next awake on a trading day, instead of only at 09:00. launchd fires
+      a missed interval on wake, which is the closest thing it offers to a
+      wake trigger. This matters because the 09:00 calendar fire only DarkWakes
+      the machine — macOS returns to sleep seconds later and kills the session's
+      streaming connection, which silently cost 4 of the first 7 trading days.
+
+      Repeat firing is safe: run_trader.sh holds a PID lock, exits immediately
+      outside 08:30-15:45 ET and on weekends before making any network call,
+      refuses to run once the day is stamped, and caps attempts at 5 per day.
+    -->
+    <key>StartInterval</key>
+    <integer>900</integer>
     <key>StartCalendarInterval</key>
     <array>
         <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>1</integer></dict>
@@ -20,6 +34,16 @@
         <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>4</integer></dict>
         <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>5</integer></dict>
     </array>
+    <!--
+      launchd gives a job a minimal PATH that omits /opt/homebrew/bin, so the
+      SessionEnd hook's `node` was not found on every run. Harmless in itself,
+      but it filled the log with errors that made real failures harder to spot.
+    -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>/Users/arhanbarve/Code/screener/logs/trader_launchd.log</string>
     <key>StandardErrorPath</key>

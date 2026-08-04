@@ -2790,8 +2790,13 @@ def _render_paper_cadence(cadence: dict) -> None:
     for d in days:
         color = _CADENCE_COLOR.get(d["status"], "var(--muted)")
         j = "" if not d.get("journal_missing") else "◦"
+        # A day that burned several attempts is a different problem from one that
+        # failed once, so the retry count shows on the chip.
+        n = d.get("attempts") or 0
+        tries = f" ×{n}" if n > 1 else ""
         chips += (
             f'<div title="{_html.escape(d["date"])} — {_html.escape(d["label"])}'
+            f'{f" ({n} attempts)" if n > 1 else ""}'
             f'{" (no journal)" if d.get("journal_missing") else ""}" '
             f'style="flex:1 1 54px;min-width:54px;background:var(--surface-2);'
             f'border:1px solid var(--border);border-top:2px solid {color};'
@@ -2799,7 +2804,7 @@ def _render_paper_cadence(cadence: dict) -> None:
             f'<div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted)">'
             f'{_html.escape(d["date"][5:])}</div>'
             f'<div style="font-family:var(--mono);font-size:0.5rem;color:{color};'
-            f'letter-spacing:0.04em;margin-top:3px">{_html.escape(d["label"])}{j}</div>'
+            f'letter-spacing:0.04em;margin-top:3px">{_html.escape(d["label"])}{tries}{j}</div>'
             f'</div>'
         )
     st.markdown(
