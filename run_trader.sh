@@ -62,11 +62,22 @@ echo "=== Trader session started: $(date) ===" >> "$LOG_FILE"
 
 echo "=== Trader session finished: $(date) ===" >> "$LOG_FILE"
 
-# Commit journal (same auto-commit policy as run_screener.sh)
-if git diff --quiet HEAD -- trading/ && [ -z "$(git ls-files --others --exclude-standard trading/)" ]; then
+# Refresh the Alpaca snapshot the Paper page renders from. Runs after the
+# session so it captures the day's fills. All-or-nothing inside: a fetch failure
+# leaves the previous snapshot untouched, so a bad day never overwrites good
+# data. Non-fatal — a stale snapshot is better than a failed trader run.
+"$PY" -c "from src import paper; paper.refresh()" >> "$LOG_FILE" 2>&1 \
+    || echo "=== paper snapshot refresh failed (non-fatal) ===" >> "$LOG_FILE"
+
+# Commit journal + paper snapshot (same auto-commit policy as run_screener.sh).
+# The snapshot must be committed for Streamlit Cloud to see it; logs/ is
+# gitignored, so the cadence data embedded in the snapshot is the only way the
+# cloud page can report whether the trader actually ran.
+if git diff --quiet HEAD -- trading/ data/alpaca/portfolio.json \
+   && [ -z "$(git ls-files --others --exclude-standard trading/ data/alpaca/)" ]; then
     echo "=== No journal changes to commit ===" >> "$LOG_FILE"
 else
-    git add trading/
+    git add trading/ data/alpaca/portfolio.json
     git commit -m "chore(trading): journal $TODAY" >> "$LOG_FILE" 2>&1
     git push >> "$LOG_FILE" 2>&1 || echo "=== git push failed (non-fatal) ===" >> "$LOG_FILE"
 fi

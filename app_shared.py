@@ -1191,6 +1191,7 @@ _NAV = [
     ("SCREENER",   "screener",   "MOMENTUM RANKINGS"),
     ("REGIME",     "regime",     "MARKET STATE"),
     ("POSITIONS",  "positions",  "OPEN P&L"),
+    ("PAPER",      "paper",      "PAPER P&L"),
     ("MONITOR",    "monitor",    "RUN STATUS"),
 ]
 
@@ -1199,6 +1200,7 @@ _PAGE_FILES = {
     "screener":   "app.py",
     "regime":     "pages/2_Regime.py",
     "positions":  "pages/3_Positions.py",
+    "paper":      "pages/4_Paper.py",
     "monitor":    "pages/6_Monitor.py",
 }
 
@@ -2504,6 +2506,551 @@ def _render_positions() -> None:
 
     for pos in enriched:
         _render_position_card(pos, fid_by_ticker.get(pos["ticker"]), batch.get(pos["ticker"]))
+
+
+# ── Paper trading ─────────────────────────────────────────────────────────────
+#
+# Charts here are hand-rolled SVG rather than Altair/Plotly. Both would render
+# into their own canvas with their own type and chrome, reading as a different
+# design language beside these cards; inline SVG uses the same CSS variables as
+# everything else and needs no new dependency.
+
+def _norm(values: list[float], lo: float, hi: float, top: float, bottom: float) -> list[float]:
+    """Map data values onto y pixels, inverted (bigger value = smaller y)."""
+    span = (hi - lo) or 1.0
+    return [bottom - (v - lo) / span * (bottom - top) for v in values]
+
+
+def _svg_equity_curve(curve: dict, height: int = 250) -> str:
+    """Account vs SPY since inception, with the shortfall drawn as a shaded band.
+
+    The gap between the two lines is the whole point of the chart, so it gets
+    filled rather than left for the eye to measure between two strokes.
+    """
+    dates = curve.get("dates") or []
+    acct  = [v for v in (curve.get("account_pct") or []) if v is not None]
+    spy   = [v for v in (curve.get("spy_pct") or []) if v is not None]
+    if len(dates) < 2 or len(acct) < 2 or len(spy) < 2:
+        return (
+            '<div style="font-family:var(--mono);font-size:0.65rem;color:var(--muted);'
+            'padding:28px 0;text-align:center">NOT ENOUGH HISTORY FOR A CURVE YET</div>'
+        )
+
+    n = min(len(dates), len(acct), len(spy))
+    dates, acct, spy = dates[:n], acct[:n], spy[:n]
+
+    W, L, R, T, B = 720, 52, 700, 20, height - 44
+    lo = min(min(acct), min(spy))
+    hi = max(max(acct), max(spy))
+    pad = max((hi - lo) * 0.15, 0.4)
+    lo, hi = lo - pad, hi + pad
+
+    xs = [L + i * (R - L) / (n - 1) for i in range(n)]
+    ay = _norm(acct, lo, hi, T, B)
+    sy = _norm(spy, lo, hi, T, B)
+
+    def _pts(ys: list[float]) -> str:
+        return " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+
+    # Gridlines on whole percents, at most 5 so the plot stays quiet.
+    import math
+    step = max(1.0, math.ceil((hi - lo) / 5))
+    ticks: list[float] = []
+    t = math.ceil(lo / step) * step
+    while t <= hi and len(ticks) < 8:
+        ticks.append(t)
+        t += step
+    grid = "".join(
+        f'<line x1="{L}" y1="{y:.1f}" x2="{R}" y2="{y:.1f}" stroke="var(--border)" stroke-width="1"/>'
+        f'<text x="{L - 8}" y="{y + 3.5:.1f}" text-anchor="end" font-family="var(--mono)" '
+        f'font-size="9" fill="var(--muted)">{"0%" if abs(v) < 1e-9 else f"{v:+.0f}%"}</text>'
+        for v, y in zip(ticks, _norm(ticks, lo, hi, T, B))
+    )
+    zero_y = _norm([0.0], lo, hi, T, B)[0]
+
+    band = (
+        f'M{_pts(ay).replace(" ", " L")} L'
+        + " L".join(f"{x:.1f},{y:.1f}" for x, y in zip(reversed(xs), reversed(sy)))
+        + " Z"
+    )
+    behind = acct[-1] < spy[-1]
+    band_color = "var(--bear)" if behind else "var(--bull)"
+
+    xlabels = ""
+    for i in (0, n // 2, n - 1):
+        anchor = "start" if i == 0 else ("end" if i == n - 1 else "middle")
+        xlabels += (
+            f'<text x="{xs[i]:.1f}" y="{B + 26}" text-anchor="{anchor}" '
+            f'font-family="var(--mono)" font-size="9" fill="var(--muted)">'
+            f'{_html.escape(dates[i][5:])}</text>'
+        )
+
+    return (
+        f'<svg viewBox="0 0 {W} {height}" style="display:block;width:100%;height:auto" '
+        f'role="img" aria-label="Account {acct[-1]:+.2f} percent versus SPY {spy[-1]:+.2f} percent since inception">'
+        f'<defs>'
+        f'<linearGradient id="pgap" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0%" stop-color="{band_color}" stop-opacity="0.26"/>'
+        f'<stop offset="100%" stop-color="{band_color}" stop-opacity="0.03"/>'
+        f'</linearGradient>'
+        f'<filter id="pglow" x="-50%" y="-50%" width="200%" height="200%">'
+        f'<feGaussianBlur stdDeviation="3" result="b"/>'
+        f'<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>'
+        f'</filter>'
+        f'</defs>'
+        f'{grid}'
+        f'<path d="{band}" fill="url(#pgap)"/>'
+        f'<line x1="{L}" y1="{zero_y:.1f}" x2="{R}" y2="{zero_y:.1f}" '
+        f'stroke="var(--dim)" stroke-width="1" stroke-dasharray="2 3"/>'
+        f'<polyline fill="none" stroke="var(--dim)" stroke-width="1.5" '
+        f'stroke-dasharray="4 3" points="{_pts(sy)}"/>'
+        f'<polyline fill="none" stroke="var(--accent)" stroke-width="2.25" '
+        f'stroke-linejoin="round" stroke-linecap="round" filter="url(#pglow)" points="{_pts(ay)}"/>'
+        f'<circle cx="{xs[-1]:.1f}" cy="{ay[-1]:.1f}" r="4" fill="var(--accent)"/>'
+        f'<circle cx="{xs[-1]:.1f}" cy="{ay[-1]:.1f}" r="1.8" fill="var(--bg)"/>'
+        f'<circle cx="{xs[-1]:.1f}" cy="{sy[-1]:.1f}" r="2.5" fill="var(--dim)"/>'
+        f'{xlabels}'
+        f'</svg>'
+    )
+
+
+def _svg_sparkline(history: list[dict], held_since: str | None, up: bool, width: int = 118) -> str:
+    """Price since the currently-held lots were opened.
+
+    held_since comes from FIFO lot matching, so after a partial sale this starts
+    when the shares you still own were bought — not at the first-ever fill.
+    """
+    pts = [h for h in (history or []) if h.get("close")]
+    if held_since:
+        pts = [h for h in pts if h.get("date", "") >= held_since]
+    closes = [float(h["close"]) for h in pts]
+    if len(closes) < 2:
+        return (
+            f'<span style="font-family:var(--mono);font-size:0.52rem;color:var(--dim)">'
+            f'NO HISTORY</span>'
+        )
+
+    H = 30
+    lo, hi = min(closes), max(closes)
+    xs = [2 + i * (width - 4) / (len(closes) - 1) for i in range(len(closes))]
+    ys = _norm(closes, lo, hi, 3, H - 3)
+    color = "var(--bull)" if up else "var(--bear)"
+    pts_s = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+    return (
+        f'<svg viewBox="0 0 {width} {H}" style="width:{width}px;height:{H}px;display:block" '
+        f'role="img" aria-label="price since entry, {len(closes)} sessions">'
+        f'<polyline fill="none" stroke="{color}" stroke-width="1.5" '
+        f'stroke-linejoin="round" points="{pts_s}"/>'
+        f'<circle cx="{xs[-1]:.1f}" cy="{ys[-1]:.1f}" r="2" fill="{color}"/>'
+        f'</svg>'
+    )
+
+
+def _render_paper_card(p: dict, equity: float) -> None:
+    total_d = p.get("total_gl_dollar")
+    total_p = p.get("total_gl_pct")
+    today_d = p.get("today_gl_dollar")
+    today_p = p.get("today_gl_pct")
+    up = (total_d or 0) >= 0
+
+    accent = "var(--bull)" if up else "var(--bear)"
+    pct_str = f"{total_p:+.2%}" if total_p is not None else "—"
+    today_color = "var(--muted)" if today_d is None else ("var(--bull)" if today_d >= 0 else "var(--bear)")
+
+    mv = p.get("market_value") or 0.0
+    share = (mv / equity) if equity else 0.0
+    qty = p.get("quantity") or 0.0
+    avg = p.get("avg_cost")
+    avg_str = f"${avg:,.2f}" if avg else "—"
+    # MM-DD keeps the meta line on one row; the year is always the current one
+    # for a position you still hold, and a wrapped "2026-07-/24" reads as broken.
+    held = p.get("held_since")
+    held_str = held[5:] if held and len(held) == 10 else (held or "—")
+
+    realized = p.get("realized_to_date") or 0.0
+    realized_note = ""
+    if abs(realized) > 0.01:
+        # A trimmed position has banked P&L the unrealized figure doesn't show.
+        rc = "var(--bull)" if realized >= 0 else "var(--bear)"
+        realized_note = (
+            f'<span style="color:var(--muted)"> · </span>'
+            f'<span style="color:{rc}">Banked {_fmt_gl(realized, None).split(" (")[0]}</span>'
+        )
+
+    st.markdown(
+        f'<div style="background:var(--surface-2);border:1px solid var(--border);'
+        f'border-radius:var(--radius);padding:14px 16px;position:relative;overflow:hidden;'
+        f'margin-bottom:12px">'
+        f'<div style="position:absolute;left:0;top:0;bottom:0;width:2px;background:{accent};'
+        f'box-shadow:0 0 12px {accent}"></div>'
+        f'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">'
+        f'<div>'
+        f'<div style="font-family:var(--mono);font-size:1.3rem;font-weight:700;color:var(--text)">'
+        f'{_html.escape(p["ticker"])}</div>'
+        f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);margin-top:3px">'
+        f'{qty:,.2f} sh · {avg_str} avg · since {_html.escape(held_str)}</div>'
+        f'</div>'
+        f'<div style="text-align:right">'
+        f'<div style="font-family:var(--mono);font-size:1.3rem;font-weight:700;color:{accent}">{pct_str}</div>'
+        f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);margin-top:2px">'
+        f'${p.get("last_price", 0):,.2f}</div>'
+        f'</div>'
+        f'</div>'
+        f'<div style="font-family:var(--mono);font-size:0.62rem;margin-top:8px">'
+        f'<span style="color:{today_color}">Today {_fmt_gl(today_d, today_p)}</span>'
+        f'<span style="color:var(--muted)"> · </span>'
+        f'<span style="color:{accent}">Total {_fmt_gl(total_d, total_p)}</span>'
+        f'{realized_note}'
+        f'</div>'
+        f'<div style="display:flex;align-items:center;gap:10px;margin-top:11px">'
+        f'<span style="font-family:var(--mono);font-size:0.52rem;letter-spacing:0.1em;'
+        f'color:var(--muted);white-space:nowrap">SINCE ENTRY</span>'
+        f'{_svg_sparkline(p.get("history"), p.get("held_since"), up)}'
+        f'</div>'
+        f'<div style="margin-top:11px">'
+        f'<div style="height:4px;background:var(--surface-3);border-radius:2px;overflow:hidden">'
+        f'<div style="height:100%;width:{min(share * 100, 100):.2f}%;background:{accent};'
+        f'border-radius:2px"></div>'
+        f'</div>'
+        f'<div style="font-family:var(--mono);font-size:0.53rem;letter-spacing:0.1em;'
+        f'color:var(--muted);margin-top:5px">{share:.1%} OF ACCOUNT · ${mv:,.0f}</div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+_CADENCE_COLOR = {
+    "ok":           "var(--bull)",
+    "crashed":      "var(--bear)",
+    "no_log":       "var(--bear)",
+    "gate_failed":  "var(--bear)",
+    "running":      "var(--accent)",
+    "gate_blocked": "var(--dim)",
+    "skipped":      "var(--muted)",
+}
+
+
+def _render_paper_cadence(cadence: dict) -> None:
+    """Did the trader run, and finish, on every market day?
+
+    run_trader.sh stamps the date *before* the session so a crash never retries.
+    That is right for order safety but means a crashed day is skipped forever and
+    looks identical to a clean one — the logs live under logs/, which is
+    gitignored, so nothing surfaced it. This section is the only place a missed
+    or crashed day becomes visible.
+    """
+    days = cadence.get("days") or []
+    summary = cadence.get("summary") or {}
+    if not days:
+        st.markdown(
+            '<div style="font-family:var(--mono);font-size:0.65rem;color:var(--muted)">'
+            'NO RUN HISTORY IN SNAPSHOT</div>', unsafe_allow_html=True)
+        return
+
+    _page_title("TRADER RUN CADENCE")
+
+    completed = summary.get("completed", 0)
+    total     = summary.get("market_days", 0)
+    broken    = summary.get("broken", 0)
+    missing_j = summary.get("journals_missing", 0)
+    streak    = summary.get("streak_ok", 0)
+
+    ok_cls     = "bull" if broken == 0 else "bear"
+    streak_cls = "bull" if streak > 0 else "bear"
+
+    st.markdown(f"""
+<div class="summary-strip">
+  <div class="summary-cell">
+    <div class="summary-label">MARKET DAYS</div>
+    <div class="summary-value">{total}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">COMPLETED</div>
+    <div class="summary-value {ok_cls}">{completed}/{total}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">FAILED DAYS</div>
+    <div class="summary-value {'bear' if broken else 'bull'}">{broken}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">NO JOURNAL</div>
+    <div class="summary-value {'bear' if missing_j else 'bull'}">{missing_j}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">CLEAN STREAK</div>
+    <div class="summary-value {streak_cls}">{streak}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # One chip per market day, oldest left. Colour encodes outcome so a run of
+    # red is visible without reading a single label.
+    chips = ""
+    for d in days:
+        color = _CADENCE_COLOR.get(d["status"], "var(--muted)")
+        j = "" if not d.get("journal_missing") else "◦"
+        chips += (
+            f'<div title="{_html.escape(d["date"])} — {_html.escape(d["label"])}'
+            f'{" (no journal)" if d.get("journal_missing") else ""}" '
+            f'style="flex:1 1 54px;min-width:54px;background:var(--surface-2);'
+            f'border:1px solid var(--border);border-top:2px solid {color};'
+            f'border-radius:var(--radius-sm);padding:7px 6px;text-align:center">'
+            f'<div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted)">'
+            f'{_html.escape(d["date"][5:])}</div>'
+            f'<div style="font-family:var(--mono);font-size:0.5rem;color:{color};'
+            f'letter-spacing:0.04em;margin-top:3px">{_html.escape(d["label"])}{j}</div>'
+            f'</div>'
+        )
+    st.markdown(
+        f'<div style="display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 6px">{chips}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);'
+        'margin-bottom:14px">◦ = ran but wrote no journal · '
+        'CRASHED = session exited nonzero · GATE FAILED = never attempted</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Yesterday / most recent run, spelled out.
+    from src.trader_runlog import last_run as _last_run
+    lr = _last_run(days)
+    if lr:
+        color = _CADENCE_COLOR.get(lr["status"], "var(--muted)")
+        jr = "journal written" if lr.get("journal") else "no journal written"
+        st.markdown(
+            f'<div style="background:var(--surface-2);border:1px solid var(--border);'
+            f'border-left:2px solid {color};border-radius:var(--radius);padding:11px 14px;'
+            f'margin-bottom:18px">'
+            f'<div style="font-family:var(--mono);font-size:0.55rem;letter-spacing:0.12em;'
+            f'color:var(--muted)">LAST SESSION</div>'
+            f'<div style="font-family:var(--mono);font-size:0.78rem;color:{color};'
+            f'font-weight:700;margin-top:3px">{_html.escape(lr["date"])} · {_html.escape(lr["label"])}</div>'
+            f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);margin-top:3px">'
+            f'started {_html.escape(str(lr.get("started_at") or "—"))}'
+            f'{" · finished " + _html.escape(str(lr["finished_at"])) if lr.get("finished_at") else " · never finished"}'
+            f' · {jr}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div style="font-family:var(--mono);font-size:0.7rem;color:var(--bear);'
+            'margin-bottom:18px">⚠ THE TRADER HAS NOT STARTED A SESSION ON ANY '
+            'MARKET DAY IN THIS WINDOW</div>', unsafe_allow_html=True)
+
+
+def _render_paper() -> None:
+    from src import paper
+
+    _page_title("PAPER TRADING")
+
+    snap = paper.load_snapshot()
+
+    col_sync, col_btn = st.columns([5, 1])
+    with col_btn:
+        if st.button("↺ REFRESH", key="paper_refresh", use_container_width=True,
+                     help="Fetch Alpaca account, positions, orders and price history"):
+            with st.spinner("Fetching from Alpaca…"):
+                try:
+                    paper.refresh()
+                    st.rerun()
+                except paper.SnapshotError as e:
+                    # All-or-nothing: the previous snapshot is untouched.
+                    st.session_state["_paper_error"] = str(e)
+                except Exception as e:  # noqa: BLE001 - surface anything unexpected
+                    st.session_state["_paper_error"] = f"{type(e).__name__}: {e}"
+
+    with col_sync:
+        if snap and snap.get("synced_at"):
+            stale_days = None
+            ts = snap["synced_at"]
+            try:
+                dt = datetime.fromisoformat(ts)
+                stale_days = (date.today() - dt.date()).days
+                ts = dt.strftime("%-I:%M %p") if stale_days == 0 else dt.strftime("%b %-d, %-I:%M %p")
+            except ValueError:
+                pass
+            color = "var(--muted)" if not stale_days else "var(--wait)"
+            suffix = f" · ⚠ {stale_days}d stale" if stale_days else ""
+            st.markdown(
+                f'<div style="font-family:var(--mono);font-size:0.6rem;color:{color};'
+                f'padding-top:6px">ALPACA SNAPSHOT · {_html.escape(ts)}{suffix}</div>',
+                unsafe_allow_html=True,
+            )
+
+    err = st.session_state.pop("_paper_error", None)
+    if err:
+        st.markdown(
+            f'<div style="font-family:var(--mono);font-size:0.65rem;color:var(--bear);'
+            f'background:var(--bear-dim);border:1px solid rgba(239,68,68,0.35);'
+            f'border-radius:var(--radius);padding:10px 14px;margin:8px 0">'
+            f'⚠ REFRESH FAILED — showing last good snapshot<br>'
+            f'<span style="color:var(--muted)">{_html.escape(err)}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    if not snap:
+        st.info("No Alpaca snapshot yet — press REFRESH to fetch the paper account.")
+        return
+
+    acct = snap.get("account") or {}
+    equity = acct.get("equity") or 0.0
+    vs = snap.get("vs_spy")
+
+    today_d = acct.get("today_dollar") or 0.0
+    today_p = acct.get("today_pct") or 0.0
+    total_pl = acct.get("total_pl") or 0.0
+    realized = acct.get("realized") or 0.0
+    unrealized = acct.get("unrealized") or 0.0
+
+    st.markdown(f"""
+<div class="summary-strip">
+  <div class="summary-cell">
+    <div class="summary-label">EQUITY</div>
+    <div class="summary-value">${equity:,.0f}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">TODAY</div>
+    <div class="summary-value {'bull' if today_d >= 0 else 'bear'}">{'+' if today_d >= 0 else '-'}${abs(today_d):,.2f}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">TOTAL P&amp;L</div>
+    <div class="summary-value {'bull' if total_pl >= 0 else 'bear'}">{'+' if total_pl >= 0 else '-'}${abs(total_pl):,.2f}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">CASH</div>
+    <div class="summary-value">${acct.get('cash', 0):,.0f}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">DEPLOYED</div>
+    <div class="summary-value accent">{acct.get('deployed_pct', 0):.1%}</div>
+  </div>
+  <div class="summary-cell">
+    <div class="summary-label">VS SPY</div>
+    <div class="summary-value {'bull' if (vs or 0) >= 0 else 'bear'}">{'—' if vs is None else f'{vs:+.2f}'}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+    # The strip's TOTAL P&L folds realized and unrealized together; the split is
+    # the more useful number when a closed trade has moved it.
+    st.markdown(
+        f'<div style="font-family:var(--mono);font-size:0.58rem;color:var(--muted);'
+        f'margin:6px 0 2px">TODAY {today_p:+.2%} · '
+        f'REALIZED {"+" if realized >= 0 else "-"}${abs(realized):,.2f} · '
+        f'UNREALIZED {"+" if unrealized >= 0 else "-"}${abs(unrealized):,.2f} · '
+        f'{len(snap.get("positions") or [])} POSITIONS</div>',
+        unsafe_allow_html=True,
+    )
+
+    rec = snap.get("reconciliation") or {}
+    if rec and not rec.get("ok", True):
+        st.markdown(
+            f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--wait);'
+            f'margin-bottom:8px">⚠ P&amp;L does not reconcile against equity — '
+            f'drift ${rec.get("drift", 0):,.2f}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── equity curve ─────────────────────────────────────────────────────────
+    curve = snap.get("curve") or {}
+    a_last = next((v for v in reversed(curve.get("account_pct") or []) if v is not None), None)
+    s_last = next((v for v in reversed(curve.get("spy_pct") or []) if v is not None), None)
+    legend = (
+        f'<span style="color:var(--accent)">▬ ACCOUNT '
+        f'{"—" if a_last is None else f"{a_last:+.2f}%"}</span>'
+        f'<span style="color:var(--muted)">   ▬ SPY '
+        f'{"—" if s_last is None else f"{s_last:+.2f}%"}</span>'
+    )
+    st.markdown(
+        f'<div style="margin-top:16px;font-family:var(--mono);font-size:0.6rem;'
+        f'letter-spacing:0.08em">{legend}</div>',
+        unsafe_allow_html=True,
+    )
+    if curve.get("dates"):
+        st.markdown(
+            f'<div style="font-family:var(--mono);font-size:0.55rem;color:var(--muted);'
+            f'margin-bottom:6px">SINCE {_html.escape(curve["dates"][0])} · '
+            f'normalised to the last all-cash day before the first fill</div>',
+            unsafe_allow_html=True,
+        )
+    st.markdown(_svg_equity_curve(curve), unsafe_allow_html=True)
+
+    # ── positions ────────────────────────────────────────────────────────────
+    positions = snap.get("positions") or []
+    if positions:
+        st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+        _page_title("OPEN · WORST FIRST")
+        cols = st.columns(3)
+        for i, p in enumerate(positions):
+            with cols[i % 3]:
+                _render_paper_card(p, equity)
+
+    # ── open orders, only when there are any ─────────────────────────────────
+    orders = snap.get("open_orders") or []
+    if orders:
+        _page_title("OPEN ORDERS")
+        rows = "".join(
+            f'<tr><td style="padding:5px 10px;color:var(--text)">{_html.escape(str(o.get("ticker")))}</td>'
+            f'<td style="padding:5px 10px;color:var(--muted)">{_html.escape(str(o.get("side")))}</td>'
+            f'<td style="padding:5px 10px;text-align:right;color:var(--muted)">'
+            f'{_html.escape(str(o.get("qty") or o.get("notional") or "—"))}</td>'
+            f'<td style="padding:5px 10px;text-align:right;color:var(--muted)">'
+            f'{_html.escape(str(o.get("submitted_at") or "—"))}</td></tr>'
+            for o in orders
+        )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;font-family:var(--mono);'
+            f'font-size:0.65rem;margin-bottom:18px">{rows}</table>',
+            unsafe_allow_html=True,
+        )
+
+    # ── closed trades ────────────────────────────────────────────────────────
+    closed = snap.get("closed_trades") or []
+    if closed:
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        _page_title("CLOSED TRADES")
+        head = (
+            '<tr>'
+            '<th style="text-align:left;padding:5px 10px;font-weight:400;font-size:0.55rem;'
+            'letter-spacing:0.1em;color:var(--muted)">TICKER</th>'
+            '<th style="text-align:left;padding:5px 10px;font-weight:400;font-size:0.55rem;'
+            'letter-spacing:0.1em;color:var(--muted)">ENTRY → EXIT</th>'
+            '<th style="text-align:right;padding:5px 10px;font-weight:400;font-size:0.55rem;'
+            'letter-spacing:0.1em;color:var(--muted)">HELD</th>'
+            '<th style="text-align:right;padding:5px 10px;font-weight:400;font-size:0.55rem;'
+            'letter-spacing:0.1em;color:var(--muted)">REALIZED</th>'
+            '</tr>'
+        )
+        rows = ""
+        for c in closed:
+            r = c.get("realized") or 0.0
+            col = "var(--bull)" if r >= 0 else "var(--bear)"
+            pct = c.get("realized_pct")
+            pct_s = "" if pct is None else f' ({pct:+.2%})'
+            rows += (
+                f'<tr style="border-top:1px solid var(--border)">'
+                f'<td style="padding:6px 10px;color:var(--text);font-weight:700">'
+                f'{_html.escape(str(c.get("ticker")))}</td>'
+                f'<td style="padding:6px 10px;color:var(--muted)">'
+                f'{_html.escape(str(c.get("entry_date")))} → {_html.escape(str(c.get("exit_date")))}</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:var(--muted)">'
+                f'{c.get("held_days") if c.get("held_days") is not None else "—"}d</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:{col}">'
+                f'{"+" if r >= 0 else "-"}${abs(r):,.2f}{pct_s}</td>'
+                f'</tr>'
+            )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;font-family:var(--mono);'
+            f'font-size:0.66rem;margin-bottom:20px">{head}{rows}</table>',
+            unsafe_allow_html=True,
+        )
+
+    # ── run cadence ──────────────────────────────────────────────────────────
+    st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+    _render_paper_cadence(snap.get("cadence") or {})
 
 
 # ── Run Monitor ───────────────────────────────────────────────────────────────

@@ -14,6 +14,10 @@ data/*
 !data/fidelity/
 data/fidelity/*
 !data/fidelity/positions_data.json
+# and the alpaca paper snapshot the Paper page reads (no account identifiers)
+!data/alpaca/
+data/alpaca/*
+!data/alpaca/portfolio.json
 logs/
 
 # Handoff docs (local-only, read via filesystem not git)
