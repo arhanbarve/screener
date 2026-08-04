@@ -225,11 +225,18 @@ def run(run_tests: bool = True) -> dict:
         checks.append(check_protective_stops(positions, open_orders))
 
     if run_tests:
+        # No --timeout: that flag needs pytest-timeout, which is not installed,
+        # and passing it made pytest exit nonzero on an unrecognised argument —
+        # a watchdog reporting a false failure is worse than one reporting none.
+        # The subprocess timeout below already bounds the run.
         proc = subprocess.run(
-            ["python3", "-m", "pytest", "-q", "--timeout=300"],
+            ["python3", "-m", "pytest", "-q"],
             cwd=SCREENER_DIR, capture_output=True, text=True, timeout=900,
         )
-        tail = (proc.stdout or "").strip().splitlines()
+        # stderr matters: pytest writes argument and collection errors there, and
+        # reading only stdout produced an empty detail that hid the cause.
+        combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+        tail = [l for l in combined.splitlines() if l.strip()]
         checks.append(check_tests(proc.returncode, tail[-1] if tail else ""))
 
     try:

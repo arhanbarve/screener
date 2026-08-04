@@ -231,3 +231,39 @@ def test_render_puts_failures_first():
     out = render(report)
     assert out.splitlines()[1].strip().startswith("FAIL")
     assert "cadence" in out.splitlines()[1]
+
+
+# ── a failing check must always say why ───────────────────────────────────────
+# The first live run reported "tests: FAIL" with an empty detail, because the
+# watchdog passed --timeout (needs pytest-timeout, not installed), pytest exited
+# nonzero on the unrecognised flag, and the reason went to stderr while only
+# stdout was read. A watchdog that fails without a reason is barely a watchdog.
+
+def test_failing_tests_check_always_carries_a_reason():
+    r = check_tests(2, "error: unrecognized arguments: --timeout=300")
+    assert r["status"] == "fail"
+    assert "unrecognized arguments" in r["detail"]
+
+
+def test_failing_tests_check_with_no_output_still_flags():
+    r = check_tests(1, "")
+    assert r["status"] == "fail"
+    assert r["detail"].strip()  # never an empty explanation
+
+
+def test_watchdog_pytest_args_are_all_supported():
+    """Guards the exact regression: --timeout needs a plugin this env lacks.
+
+    Checks the argv literals rather than the whole source, so the comment
+    explaining why the flag is absent does not trip the test — which it did on
+    the first attempt at this guard.
+    """
+    import re
+    import inspect
+    from src import watchdog
+
+    src = inspect.getsource(watchdog.run)
+    m = re.search(r'\["python3",\s*"-m",\s*"pytest"(.*?)\]', src, re.S)
+    assert m, "could not locate the pytest argv in watchdog.run"
+    passed = re.findall(r'"(--?[\w-]+[^"]*)"', m.group(1))
+    assert passed == ["-q"], f"unexpected pytest flags: {passed}"
