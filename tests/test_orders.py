@@ -309,3 +309,23 @@ def test_idempotent_with_resting_stop_holding_all_shares():
 def test_missing_qty_available_falls_back_to_full_size():
     r = reconcile_stops([{"symbol": "MYE", "qty": "100"}], {"MYE": 31.45}, [])
     assert r["place"][0]["qty"] == 100.0
+
+
+# ── session-start cleanup must be surgical ────────────────────────────────────
+
+def test_protective_stop_ids_selects_only_stops():
+    """cancel-all at session start would take out deliberate pending entries."""
+    orders = [
+        _stop("MYE", 100, 31.45, oid="stop1"),
+        {"id": "entry1", "symbol": "ORKA", "side": "buy", "type": "limit",
+         "qty": "40", "limit_price": "98.50"},
+        {"id": "exit1", "symbol": "HUT", "side": "sell", "type": "market",
+         "qty": "36"},
+    ]
+    from src.orders import protective_stop_ids
+    assert protective_stop_ids(orders) == ["stop1"]
+
+
+def test_protective_stop_ids_empty():
+    from src.orders import protective_stop_ids
+    assert protective_stop_ids([]) == []

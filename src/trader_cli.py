@@ -11,6 +11,7 @@ Commands:
   quote SYM           last printed trade
   cancel ORDER_ID     cancel one open order
   cancel-all          cancel every open order
+  cancel-stops        cancel resting protective stops only, leaving entries alone
   sync-stops          rest protective stops at each position's max-loss floor
 
 Order types. buy/sell default to --auto, which picks the order that fits the
@@ -142,6 +143,24 @@ def cmd_order(
     return {"session": session, "reason": why, "submitted": plan, "order": result}
 
 
+def cmd_cancel_stops(apply: bool = True) -> dict:
+    """Cancel resting protective stops only, leaving deliberate entries alone.
+
+    Used at session start: a stop holds the shares a sell needs, so it has to go
+    before trading. Blanket cancel-all would also take out a pending entry
+    somebody meant to leave working.
+    """
+    from src import orders as orders_mod
+
+    open_orders = broker.get_orders("open")
+    ids = orders_mod.protective_stop_ids(open_orders)
+    others = [o["id"] for o in open_orders if o.get("id") and o["id"] not in ids]
+    out = {"stops": ids, "left_alone": others, "cancelled": []}
+    if apply:
+        out["cancelled"] = [broker.cancel_order(i) for i in ids]
+    return out
+
+
 def cmd_sync_stops(apply: bool = False) -> dict:
     """Rest a protective stop at each position's max-loss floor.
 
@@ -245,6 +264,8 @@ def main(argv=None) -> int:
     sp = sub.add_parser("cancel")
     sp.add_argument("order_id")
     sub.add_parser("cancel-all")
+    sp = sub.add_parser("cancel-stops")
+    sp.add_argument("--report-only", action="store_true")
     sp = sub.add_parser("sync-stops")
     sp.add_argument("--apply", action="store_true",
                     help="actually place/cancel stops (default reports only)")
@@ -273,6 +294,8 @@ def main(argv=None) -> int:
             out = broker.cancel_order(args.order_id)
         elif args.cmd == "cancel-all":
             out = broker.cancel_all_orders()
+        elif args.cmd == "cancel-stops":
+            out = cmd_cancel_stops(apply=not args.report_only)
         elif args.cmd == "sync-stops":
             out = cmd_sync_stops(apply=args.apply)
         else:  # orders

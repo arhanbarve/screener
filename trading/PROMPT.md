@@ -36,11 +36,12 @@ of fills with no journal is close to worthless.
 
 ## Procedure
 
-0. **Clear resting stops first:** `PY -m src.trader_cli cancel-all`. Protective
+0. **Clear resting stops first:** `PY -m src.trader_cli cancel-stops`. Protective
    stops rest against your shares, so a stop holds the very shares a sell needs
    and the sell is rejected for insufficient quantity. You re-place them in
-   step 8. Note what was cancelled — if `status` then shows an order you did not
-   expect, an earlier attempt was mid-flight.
+   step 8. This cancels *stops only* — a deliberate pending entry is left
+   working, so check `status` for anything unexpected: an order you did not place
+   this session means an earlier attempt was mid-flight, or a human left it there.
 
 1. `PY -m src.trader_cli status` (PY = /Library/Frameworks/Python.framework/Versions/3.14/bin/python3)
    — equity, cash, positions with unrealized P&L, open orders, market clock.

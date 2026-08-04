@@ -201,6 +201,18 @@ def _is_protective_stop(order: dict) -> bool:
             and order.get("stop_price") is not None)
 
 
+def protective_stop_ids(open_orders: list[dict]) -> list[str]:
+    """Ids of resting protective stops only.
+
+    A session must clear its own stops before trading — a stop holds the shares a
+    sell needs — but it must not cancel deliberate pending entries to do it.
+    Blanket cancel-all would take out a limit order somebody meant to leave
+    working, so the session-start cleanup is scoped to stops.
+    """
+    return [o["id"] for o in (open_orders or [])
+            if _is_protective_stop(o) and o.get("id")]
+
+
 def reconcile_stops(
     positions: list[dict],
     floors: dict[str, float],
