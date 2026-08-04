@@ -2078,9 +2078,35 @@ def _load_fidelity_data() -> tuple[list[dict], str]:
         return [], ""
 
 
-def _fmt_gl(dollar: float, pct: float) -> str:
-    sign = "+" if dollar >= 0 else ""
-    return f"{sign}${dollar:,.2f} ({sign}{pct:.1%})"
+def _fmt_gl(dollar: float | None, pct: float | None) -> str:
+    """Format a dollar/percent gain-loss pair, or '—' when the figure is unknown.
+
+    Unknown must never render as a number. A missing cost basis used to produce
+    "+$1,206.48 (+0.0%)" — a fabricated gain equal to the whole position value.
+    """
+    if dollar is None:
+        return "—"
+    sign = "+" if dollar >= 0 else "-"
+    pct_str = "—" if pct is None else f"{sign}{abs(pct):.1%}"
+    return f"{sign}${abs(dollar):,.2f} ({pct_str})"
+
+
+def _effective_avg_cost(fid: dict) -> float | None:
+    """Per-share average cost, or None when Fidelity gave us nothing usable.
+
+    Returns None rather than 0.0 so no caller can compute qty * (price − 0) and
+    present the entire market value as a gain — the exact failure produced when
+    Fidelity renamed its CSV headers and every cost field parsed as zero.
+    Falls back to cost_basis_total / qty, which survives some partial exports.
+    """
+    avg = fid.get("avg_cost") or 0.0
+    if avg > 0:
+        return avg
+    basis = fid.get("cost_basis_total") or 0.0
+    qty   = fid.get("quantity") or 0.0
+    if basis > 0 and qty > 0:
+        return basis / qty
+    return None
 
 
 def _live_fid_metrics(fid: dict, live_price: float | None, prev_close: float | None) -> dict:
@@ -2089,21 +2115,26 @@ def _live_fid_metrics(fid: dict, live_price: float | None, prev_close: float | N
     Fidelity supplies qty/avg_cost (stable, only change on trades); price/value/G-L
     are recomputed live so they don't go stale between Fidelity syncs. Falls back
     to the Fidelity snapshot if the live quote fetch fails.
+
+    total_gl_d / total_gl_p are None when there is no usable cost basis — callers
+    must render that as "—" and exclude it from portfolio totals.
     """
     qty      = fid["quantity"]
-    avg_cost = fid["avg_cost"]
+    avg_cost = _effective_avg_cost(fid)
 
     if live_price is None:
+        # Snapshot path. A zeroed cost basis means the snapshot's own G/L figures
+        # are untrustworthy too, so surface them as unknown rather than as 0.
+        known = avg_cost is not None
         return {
             "last_price": fid["last_price"],
             "current_value": fid["current_value"],
-            "today_gl_d": fid["today_gl_dollar"],
-            "today_gl_p": fid["today_gl_pct"],
-            "total_gl_d": fid["total_gl_dollar"],
-            "total_gl_p": fid["total_gl_pct"],
+            "today_gl_d": fid["today_gl_dollar"] if known else None,
+            "today_gl_p": fid["today_gl_pct"] if known else None,
+            "total_gl_d": fid["total_gl_dollar"] if known else None,
+            "total_gl_p": fid["total_gl_pct"] if known else None,
         }
 
-    total_gl_d = qty * (live_price - avg_cost)
     if prev_close:
         today_gl_d = qty * (live_price - prev_close)
         today_gl_p = (live_price - prev_close) / prev_close
@@ -2114,8 +2145,8 @@ def _live_fid_metrics(fid: dict, live_price: float | None, prev_close: float | N
         "current_value": qty * live_price,
         "today_gl_d": today_gl_d,
         "today_gl_p": today_gl_p,
-        "total_gl_d": total_gl_d,
-        "total_gl_p": (live_price - avg_cost) / avg_cost if avg_cost else 0.0,
+        "total_gl_d": None if avg_cost is None else qty * (live_price - avg_cost),
+        "total_gl_p": None if avg_cost is None else (live_price - avg_cost) / avg_cost,
     }
 
 
@@ -2143,7 +2174,7 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
 
     if fid:
         qty            = fid["quantity"]
-        avg_cost       = fid["avg_cost"]
+        avg_cost       = _effective_avg_cost(fid)
         pct_acct       = fid["pct_of_account"]
         desc           = fid.get("description", "")
 
@@ -2156,13 +2187,22 @@ def _render_position_card(pos: dict, fid: dict | None, cached: tuple[dict, float
         total_gl_p     = m["total_gl_p"]
 
         price_str      = f"${last_price:,.2f}"
-        total_pnl_color = "var(--bull)" if total_gl_d >= 0 else "var(--bear)"
-        total_pnl_str   = f"+{total_gl_p:.1%}" if total_gl_d >= 0 else f"{total_gl_p:.1%}"
-        today_color     = "var(--bull)" if today_gl_d >= 0 else "var(--bear)"
+        # Unknown cost basis => headline P&L is "—", not a made-up percentage.
+        if total_gl_d is None:
+            total_pnl_color = "var(--muted)"
+            total_pnl_str   = "—"
+        else:
+            total_pnl_color = "var(--bull)" if total_gl_d >= 0 else "var(--bear)"
+            total_pnl_str   = f"+{total_gl_p:.1%}" if total_gl_d >= 0 else f"{total_gl_p:.1%}"
+        if today_gl_d is None:
+            today_color = "var(--muted)"
+        else:
+            today_color = "var(--bull)" if today_gl_d >= 0 else "var(--bear)"
         today_str       = _fmt_gl(today_gl_d, today_gl_p)
         total_str       = _fmt_gl(total_gl_d, total_gl_p)
+        avg_cost_str    = "—" if avg_cost is None else f"${avg_cost:,.2f}"
         meta_row = (
-            f'{qty:g} shares · ${avg_cost:,.2f} avg cost · '
+            f'{qty:g} shares · {avg_cost_str} avg cost · '
             f'${current_value:,.2f} value · {pct_acct:.1%} of acct'
         )
         gl_row = (
@@ -2340,13 +2380,27 @@ def _render_positions() -> None:
     col_sync, col_btn = st.columns([5, 1])
     with col_sync:
         if synced_at:
+            # Time-only was actively misleading: a five-day-old snapshot read as
+            # "4:56 PM" and looked like today's. Show the date and warn when the
+            # snapshot is stale — quantity and cost basis come from here, so a
+            # stale sync silently misstates P&L after any trade.
+            stale_days = None
             try:
-                ts = datetime.fromisoformat(synced_at).strftime("%-I:%M %p")
+                dt = datetime.fromisoformat(synced_at)
+                stale_days = (date.today() - dt.date()).days
+                ts = dt.strftime("%-I:%M %p") if stale_days == 0 else dt.strftime("%b %-d, %-I:%M %p")
             except Exception:
                 ts = synced_at
+            if stale_days is None:
+                color, suffix = "var(--muted)", ""
+            elif stale_days == 0:
+                color, suffix = "var(--muted)", ""
+            else:
+                color = "var(--wait)"
+                suffix = f' · ⚠ {stale_days}d stale'
             st.markdown(
-                f'<div style="font-family:var(--mono);font-size:0.6rem;color:var(--muted);'
-                f'padding-top:6px">FIDELITY SYNC · {ts}</div>',
+                f'<div style="font-family:var(--mono);font-size:0.6rem;color:{color};'
+                f'padding-top:6px">FIDELITY SYNC · {_html.escape(ts)}{suffix}</div>',
                 unsafe_allow_html=True,
             )
     with col_btn:
@@ -2390,18 +2444,38 @@ def _render_positions() -> None:
     exits = sum(1 for e in enriched if e["_grade"] == "SELL")
     exit_cls = "bear" if exits > 0 else ""
 
-    # Portfolio totals recomputed from live quotes (falls back to Fidelity snapshot per-position)
-    total_value = total_today = total_overall = 0.0
+    # Portfolio totals recomputed from live quotes (falls back to Fidelity snapshot
+    # per-position). Positions with no usable cost basis contribute None and are
+    # excluded — silently adding them as 0 would understate portfolio G/L, and
+    # adding a fabricated figure was the original bug.
+    total_value = 0.0
+    total_today = total_overall = 0.0
+    today_unknown = overall_unknown = 0
     for f in fid_positions:
         _, live_price, prev_close = batch.get(f["ticker"], ({}, None, None))
         m = _live_fid_metrics(f, live_price, prev_close)
-        total_value   += m["current_value"]
-        total_today   += m["today_gl_d"]
-        total_overall += m["total_gl_d"]
-    today_sign    = "+" if total_today >= 0 else ""
-    overall_sign  = "+" if total_overall >= 0 else ""
-    today_cls     = "bull" if total_today >= 0 else "bear"
-    overall_cls   = "bull" if total_overall >= 0 else "bear"
+        total_value += m["current_value"]
+        if m["today_gl_d"] is None:
+            today_unknown += 1
+        else:
+            total_today += m["today_gl_d"]
+        if m["total_gl_d"] is None:
+            overall_unknown += 1
+        else:
+            total_overall += m["total_gl_d"]
+
+    def _total_str(value: float, unknown: int) -> tuple[str, str]:
+        """Render a portfolio total, flagging how many positions were excluded."""
+        if unknown and unknown == len(fid_positions):
+            return "—", ""
+        sign = "+" if value >= 0 else "-"
+        text = f"{sign}${abs(value):,.2f}"
+        if unknown:
+            text += f" <span style='font-size:0.6rem;color:var(--wait)'>+{unknown}?</span>"
+        return text, ("bull" if value >= 0 else "bear")
+
+    today_text, today_cls     = _total_str(total_today, today_unknown)
+    overall_text, overall_cls = _total_str(total_overall, overall_unknown)
 
     st.markdown(f"""
 <div class="summary-strip">
@@ -2415,11 +2489,11 @@ def _render_positions() -> None:
   </div>
   <div class="summary-cell">
     <div class="summary-label">TODAY</div>
-    <div class="summary-value {today_cls}">{today_sign}${total_today:,.2f}</div>
+    <div class="summary-value {today_cls}">{today_text}</div>
   </div>
   <div class="summary-cell">
     <div class="summary-label">TOTAL G/L</div>
-    <div class="summary-value {overall_cls}">{overall_sign}${total_overall:,.2f}</div>
+    <div class="summary-value {overall_cls}">{overall_text}</div>
   </div>
   <div class="summary-cell">
     <div class="summary-label">EXIT ALERTS</div>

@@ -9,6 +9,7 @@ import asyncio
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime
@@ -71,25 +72,102 @@ def _n(s: str) -> float:
         return 0.0
 
 
+class FidelityCsvSchemaError(RuntimeError):
+    """The Fidelity CSV no longer exposes the columns we depend on.
+
+    Raised instead of returning zeros. In Jul 2026 Fidelity renamed every
+    multi-word header from Title Case to Sentence case ("Last Price" ->
+    "Last price"). csv.DictReader keys are exact, so every money lookup
+    returned None, _n(None) returned 0.0, and the sync reported success while
+    writing an all-zero portfolio — the Positions page then showed Total G/L
+    equal to the entire account value for five days. Silence was the whole bug;
+    this exception exists so the next rename is loud.
+    """
+
+
+def _norm_key(s: str) -> str:
+    """Reduce a CSV header to alphanumerics so case/spacing/punctuation churn
+    cannot break the column mapping. Also drops any UTF-8 BOM, which the
+    response-interception path can leave on the first field name.
+
+    "Last Price" / "Last price" / " LAST PRICE " all -> "lastprice"
+    """
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+# Column -> canonical Fidelity label, used for the mapping and for naming what
+# went missing in the error message. Keys are normalised header forms.
+_REQUIRED_COLS: dict[str, str] = {
+    "symbol":                "Symbol",
+    "quantity":              "Quantity",
+    "lastprice":             "Last Price",
+    "currentvalue":          "Current Value",
+    "todaysgainlossdollar":  "Today's Gain/Loss Dollar",
+    "todaysgainlosspercent": "Today's Gain/Loss Percent",
+    "totalgainlossdollar":   "Total Gain/Loss Dollar",
+    "totalgainlosspercent":  "Total Gain/Loss Percent",
+    "percentofaccount":      "Percent Of Account",
+    "costbasistotal":        "Cost Basis Total",
+    "averagecostbasis":      "Average Cost Basis",
+}
+
+# Nice to have, not worth aborting a sync over — it is display-only.
+_OPTIONAL_COLS: dict[str, str] = {
+    "lastpricechange": "Last Price Change",
+}
+
+
 def _parse_fidelity_csv(content: str) -> list[dict]:
     """
     Parse Fidelity positions CSV — returns rich dicts with all available fields.
     Skips cash, money-market, and crypto rows.
+
+    Raises FidelityCsvSchemaError if the header is unrecognisable or a required
+    money column is absent. Never returns rows with silently zeroed fields.
     """
     lines = content.splitlines()
     header_idx = None
     for i, line in enumerate(lines):
-        if "Symbol" in line and "Quantity" in line:
+        norm = _norm_key(line)
+        if "symbol" in norm and "quantity" in norm:
             header_idx = i
             break
     if header_idx is None:
-        print("Could not find header row in CSV", flush=True)
-        return []
+        raise FidelityCsvSchemaError(
+            "Could not find a header row containing Symbol and Quantity — "
+            "the download is not a positions export."
+        )
+
+    reader = csv.DictReader(lines[header_idx:])
+    fieldnames = reader.fieldnames or []
+
+    # Map normalised header -> the exact key DictReader will use for that column.
+    by_norm = {_norm_key(f): f for f in fieldnames if f is not None}
+
+    missing = [
+        label for norm, label in _REQUIRED_COLS.items() if norm not in by_norm
+    ]
+    if missing:
+        raise FidelityCsvSchemaError(
+            "Fidelity CSV is missing required column(s): "
+            + ", ".join(missing)
+            + f". Header was: {', '.join(str(f) for f in fieldnames)}"
+        )
+
+    # Optional columns don't abort the sync, but a disappearing one is an early
+    # warning that Fidelity is churning the export again — say so in the log.
+    for norm, label in _OPTIONAL_COLS.items():
+        if norm not in by_norm:
+            print(f"NOTE: optional column '{label}' absent from Fidelity CSV", flush=True)
+
+    def _col(row: dict, norm: str) -> str:
+        """Read a column by its normalised name. Optional columns may be absent."""
+        key = by_norm.get(norm)
+        return "" if key is None else (row.get(key) or "")
 
     holdings = []
-    reader = csv.DictReader(lines[header_idx:])
     for row in reader:
-        symbol = (row.get("Symbol") or "").strip().upper()
+        symbol = _col(row, "symbol").strip().upper()
         if not symbol or symbol.startswith("--"):
             continue
         # Skip cash / money market / crypto
@@ -99,7 +177,7 @@ def _parse_fidelity_csv(content: str) -> list[dict]:
         if not symbol.replace(".", "").isalpha():
             continue
 
-        qty = _n(row.get("Quantity") or "0")
+        qty = _n(_col(row, "quantity") or "0")
         if qty <= 0:
             continue
 
@@ -111,19 +189,37 @@ def _parse_fidelity_csv(content: str) -> list[dict]:
         holdings.append({
             "ticker":          symbol,
             "quantity":        qty,
-            "last_price":      _n(row.get("Last Price")),
-            "last_price_chg":  _n(row.get("Last Price Change")),
-            "current_value":   _n(row.get("Current Value")),
-            "today_gl_dollar": _n(row.get("Today's Gain/Loss Dollar")),
-            "today_gl_pct":    _n(row.get("Today's Gain/Loss Percent")) / 100,
-            "total_gl_dollar": _n(row.get("Total Gain/Loss Dollar")),
-            "total_gl_pct":    _n(row.get("Total Gain/Loss Percent")) / 100,
-            "pct_of_account":  _n(row.get("Percent Of Account")) / 100,
-            "cost_basis_total":_n(row.get("Cost Basis Total")),
-            "avg_cost":        _n(row.get("Average Cost Basis")),
+            "last_price":      _n(_col(row, "lastprice")),
+            "last_price_chg":  _n(_col(row, "lastpricechange")),
+            "current_value":   _n(_col(row, "currentvalue")),
+            "today_gl_dollar": _n(_col(row, "todaysgainlossdollar")),
+            "today_gl_pct":    _n(_col(row, "todaysgainlosspercent")) / 100,
+            "total_gl_dollar": _n(_col(row, "totalgainlossdollar")),
+            "total_gl_pct":    _n(_col(row, "totalgainlosspercent")) / 100,
+            "pct_of_account":  _n(_col(row, "percentofaccount")) / 100,
+            "cost_basis_total":_n(_col(row, "costbasistotal")),
+            "avg_cost":        _n(_col(row, "averagecostbasis")),
         })
 
     return holdings
+
+
+def _looks_corrupt(holdings: list[dict]) -> bool:
+    """True when a parse succeeded structurally but produced unusable values.
+
+    The header can stay intact while the *values* stop parsing — a currency or
+    locale change, or a column that starts coming through blank. Real equity
+    holdings always have a price and a cost basis somewhere, so an all-zero
+    parse is corruption, not a portfolio, and must not overwrite the last good
+    snapshot.
+    """
+    if not holdings:
+        return False  # emptiness is handled separately — that's "no holdings"
+    has_price = any(h["last_price"] > 0 for h in holdings)
+    has_basis = any(
+        h["avg_cost"] > 0 or h["cost_basis_total"] > 0 for h in holdings
+    )
+    return not (has_price and has_basis)
 
 
 def _save_fidelity_data(holdings: list[dict]) -> None:
@@ -329,12 +425,33 @@ async def run_sync() -> None:
             sys.exit(1)
 
         # ── Step 5: parse CSV ─────────────────────────────────────────────────
-        holdings = _parse_fidelity_csv(csv_content)
+        # A schema change must abort loudly and leave the previous good snapshot
+        # in place. Overwriting positions_data.json with zeros is strictly worse
+        # than keeping yesterday's real numbers.
+        try:
+            holdings = _parse_fidelity_csv(csv_content)
+        except FidelityCsvSchemaError as e:
+            _notify("Fidelity Sync", "CSV format changed — keeping last good data")
+            print(f"ERROR: {e}", flush=True)
+            _write_status("bad_header", str(e))
+            sys.exit(1)
+
         if not holdings:
             _notify("Fidelity Sync", "No equity holdings found in CSV")
             print("WARNING: parsed 0 holdings", flush=True)
             _write_status("no_holdings", "No equity holdings found in CSV")
             sys.exit(0)
+
+        # Second guard: structurally valid header, unusable values.
+        if _looks_corrupt(holdings):
+            msg = (
+                f"Parsed {len(holdings)} holdings but every price/cost basis was "
+                f"zero — refusing to overwrite last good snapshot"
+            )
+            _notify("Fidelity Sync", "CSV values unparseable — keeping last good data")
+            print(f"ERROR: {msg}", flush=True)
+            _write_status("bad_values", msg)
+            sys.exit(1)
 
         print(f"Parsed {len(holdings)} holdings from Fidelity", flush=True)
 
