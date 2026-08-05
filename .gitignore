@@ -1,5 +1,7 @@
 # Secrets
 .env
+# Streamlit reads secrets from here; same credentials as .env, never committed.
+.streamlit/secrets.toml
 
 # Application data
 # positions.json is tracked so the cloud dashboard sees current positions
