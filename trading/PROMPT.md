@@ -34,6 +34,27 @@ case, so the order is: reason on disk first, then trade, then record fills.
 A journal that says what you were about to do is worth a great deal. A set
 of fills with no journal is close to worthless.
 
+## When you run, and what you are deciding for
+
+There are two windows, and the **evening one is primary**.
+
+- **Evening (16:15-23:59 ET, the normal case).** Today's close is in. You decide
+  for the **next** open and leave marketable limit orders resting, so they execute
+  at 09:30 without anyone present. The gate tells you the `target_date`; journal
+  under that date, not the calendar date, because that is the session your orders
+  belong to.
+- **Morning (08:30-15:45 ET, fallback).** Only if an evening session was missed,
+  or a pre-market event needs reacting to.
+
+The evening window is not a compromise, it is the better-informed one:
+`run_screener.sh` fires at **16:30 ET**, so an evening session reads the same
+day's screener *and* the same day's closing prices. A 09:00 session reads
+yesterday's screener and has no fresh close at all.
+
+Because the orders rest overnight, they must be **priced**. `--auto` handles this:
+outside regular hours it produces a marketable limit with a cap rather than a
+market order that would fill at the auction at whatever it prints.
+
 ## Procedure
 
 0. **Clear resting stops first:** `PY -m src.trader_cli cancel-stops`. Protective
@@ -56,7 +77,8 @@ of fills with no journal is close to worthless.
 4. Decide. Consider: current positions vs their screener ranks today,
    better-ranked replacements, concentration, regime (SPY trend), news.
    Doing nothing is a valid decision — say why.
-5. **Journal first.** Write `trading/journal/YYYY-MM-DD.md` (today's date, ET)
+5. **Journal first.** Write `trading/journal/<target_date>.md` — the trading day
+   the gate says you are deciding for, which in an evening session is tomorrow
    with everything you already know — snapshot, context, decisions,
    rationale, and the orders you are *about* to place. Head it
    `**Status:** PLANNED — no orders placed yet`. Place no order before this
@@ -86,8 +108,14 @@ of fills with no journal is close to worthless.
    `close TICKER` is always a market liquidation, so only use it during regular
    hours; outside them use `sell TICKER --qty <full position>`, which prices it.
 
+   In an evening session nothing fills while you watch — every order comes back
+   `accepted` with `filled_qty: 0` and becomes eligible at the next open. That is
+   correct. Record it as SUBMITTED, not EXECUTED, and let the next session record
+   the fills.
+
 7. **Update the journal** with what actually happened: flip the status line
-   to `EXECUTED` (or `PARTIAL` if some orders did not fill), fill in the
+   to `EXECUTED` (or `PARTIAL` if some filled, or `SUBMITTED` when the market was
+   closed and everything is resting for the next open), fill in the
    orders table with real fills and order ids, then the post-trade book and
    scorecard. Note any fill that landed materially away from the price you
    decided on — pre-market indications have been off by ~10%.
@@ -96,7 +124,7 @@ of fills with no journal is close to worthless.
 
    ```
    # Trading Journal — YYYY-MM-DD
-   **Status:** PLANNED | EXECUTED | PARTIAL | NO TRADES
+   **Status:** PLANNED | SUBMITTED | EXECUTED | PARTIAL | NO TRADES
    ## Snapshot (pre-decision)
    Equity / cash / positions table with unrealized P&L
    ## Market context

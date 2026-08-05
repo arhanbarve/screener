@@ -343,3 +343,28 @@ def test_new_nonzero_marker_with_rc_still_matches():
     """run_trader.sh now appends (rc=N); the marker check must still fire."""
     log = LOG_RUNNING + "=== claude session exited nonzero (rc=137) ===\n"
     assert classify_log(log) == "crashed"
+
+
+# ── evening session pre-empts the morning one ──────────────────────────────────
+
+LOG_ALREADY_DECIDED = """=== Gate: {
+  "run": true, "window": "morning", "target_date": "2026-08-05"
+} ===
+=== Window: morning, deciding for 2026-08-05 ===
+=== Session 2026-08-05 already decided, skipping ===
+"""
+
+
+def test_already_decided_reads_as_skipped_not_gate_blocked():
+    """The evening session stamped this target, so the morning run stands down.
+
+    Without the marker this classified as gate_blocked, which reads as "the market
+    said no" rather than "the work was already done".
+    """
+    assert classify_log(LOG_ALREADY_DECIDED) == "skipped"
+
+
+def test_already_decided_day_is_not_counted_broken():
+    from src.trader_runlog import build_day, summarize
+    days = [build_day("2026-08-05", LOG_ALREADY_DECIDED, journal_exists=True)]
+    assert summarize(days)["broken"] == 0

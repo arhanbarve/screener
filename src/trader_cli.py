@@ -29,8 +29,24 @@ from zoneinfo import ZoneInfo
 from src import broker
 
 ET = ZoneInfo("America/New_York")
-GATE_EARLIEST = (8, 30)   # don't trade on a midnight reboot with stale context
-GATE_LATEST = (15, 45)    # market orders too close to 16:00 close are pointless
+
+# Two decision windows, because the machine is usually not awake at 09:00.
+#
+# EVENING is the primary one. It runs after the close, decides for the *next*
+# open, and leaves marketable limit orders resting so they execute at 09:30
+# without anybody present. It is also better informed than the morning session
+# ever was: run_screener.sh fires at 16:30 ET, so an evening session reads the
+# same day's screener plus the same day's closing prices, where a 09:00 session
+# reads yesterday's screener and has no fresh close at all.
+#
+# MORNING is kept as a fallback for a day the evening session was missed, or for
+# reacting to a pre-market event when the machine happens to be on.
+GATE_MORNING = ((8, 30), (15, 45))   # intraday; 15:45 stops market orders near the close
+GATE_EVENING = ((16, 15), (23, 59))  # after the close, deciding for the next open
+
+# Kept as aliases so anything importing the old names still works.
+GATE_EARLIEST = GATE_MORNING[0]
+GATE_LATEST = GATE_MORNING[1]
 
 
 def cmd_status() -> dict:
@@ -43,18 +59,50 @@ def cmd_status() -> dict:
 
 
 def cmd_gate(now: datetime | None = None) -> dict:
+    """Should a session run now, and which trading day is it deciding for?
+
+    Returns target_date — the session whose open these orders are aimed at. The
+    daily stamp is keyed to that, not to the calendar date, so an evening session
+    that decides for tomorrow stops tomorrow morning from deciding again and
+    doubling the position.
+    """
     now = now or datetime.now(ET)
     clock = broker.get_clock()
     today = now.date().isoformat()
-    is_trading_day = clock["is_open"] or clock["next_open"][:10] == today
-    if not is_trading_day:
-        return {"run": False, "reason": f"not a trading day (next open {clock['next_open']})"}
+    next_open_date = str(clock.get("next_open") or "")[:10]
     hm = (now.hour, now.minute)
-    if hm < GATE_EARLIEST:
-        return {"run": False, "reason": "before 08:30 ET window"}
-    if hm > GATE_LATEST:
-        return {"run": False, "reason": "after 15:45 ET cutoff"}
-    return {"run": True, "reason": "trading day, within 08:30-15:45 ET window"}
+
+    opens_today = bool(clock.get("is_open")) or next_open_date == today
+
+    # Morning: the market trades today and we are inside the intraday window.
+    if opens_today and GATE_MORNING[0] <= hm <= GATE_MORNING[1]:
+        return {"run": True, "window": "morning", "target_date": today,
+                "reason": "trading day, within 08:30-15:45 ET window"}
+
+    # Evening: today's session is over; decide for the next open. Weekdays only —
+    # a weekend evening adds no information the Friday close did not already have.
+    if (next_open_date and next_open_date > today and now.weekday() < 5
+            and GATE_EVENING[0] <= hm <= GATE_EVENING[1]):
+        return {"run": True, "window": "evening", "target_date": next_open_date,
+                "reason": (f"after the close, deciding for the {next_open_date} open "
+                           f"— orders rest overnight and execute at 09:30")}
+
+    # Refusals, specific enough to diagnose from a log line.
+    if opens_today and hm < GATE_MORNING[0]:
+        return {"run": False, "target_date": today,
+                "reason": "before the 08:30 ET morning window"}
+    if opens_today and hm > GATE_MORNING[1]:
+        return {"run": False, "target_date": today,
+                "reason": ("between the 15:45 ET intraday cutoff and the 16:15 ET "
+                           "evening window")}
+    if next_open_date and next_open_date > today and now.weekday() >= 5:
+        return {"run": False, "target_date": next_open_date,
+                "reason": f"weekend — next open {next_open_date}"}
+    if next_open_date and next_open_date > today:
+        return {"run": False, "target_date": next_open_date,
+                "reason": f"outside both windows (next open {next_open_date})"}
+    return {"run": False, "target_date": next_open_date or today,
+            "reason": f"not a trading day (next open {clock.get('next_open')})"}
 
 
 def orders_today(orders: list[dict], today: str | None = None) -> list[dict]:

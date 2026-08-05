@@ -33,6 +33,12 @@ fi
 
 TODAY=$(date +%Y-%m-%d)
 ATTEMPT_FILE="$LOG_DIR/trader_attempts"
+# TARGET is the trading day these orders are aimed at, filled in from the gate
+# below. The evening session decides for tomorrow, so the stamp has to be keyed
+# to the target session rather than the calendar date — otherwise an evening run
+# would stamp today, and tomorrow morning would decide the same session again and
+# double the position.
+TARGET="$TODAY"
 MAX_ATTEMPTS=5
 
 # The stamp means "done for today, do not run again". It is written AFTER a
@@ -67,14 +73,21 @@ if [ "$ATTEMPTS" -ge "$MAX_ATTEMPTS" ]; then
     exit 0
 fi
 
-# Cheap local pre-check before the network gate. This script is now polled every
-# 15 minutes so it can start as soon as the Mac wakes, and without this every
-# poll would make an Alpaca call and append a "=== Gate:" line — ~96 a day,
-# flooding the log the cadence report reads. 10# forces decimal so "0830" is not
-# parsed as octal. The real gate below still owns holidays and half-days.
+# Cheap local pre-check before the network gate. This script is polled every 15
+# minutes so it can start as soon as the Mac wakes, and without this every poll
+# would make an Alpaca call and append a "=== Gate:" line — ~96 a day, flooding
+# the log the cadence report reads. 10# forces decimal so "0830" is not parsed as
+# octal. The real gate below still owns holidays, half-days and window choice.
+#
+# Two windows: 08:30-15:45 intraday, and 16:15-23:59 for the evening session that
+# decides for the next open. The 15:45-16:15 gap is deliberately dead.
 NOW_ET=$((10#$(TZ=America/New_York date +%H%M)))
 DOW_ET=$(TZ=America/New_York date +%u)
-if [ "$DOW_ET" -gt 5 ] || [ "$NOW_ET" -lt 830 ] || [ "$NOW_ET" -gt 1545 ]; then
+if [ "$DOW_ET" -gt 5 ]; then
+    exit 0
+fi
+if { [ "$NOW_ET" -lt 830 ] || [ "$NOW_ET" -gt 1545 ]; } \
+   && { [ "$NOW_ET" -lt 1615 ] || [ "$NOW_ET" -gt 2359 ]; }; then
     exit 0
 fi
 
@@ -85,6 +98,16 @@ GATE=$("$PY" -m src.trader_cli gate 2>>"$LOG_FILE") || {
 }
 echo "=== Gate: $GATE ===" >> "$LOG_FILE"
 if ! echo "$GATE" | grep -q '"run": true'; then
+    exit 0
+fi
+
+# Re-key the stamp to the session being decided for.
+TARGET=$(printf '%s' "$GATE" | sed -n 's/.*"target_date": *"\([0-9-]*\)".*/\1/p')
+[ -n "$TARGET" ] || TARGET="$TODAY"
+WINDOW=$(printf '%s' "$GATE" | sed -n 's/.*"window": *"\([a-z]*\)".*/\1/p')
+echo "=== Window: ${WINDOW:-unknown}, deciding for $TARGET ===" >> "$LOG_FILE"
+if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$TARGET" ]; then
+    echo "=== Session $TARGET already decided, skipping ===" >> "$LOG_FILE"
     exit 0
 fi
 
@@ -113,7 +136,7 @@ caffeinate -imsu "$CLAUDE" -p "$(cat trading/PROMPT.md)" \
 echo "=== Trader session finished: $(date) ===" >> "$LOG_FILE"
 
 if [ "$SESSION_RC" -eq 0 ]; then
-    echo "$TODAY" > "$STAMP_FILE"
+    echo "$TARGET" > "$STAMP_FILE"
 else
     echo "=== claude session exited nonzero (rc=$SESSION_RC) ===" >> "$LOG_FILE"
     # Retry only if the crashed session never touched the book.
@@ -123,12 +146,12 @@ else
         # the session. Stamp conservatively: an unverifiable book must be treated
         # as touched, because retrying blind could duplicate fills. Say so
         # accurately rather than claiming orders were found.
-        echo "$TODAY" > "$STAMP_FILE"
+        echo "$TARGET" > "$STAMP_FILE"
         echo "=== Could not verify order activity — stamping conservatively, will NOT retry ===" >> "$LOG_FILE"
     elif echo "$ACTIVITY" | grep -q '"safe_to_retry": true'; then
         echo "=== No orders placed today — leaving unstamped, will retry ===" >> "$LOG_FILE"
     else
-        echo "$TODAY" > "$STAMP_FILE"
+        echo "$TARGET" > "$STAMP_FILE"
         echo "=== Orders already placed today — stamping, will NOT retry ===" >> "$LOG_FILE"
         echo "=== Activity: $ACTIVITY ===" >> "$LOG_FILE"
 
@@ -138,7 +161,7 @@ else
         # correct it, so do it here — a journal that understates what it did is
         # exactly the kind of misleading record the write-first order exists to
         # prevent.
-        JOURNAL="trading/journal/$TODAY.md"
+        JOURNAL="trading/journal/$TARGET.md"
         if [ -f "$JOURNAL" ] && grep -q 'Status:\*\* PLANNED' "$JOURNAL"; then
             # Fix the header too, not just the footnote. Someone scanning the top
             # of the file must not read PLANNED on a day that traded.

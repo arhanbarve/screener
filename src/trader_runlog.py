@@ -33,6 +33,7 @@ _M_NONZERO         = "claude session exited nonzero"
 _M_GATE_FAILED     = "Gate check failed"
 _M_GATE            = "=== Gate:"
 _M_ALREADY_RAN     = "Trader already ran today, skipping"
+_M_ALREADY_DECIDED = "already decided, skipping"   # evening session pre-empted it
 _M_ALREADY_RUNNING = "Trader already running"
 _M_NO_JOURNAL      = "No journal changes to commit"
 
@@ -94,7 +95,8 @@ def classify_log(text: str | None) -> str:
     # Nothing ever started. A gate crash outranks the quieter reasons.
     if _M_GATE_FAILED in text:
         return "gate_failed"
-    if _M_ALREADY_RAN in text or _M_ALREADY_RUNNING in text:
+    if (_M_ALREADY_RAN in text or _M_ALREADY_RUNNING in text
+            or _M_ALREADY_DECIDED in text):
         return "skipped"
     if _M_GATE in text:
         return "gate_blocked"

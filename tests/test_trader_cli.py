@@ -19,7 +19,7 @@ def test_gate_weekend_skips():
                return_value=_clock(False, "2026-07-27T09:30:00-04:00")):
         out = trader_cli.cmd_gate(now=now)
     assert out["run"] is False
-    assert "not a trading day" in out["reason"]
+    assert "weekend" in out["reason"]
 
 
 def test_gate_trading_morning_runs():
@@ -47,12 +47,20 @@ def test_gate_before_window_skips():
     assert "before" in out["reason"]
 
 
-def test_gate_after_cutoff_skips():
-    now = datetime(2026, 7, 23, 17, 30, tzinfo=ET)  # post-close
+def test_gate_post_close_now_runs_as_the_evening_session():
+    """Behaviour change: post-close used to be refused outright.
+
+    It is now the primary window. The machine is usually not awake at 09:00, and
+    the screener runs at 16:30, so deciding after the close is both the practical
+    option and the better-informed one.
+    """
+    now = datetime(2026, 7, 23, 17, 30, tzinfo=ET)  # Thursday, post-close
     with patch("src.trader_cli.broker.get_clock",
                return_value=_clock(False, "2026-07-24T09:30:00-04:00")):
         out = trader_cli.cmd_gate(now=now)
-    assert out["run"] is False
+    assert out["run"] is True
+    assert out["window"] == "evening"
+    assert out["target_date"] == "2026-07-24"
 
 
 # buy/sell now route through cmd_order, which picks the order type from the
@@ -247,3 +255,84 @@ def test_activity_today_cli_prints_json(capsys):
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["safe_to_retry"] is True
+
+
+# ── two decision windows ──────────────────────────────────────────────────────
+# The machine is usually not awake at 09:00, and run_screener.sh fires at 16:30,
+# so the evening session is both the practical one and the better-informed one:
+# it reads the same day's screener and the same day's closes.
+
+def test_evening_window_runs_and_targets_the_next_open():
+    now = datetime(2026, 8, 4, 19, 3, tzinfo=ET)      # Tuesday evening
+    with patch("src.trader_cli.broker.get_clock",
+               return_value=_clock(False, "2026-08-05T09:30:00-04:00")):
+        out = trader_cli.cmd_gate(now=now)
+    assert out["run"] is True
+    assert out["window"] == "evening"
+    assert out["target_date"] == "2026-08-05"
+
+
+def test_evening_window_opens_at_1615():
+    with patch("src.trader_cli.broker.get_clock",
+               return_value=_clock(False, "2026-08-05T09:30:00-04:00")):
+        assert trader_cli.cmd_gate(now=datetime(2026, 8, 4, 16, 14, tzinfo=ET))["run"] is False
+        assert trader_cli.cmd_gate(now=datetime(2026, 8, 4, 16, 15, tzinfo=ET))["run"] is True
+
+
+def test_gap_between_intraday_cutoff_and_evening_window_refuses():
+    """15:45-16:15 is deliberately dead: too late to trade, too early to decide."""
+    now = datetime(2026, 8, 4, 16, 0, tzinfo=ET)
+    with patch("src.trader_cli.broker.get_clock",
+               return_value=_clock(True, "2026-08-05T09:30:00-04:00")):
+        out = trader_cli.cmd_gate(now=now)
+    assert out["run"] is False
+    assert "15:45" in out["reason"]
+
+
+def test_morning_window_still_works_and_targets_today():
+    now = datetime(2026, 8, 5, 9, 0, tzinfo=ET)
+    with patch("src.trader_cli.broker.get_clock",
+               return_value=_clock(False, "2026-08-05T09:30:00-04:00")):
+        out = trader_cli.cmd_gate(now=now)
+    assert out["run"] is True
+    assert out["window"] == "morning"
+    assert out["target_date"] == "2026-08-05"
+
+
+def test_weekend_evening_does_not_run():
+    now = datetime(2026, 8, 8, 19, 0, tzinfo=ET)      # Saturday
+    with patch("src.trader_cli.broker.get_clock",
+               return_value=_clock(False, "2026-08-10T09:30:00-04:00")):
+        out = trader_cli.cmd_gate(now=now)
+    assert out["run"] is False
+    assert "weekend" in out["reason"]
+
+
+def test_friday_evening_targets_monday():
+    now = datetime(2026, 8, 7, 18, 0, tzinfo=ET)      # Friday
+    with patch("src.trader_cli.broker.get_clock",
+               return_value=_clock(False, "2026-08-10T09:30:00-04:00")):
+        out = trader_cli.cmd_gate(now=now)
+    assert out["run"] is True and out["target_date"] == "2026-08-10"
+
+
+def test_overnight_refuses():
+    now = datetime(2026, 8, 5, 2, 0, tzinfo=ET)
+    with patch("src.trader_cli.broker.get_clock",
+               return_value=_clock(False, "2026-08-05T09:30:00-04:00")):
+        assert trader_cli.cmd_gate(now=now)["run"] is False
+
+
+def test_every_gate_result_carries_a_target_date():
+    """run_trader.sh stamps target_date, so it must always be present."""
+    cases = [
+        (datetime(2026, 8, 4, 19, 3, tzinfo=ET), _clock(False, "2026-08-05T09:30:00-04:00")),
+        (datetime(2026, 8, 5, 9, 0, tzinfo=ET), _clock(False, "2026-08-05T09:30:00-04:00")),
+        (datetime(2026, 8, 5, 2, 0, tzinfo=ET), _clock(False, "2026-08-05T09:30:00-04:00")),
+        (datetime(2026, 8, 8, 19, 0, tzinfo=ET), _clock(False, "2026-08-10T09:30:00-04:00")),
+        (datetime(2026, 8, 4, 16, 0, tzinfo=ET), _clock(True, "2026-08-05T09:30:00-04:00")),
+    ]
+    for now, clk in cases:
+        with patch("src.trader_cli.broker.get_clock", return_value=clk):
+            out = trader_cli.cmd_gate(now=now)
+        assert out.get("target_date"), f"no target_date for {now}"
