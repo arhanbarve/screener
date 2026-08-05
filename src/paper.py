@@ -390,6 +390,123 @@ def assemble(
     }
 
 
+def merge_live(snapshot: dict, account: dict, raw_positions: list[dict],
+               open_orders: list[dict], now: str) -> dict:
+    """Overlay live broker state onto a stored snapshot.
+
+    Split by how fast things move and how expensive they are to fetch. Account,
+    positions and open orders are three quick Alpaca calls and change every
+    minute, so they come live. The equity curve, run cadence, closed trades and
+    per-position price history need portfolio history, the exchange calendar and
+    a yfinance download — several seconds — and barely change intraday, so they
+    are carried over from the snapshot.
+
+    That split is what makes a live page fast enough to load on every visit. The
+    full refresh() stays behind the button for when the slow parts matter.
+    """
+    snap_positions = {p["ticker"]: p for p in (snapshot.get("positions") or [])}
+    realized = float((snapshot.get("account") or {}).get("realized") or 0.0)
+    deposits = float((snapshot.get("account") or {}).get("deposits") or 0.0)
+
+    positions = []
+    for p in raw_positions:
+        sym = (p.get("symbol") or "").upper()
+        prior = snap_positions.get(sym, {})
+        positions.append({
+            "ticker": sym,
+            "quantity": _f(p.get("qty")),
+            "avg_cost": _f(p.get("avg_entry_price")),
+            "last_price": _f(p.get("current_price")),
+            "market_value": _f(p.get("market_value")),
+            "cost_basis": _f(p.get("cost_basis")),
+            "total_gl_dollar": _f(p.get("unrealized_pl")),
+            "total_gl_pct": _f(p.get("unrealized_plpc")),
+            "today_gl_dollar": _f(p.get("unrealized_intraday_pl")),
+            "today_gl_pct": _f(p.get("unrealized_intraday_plpc")),
+            "lastday_price": _f(p.get("lastday_price")),
+            # Carried: these come from FIFO matching and a price download.
+            "held_since": prior.get("held_since"),
+            "realized_to_date": prior.get("realized_to_date", 0.0),
+            "history": prior.get("history", []),
+        })
+    positions.sort(key=lambda p: p["total_gl_pct"])
+
+    unrealized = round(sum(p["total_gl_dollar"] for p in positions), 2)
+    equity = _f(account.get("equity"))
+    last_eq = _f(account.get("last_equity"))
+    long_mv = _f(account.get("long_market_value"))
+
+    out = dict(snapshot)
+    out["synced_at"] = now
+    out["positions"] = positions
+    out["open_orders"] = [
+        {"ticker": (o.get("symbol") or "").upper(), "side": o.get("side"),
+         "qty": o.get("qty"), "notional": o.get("notional"),
+         "type": o.get("type"), "time_in_force": o.get("time_in_force"),
+         "submitted_at": (o.get("submitted_at") or "")[:19]}
+        for o in open_orders
+    ]
+    out["account"] = {
+        **(snapshot.get("account") or {}),
+        "equity": equity,
+        "last_equity": last_eq,
+        "cash": _f(account.get("cash")),
+        "long_market_value": long_mv,
+        "deployed_pct": round(long_mv / equity, 6) if equity else 0.0,
+        "today_dollar": round(equity - last_eq, 2) if last_eq else 0.0,
+        "today_pct": round((equity - last_eq) / last_eq, 6) if last_eq else 0.0,
+        "realized": realized,
+        "unrealized": unrealized,
+        "total_pl": round(realized + unrealized, 2),
+    }
+    out["reconciliation"] = reconcile(realized, unrealized, equity, deposits)
+
+    # Extend the curve's last point to now, so the chart's endpoint is live too.
+    curve = dict(snapshot.get("curve") or {})
+    dates = list(curve.get("dates") or [])
+    acct_pct = list(curve.get("account_pct") or [])
+    levels = list(curve.get("account_level") or [])
+    if dates and levels and acct_pct:
+        today = now[:10]
+        base = next((v for v in levels if v), None)
+        if base:
+            pct = round((equity - base) / base * 100, 4)
+            if dates[-1] == today:
+                acct_pct[-1], levels[-1] = pct, equity
+            else:
+                dates.append(today)
+                acct_pct.append(pct)
+                levels.append(equity)
+                spy = list(curve.get("spy_pct") or [])
+                spy.append(spy[-1] if spy else None)
+                curve["spy_pct"] = spy
+        curve.update(dates=dates, account_pct=acct_pct, account_level=levels)
+        out["curve"] = curve
+        out["vs_spy"] = vs_spy(curve)
+    return out
+
+
+def live_view(snapshot: dict | None = None) -> tuple[dict, str, str | None]:
+    """Snapshot overlaid with live broker state. Never raises.
+
+    Returns (data, source, error). source is "live" when the broker answered,
+    "snapshot" when it did not — so the page can say which it is showing instead
+    of quietly presenting stale numbers as current.
+    """
+    snap = snapshot if snapshot is not None else load_snapshot()
+    if not snap:
+        return {}, "none", "no snapshot on disk"
+    try:
+        from src import broker
+        account = broker.get_account()
+        raw_positions = broker.get_positions()
+        open_orders = broker.get_orders("open")
+    except Exception as e:  # noqa: BLE001 — a stale page beats a broken one
+        return snap, "snapshot", f"{type(e).__name__}: {e}"
+    now = datetime.now().isoformat(timespec="minutes")
+    return merge_live(snap, account, raw_positions, open_orders, now), "live", None
+
+
 def save_snapshot(snap: dict, path: Path | None = None) -> Path:
     p = path or SNAPSHOT_FILE
     p.parent.mkdir(parents=True, exist_ok=True)

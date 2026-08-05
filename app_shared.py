@@ -1,5 +1,6 @@
 import html as _html
 import json
+import os
 import re
 import sys
 
@@ -1237,13 +1238,87 @@ def render_sidebar(current_page_id: str) -> None:
         st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
         _out_files = sorted(Path("output").glob("screen_*.csv"), reverse=True)
         _last_run  = _out_files[0].stem.replace("screen_", "") if _out_files else "—"
+        # The build SHA sits next to the data date on purpose: when they disagree
+        # with GitHub you are looking at a stale process, not stale data, and the
+        # fix is Reboot app rather than a browser refresh.
+        _ver = deployed_version()
         st.markdown(
-            f'<div class="sidebar-footer">LAST RUN<br><span>{_last_run}</span></div>',
+            f'<div class="sidebar-footer">LAST RUN<br><span>{_last_run}</span>'
+            f'<br><span style="opacity:0.55;font-size:0.9em">build {_html.escape(_ver["sha"])}'
+            f'{" · " + _html.escape(_ver["date"]) if _ver["date"] else ""}</span></div>',
             unsafe_allow_html=True,
         )
 
 
+# Credentials the app can use if the host provides them. Nothing here is ever
+# printed, logged or written to disk.
+_SECRET_KEYS = (
+    "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "FINNHUB_API_KEY",
+    "SEC_USER_AGENT",
+)
+
+
+def deployed_version() -> dict:
+    """Which commit this process is actually running.
+
+    Worth surfacing because Streamlit re-executes the page script on every rerun
+    but never re-imports app_shared — Python caches it in sys.modules. So a
+    deployment can show a brand-new data file (read from disk inside a function)
+    while still running week-old code (module level). That is exactly what
+    happened on 2026-08-04: the Cloud app listed the day's screener CSV but had no
+    PAPER nav entry, because the nav is module-level and the process predated it.
+
+    With the SHA on screen you can compare against GitHub in one glance instead of
+    inferring it from which features are missing.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "log", "-1", "--format=%h|%cs"],
+            cwd=Path(__file__).parent, capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            sha, when = out.stdout.strip().split("|", 1)
+            return {"sha": sha, "date": when}
+    except Exception:  # noqa: BLE001 — a missing .git must not break the page
+        pass
+    return {"sha": "unknown", "date": ""}
+
+
+def _hydrate_env_from_secrets() -> None:
+    """Copy Streamlit Cloud secrets into os.environ.
+
+    Everything under src/ reads os.environ — src/broker.py raises
+    "Missing ALPACA_API_KEY / ALPACA_SECRET_KEY env vars" without it. Locally
+    those come from .env via python-dotenv, but on Streamlit Cloud there is no
+    .env; secrets arrive in st.secrets instead. Without this bridge, pasting keys
+    into the Cloud secrets UI has no effect at all and the Paper page's refresh
+    keeps failing with a missing-credentials error.
+
+    A value already in the environment always wins, so a local .env is never
+    overridden by a stale Cloud secret.
+    """
+    try:
+        secrets = st.secrets
+    except Exception:
+        return  # no secrets.toml locally — expected, not an error
+    for key in _SECRET_KEYS:
+        if os.environ.get(key):
+            continue
+        try:
+            value = secrets.get(key)
+        except Exception:
+            value = None
+        if value:
+            os.environ[key] = str(value)
+
+
 def setup_page(page_id: str, title: str = "Screener") -> None:
+    # Must run before anything touches src/broker.py: on Streamlit Cloud the
+    # credentials arrive in st.secrets, and every module here reads os.environ.
+    _hydrate_env_from_secrets()
     st.set_page_config(
         page_title=title,
         page_icon="▲",
@@ -2846,20 +2921,36 @@ def _render_paper_cadence(cadence: dict) -> None:
             'MARKET DAY IN THIS WINDOW</div>', unsafe_allow_html=True)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_paper_view() -> tuple[dict, str, str | None]:
+    """Snapshot overlaid with live broker state, refreshed at most every 20s.
+
+    The page fetches live on load rather than rendering the committed snapshot,
+    so opening it shows the account as it is now. Only the three fast Alpaca
+    calls happen here; the equity curve, cadence and price history are carried
+    from the snapshot because they need a yfinance download and barely move
+    intraday. The 20s TTL keeps a burst of reruns from hammering the broker.
+    """
+    from src import paper
+    return paper.live_view()
+
+
 def _render_paper() -> None:
     from src import paper
 
     _page_title("PAPER TRADING")
 
-    snap = paper.load_snapshot()
+    snap, _source, _live_err = _cached_paper_view()
 
     col_sync, col_btn = st.columns([5, 1])
     with col_btn:
         if st.button("↺ REFRESH", key="paper_refresh", use_container_width=True,
-                     help="Fetch Alpaca account, positions, orders and price history"):
+                     help="Full refresh: account, positions, orders, equity curve, "
+                          "price history and run cadence"):
             with st.spinner("Fetching from Alpaca…"):
                 try:
                     paper.refresh()
+                    _cached_paper_view.clear()
                     st.rerun()
                 except paper.SnapshotError as e:
                     # All-or-nothing: the previous snapshot is untouched.
@@ -2868,7 +2959,14 @@ def _render_paper() -> None:
                     st.session_state["_paper_error"] = f"{type(e).__name__}: {e}"
 
     with col_sync:
-        if snap and snap.get("synced_at"):
+        if _source == "live":
+            st.markdown(
+                f'<div style="font-family:var(--mono);font-size:0.6rem;'
+                f'color:var(--bull);padding-top:6px">● LIVE · '
+                f'{_html.escape(str(snap.get("synced_at", "")))}</div>',
+                unsafe_allow_html=True,
+            )
+        elif snap and snap.get("synced_at"):
             stale_days = None
             ts = snap["synced_at"]
             try:
@@ -2884,6 +2982,16 @@ def _render_paper() -> None:
                 f'padding-top:6px">ALPACA SNAPSHOT · {_html.escape(ts)}{suffix}</div>',
                 unsafe_allow_html=True,
             )
+
+    if _live_err and _source != "live":
+        st.markdown(
+            f'<div style="font-family:var(--mono);font-size:0.62rem;color:var(--wait);'
+            f'background:var(--wait-dim);border:1px solid rgba(245,158,11,0.35);'
+            f'border-radius:var(--radius);padding:9px 13px;margin:6px 0">'
+            f'⚠ SHOWING THE LAST SAVED SNAPSHOT — live fetch unavailable<br>'
+            f'<span style="color:var(--muted)">{_html.escape(_live_err)}</span></div>',
+            unsafe_allow_html=True,
+        )
 
     err = st.session_state.pop("_paper_error", None)
     if err:

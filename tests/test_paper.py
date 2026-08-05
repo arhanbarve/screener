@@ -15,7 +15,9 @@ from src.paper import (
     equity_by_date,
     first_fill_date,
     inception_baseline,
+    live_view,
     load_snapshot,
+    merge_live,
     match_fifo,
     open_lot_summary,
     pct_series,
@@ -449,3 +451,124 @@ def test_refresh_failure_leaves_previous_snapshot(tmp_path, monkeypatch):
     with pytest.raises(SnapshotError, match="Alpaca fetch failed"):
         paper.refresh()
     assert load_snapshot(p) == good
+
+
+# ── live overlay: fast parts live, slow parts carried ─────────────────────────
+# The page fetches on load, so this has to be quick. Account/positions/orders are
+# three fast Alpaca calls; the curve, cadence and per-position history need a
+# yfinance download and barely move intraday, so they come from the snapshot.
+
+def _live_account():
+    return {"equity": "100600.00", "last_equity": "100042.31",
+            "cash": "40147.79", "long_market_value": "60452.21"}
+
+
+def _live_positions():
+    return [
+        {"symbol": "HUT", "qty": "36.022964697", "avg_entry_price": "111.04",
+         "current_price": "95.00", "market_value": "3422.18", "cost_basis": "4000.0",
+         "unrealized_pl": "-577.82", "unrealized_plpc": "-0.1445",
+         "unrealized_intraday_pl": "-221.90", "unrealized_intraday_plpc": "-0.0609",
+         "lastday_price": "101.16"},
+        {"symbol": "MYE", "qty": "229.357511467", "avg_entry_price": "34.88",
+         "current_price": "37.50", "market_value": "8600.91", "cost_basis": "8000.0",
+         "unrealized_pl": "600.91", "unrealized_plpc": "0.0751",
+         "unrealized_intraday_pl": "197.25", "unrealized_intraday_plpc": "0.0234",
+         "lastday_price": "36.64"},
+    ]
+
+
+def _stored():
+    snap = _assembled()
+    snap["positions"] = [
+        {"ticker": "HUT", "held_since": "2026-07-24", "realized_to_date": 0.0,
+         "history": [{"date": "2026-08-04", "close": 101.16}], "total_gl_pct": 0.0},
+        {"ticker": "MYE", "held_since": "2026-08-03", "realized_to_date": 0.0,
+         "history": [{"date": "2026-08-04", "close": 36.64}], "total_gl_pct": 0.0},
+    ]
+    snap["account"]["realized"] = -1097.31
+    snap["account"]["deposits"] = 100000.0
+    snap["cadence"] = {"days": [{"date": "2026-08-04"}], "summary": {"completed": 1}}
+    return snap
+
+
+def test_merge_live_uses_live_prices_and_pnl():
+    out = merge_live(_stored(), _live_account(), _live_positions(), [], "2026-08-05T10:00")
+    hut = next(p for p in out["positions"] if p["ticker"] == "HUT")
+    assert hut["last_price"] == 95.0
+    assert hut["total_gl_dollar"] == pytest.approx(-577.82)
+    assert out["account"]["equity"] == 100600.0
+
+
+def test_merge_live_carries_the_expensive_fields():
+    """history/held_since come from FIFO + a price download; never refetched here."""
+    out = merge_live(_stored(), _live_account(), _live_positions(), [], "2026-08-05T10:00")
+    hut = next(p for p in out["positions"] if p["ticker"] == "HUT")
+    assert hut["held_since"] == "2026-07-24"
+    assert hut["history"] == [{"date": "2026-08-04", "close": 101.16}]
+    assert out["cadence"]["summary"]["completed"] == 1
+
+
+def test_merge_live_keeps_worst_first_ordering():
+    out = merge_live(_stored(), _live_account(), _live_positions(), [], "2026-08-05T10:00")
+    assert [p["ticker"] for p in out["positions"]] == ["HUT", "MYE"]
+
+
+def test_merge_live_recomputes_reconciliation_against_live_equity():
+    out = merge_live(_stored(), _live_account(), _live_positions(), [], "2026-08-05T10:00")
+    a = out["account"]
+    assert a["unrealized"] == pytest.approx(23.09, abs=0.01)   # -577.82 + 600.91
+    assert a["total_pl"] == pytest.approx(a["realized"] + a["unrealized"], abs=0.01)
+    assert out["reconciliation"]["expected"] == pytest.approx(600.0, abs=0.01)
+
+
+def test_merge_live_today_dollar_from_equity_delta():
+    out = merge_live(_stored(), _live_account(), _live_positions(), [], "2026-08-05T10:00")
+    assert out["account"]["today_dollar"] == pytest.approx(557.69, abs=0.01)
+
+
+def test_merge_live_extends_the_curve_to_now():
+    out = merge_live(_stored(), _live_account(), _live_positions(), [], "2026-08-05T10:00")
+    assert out["curve"]["dates"][-1] == "2026-08-05"
+    assert out["curve"]["account_level"][-1] == 100600.0
+
+
+def test_merge_live_replaces_todays_curve_point_rather_than_appending():
+    """Reruns must not stack a new point every 20 seconds."""
+    first = merge_live(_stored(), _live_account(), _live_positions(), [], "2026-08-05T10:00")
+    n = len(first["curve"]["dates"])
+    second = merge_live(first, _live_account(), _live_positions(), [], "2026-08-05T10:20")
+    assert len(second["curve"]["dates"]) == n
+
+
+def test_merge_live_carries_open_orders_with_type():
+    orders = [{"symbol": "SPY", "side": "buy", "qty": "10", "type": "limit",
+               "time_in_force": "day", "submitted_at": "2026-08-05T01:00:00Z"}]
+    out = merge_live(_stored(), _live_account(), _live_positions(), orders, "2026-08-05T10:00")
+    assert out["open_orders"][0]["type"] == "limit"
+
+
+def test_live_view_falls_back_to_snapshot_when_broker_unreachable(monkeypatch, tmp_path):
+    """No keys on the host must degrade to the snapshot, not to an exception."""
+    import src.broker as broker
+    monkeypatch.setattr(broker, "get_account",
+                        lambda: (_ for _ in ()).throw(broker.BrokerError("Missing ALPACA_API_KEY")))
+    data, source, err = live_view(_stored())
+    assert source == "snapshot"
+    assert "ALPACA_API_KEY" in err
+    assert data["positions"]  # still renders
+
+
+def test_live_view_reports_live_on_success(monkeypatch):
+    import src.broker as broker
+    monkeypatch.setattr(broker, "get_account", lambda: _live_account())
+    monkeypatch.setattr(broker, "get_positions", lambda: _live_positions())
+    monkeypatch.setattr(broker, "get_orders", lambda status="open": [])
+    data, source, err = live_view(_stored())
+    assert source == "live" and err is None
+    assert data["account"]["equity"] == 100600.0
+
+
+def test_live_view_with_no_snapshot_says_so():
+    data, source, err = live_view({})
+    assert source == "none" and "no snapshot" in err
