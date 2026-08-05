@@ -11,7 +11,7 @@ Commands:
   quote SYM           last printed trade
   cancel ORDER_ID     cancel one open order
   cancel-all          cancel every open order
-  cancel-stops        cancel resting protective stops only, leaving entries alone
+  cancel-stops [SYM]  cancel resting protective stops (one symbol, or all)
   sync-stops          rest protective stops at each position's max-loss floor
 
 Order types. buy/sell default to --auto, which picks the order that fits the
@@ -191,19 +191,31 @@ def cmd_order(
     return {"session": session, "reason": why, "submitted": plan, "order": result}
 
 
-def cmd_cancel_stops(apply: bool = True) -> dict:
-    """Cancel resting protective stops only, leaving deliberate entries alone.
+def cmd_cancel_stops(apply: bool = True, symbol: str | None = None) -> dict:
+    """Cancel resting protective stops, optionally just one symbol's.
 
-    Used at session start: a stop holds the shares a sell needs, so it has to go
-    before trading. Blanket cancel-all would also take out a pending entry
-    somebody meant to leave working.
+    A stop holds the shares a sell needs, so it has to go before selling that
+    position. Pass a symbol and only that one is touched — cancelling all of them
+    up front would leave every position unprotected for the length of the session,
+    and if the session then crashed (four of the first nine did) they would stay
+    unprotected until the next run or the watchdog noticed.
+
+    Blanket cancel-all is deliberately not used here: it would also take out a
+    pending entry somebody meant to leave working.
     """
     from src import orders as orders_mod
 
     open_orders = broker.get_orders("open")
-    ids = orders_mod.protective_stop_ids(open_orders)
+    if symbol:
+        want = symbol.upper()
+        open_orders_scoped = [o for o in open_orders
+                              if (o.get("symbol") or "").upper() == want]
+    else:
+        open_orders_scoped = open_orders
+    ids = orders_mod.protective_stop_ids(open_orders_scoped)
     others = [o["id"] for o in open_orders if o.get("id") and o["id"] not in ids]
-    out = {"stops": ids, "left_alone": others, "cancelled": []}
+    out = {"symbol": symbol.upper() if symbol else None,
+           "stops": ids, "left_alone": others, "cancelled": []}
     if apply:
         out["cancelled"] = [broker.cancel_order(i) for i in ids]
     return out
@@ -313,6 +325,7 @@ def main(argv=None) -> int:
     sp.add_argument("order_id")
     sub.add_parser("cancel-all")
     sp = sub.add_parser("cancel-stops")
+    sp.add_argument("symbol", nargs="?", help="only this symbol's stop (recommended)")
     sp.add_argument("--report-only", action="store_true")
     sp = sub.add_parser("sync-stops")
     sp.add_argument("--apply", action="store_true",
@@ -343,7 +356,7 @@ def main(argv=None) -> int:
         elif args.cmd == "cancel-all":
             out = broker.cancel_all_orders()
         elif args.cmd == "cancel-stops":
-            out = cmd_cancel_stops(apply=not args.report_only)
+            out = cmd_cancel_stops(apply=not args.report_only, symbol=args.symbol)
         elif args.cmd == "sync-stops":
             out = cmd_sync_stops(apply=args.apply)
         else:  # orders

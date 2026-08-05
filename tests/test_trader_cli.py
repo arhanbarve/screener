@@ -336,3 +336,55 @@ def test_every_gate_result_carries_a_target_date():
         with patch("src.trader_cli.broker.get_clock", return_value=clk):
             out = trader_cli.cmd_gate(now=now)
         assert out.get("target_date"), f"no target_date for {now}"
+
+
+# ── cancelling stops is scoped to the symbol being sold ───────────────────────
+# Clearing every stop up front leaves every position unprotected for the length of
+# a session, and four of the first nine sessions crashed.
+
+def _stops_and_entry():
+    return [
+        {"id": "s-mye", "symbol": "MYE", "side": "sell", "type": "stop",
+         "qty": "229", "stop_price": "31.76", "time_in_force": "gtc"},
+        {"id": "s-hut", "symbol": "HUT", "side": "sell", "type": "stop",
+         "qty": "36", "stop_price": "89.76", "time_in_force": "gtc"},
+        {"id": "e-orka", "symbol": "ORKA", "side": "buy", "type": "limit",
+         "qty": "40", "limit_price": "98.50"},
+    ]
+
+
+def test_cancel_stops_for_one_symbol_only():
+    with patch("src.trader_cli.broker.get_orders", return_value=_stops_and_entry()), \
+         patch("src.trader_cli.broker.cancel_order", return_value={"ok": True}) as c:
+        out = trader_cli.cmd_cancel_stops(symbol="HUT")
+    assert out["stops"] == ["s-hut"]
+    c.assert_called_once_with("s-hut")
+
+
+def test_cancel_stops_without_symbol_takes_all_stops():
+    with patch("src.trader_cli.broker.get_orders", return_value=_stops_and_entry()), \
+         patch("src.trader_cli.broker.cancel_order", return_value={"ok": True}) as c:
+        out = trader_cli.cmd_cancel_stops()
+    assert sorted(out["stops"]) == ["s-hut", "s-mye"]
+    assert c.call_count == 2
+
+
+def test_cancel_stops_never_touches_a_pending_entry():
+    with patch("src.trader_cli.broker.get_orders", return_value=_stops_and_entry()), \
+         patch("src.trader_cli.broker.cancel_order", return_value={"ok": True}) as c:
+        trader_cli.cmd_cancel_stops()
+    assert "e-orka" not in [call.args[0] for call in c.call_args_list]
+
+
+def test_cancel_stops_report_only_cancels_nothing():
+    with patch("src.trader_cli.broker.get_orders", return_value=_stops_and_entry()), \
+         patch("src.trader_cli.broker.cancel_order") as c:
+        out = trader_cli.cmd_cancel_stops(apply=False, symbol="MYE")
+    assert out["stops"] == ["s-mye"] and out["cancelled"] == []
+    c.assert_not_called()
+
+
+def test_cancel_stops_cli_accepts_a_symbol():
+    with patch("src.trader_cli.broker.get_orders", return_value=_stops_and_entry()), \
+         patch("src.trader_cli.broker.cancel_order", return_value={"ok": True}):
+        assert trader_cli.main(["cancel-stops", "HUT"]) == 0

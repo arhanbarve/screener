@@ -57,12 +57,8 @@ market order that would fill at the auction at whatever it prints.
 
 ## Procedure
 
-0. **Clear resting stops first:** `PY -m src.trader_cli cancel-stops`. Protective
-   stops rest against your shares, so a stop holds the very shares a sell needs
-   and the sell is rejected for insufficient quantity. You re-place them in
-   step 8. This cancels *stops only* — a deliberate pending entry is left
-   working, so check `status` for anything unexpected: an order you did not place
-   this session means an earlier attempt was mid-flight, or a human left it there.
+0. Nothing to clear up front. Protective stops stay resting while you research —
+   see step 6 for the one case where a stop is in the way.
 
 1. `PY -m src.trader_cli status` (PY = /Library/Frameworks/Python.framework/Versions/3.14/bin/python3)
    — equity, cash, positions with unrealized P&L, open orders, market clock.
@@ -107,6 +103,12 @@ market order that would fill at the auction at whatever it prints.
 
    `close TICKER` is always a market liquidation, so only use it during regular
    hours; outside them use `sell TICKER --qty <full position>`, which prices it.
+
+   **Selling a position that has a resting stop?** Cancel that one stop first, and
+   only that one: `PY -m src.trader_cli cancel-stops TICKER`. The stop holds the
+   shares, so the sell is rejected for insufficient quantity otherwise. Do not
+   cancel them all — leaving every position unprotected for the length of a session
+   that might crash is a worse trade than the inconvenience it saves.
 
    In an evening session nothing fills while you watch — every order comes back
    `accepted` with `filled_qty: 0` and becomes eligible at the next open. That is
