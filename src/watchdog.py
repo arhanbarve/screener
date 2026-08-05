@@ -152,6 +152,29 @@ def check_protective_stops(positions: list[dict], open_orders: list[dict],
     return _r("stops", "ok", f"{len(resting)} resting, {len(excused)} excused")
 
 
+def check_expiring_stops(open_orders: list[dict]) -> dict:
+    """A protective stop with time_in_force=day expires at the next close.
+
+    The floor exists to cover the day no session runs, so a stop that needs a
+    session to re-place it every evening does not do the job it was placed for.
+    Alpaca only allows GTC on whole shares, so the fix is a whole-share GTC stop
+    with the fractional remainder uncovered — see orders.plan_stop.
+    """
+    stops = [o for o in (open_orders or [])
+             if o.get("type") == "stop" and o.get("side") == "sell"]
+    if not stops:
+        return _r("expiring_stops", "ok", "no resting stops")
+    day = [o for o in stops if (o.get("time_in_force") or "day") == "day"]
+    if day:
+        return _r("expiring_stops", "warn",
+                  f"{len(day)}/{len(stops)} stop(s) are day orders and expire at the "
+                  f"next close: " + ", ".join(sorted(
+                      (o.get("symbol") or "?") for o in day))
+                  + " — re-run `sync-stops --apply` for whole-share GTC",
+                  tickers=sorted((o.get("symbol") or "?") for o in day))
+    return _r("expiring_stops", "ok", f"all {len(stops)} stop(s) are GTC")
+
+
 def check_tests(returncode: int | None, tail: str = "") -> dict:
     if returncode is None:
         return _r("tests", "warn", "test suite not run")
@@ -223,6 +246,7 @@ def run(run_tests: bool = True) -> dict:
         checks.append(check_unpriced_orders(open_orders, session))
         checks.append(check_stale_orders(open_orders, datetime.now(ET)))
         checks.append(check_protective_stops(positions, open_orders))
+        checks.append(check_expiring_stops(open_orders))
 
     if run_tests:
         # No --timeout: that flag needs pytest-timeout, which is not installed,

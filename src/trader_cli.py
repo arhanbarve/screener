@@ -205,7 +205,7 @@ def cmd_sync_stops(apply: bool = False) -> dict:
         for o in result["cancel"]:
             cancelled.append(broker.cancel_order(o["id"]))
         for spec in result["place"]:
-            spec = {k: v for k, v in spec.items() if k != "_why"}
+            spec = {k: v for k, v in spec.items() if not k.startswith("_")}
             placed.append(broker.submit_order(**spec))
         result.update(applied=True, cancelled=cancelled, placed=placed)
     return result

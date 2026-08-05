@@ -267,3 +267,30 @@ def test_watchdog_pytest_args_are_all_supported():
     assert m, "could not locate the pytest argv in watchdog.run"
     passed = re.findall(r'"(--?[\w-]+[^"]*)"', m.group(1))
     assert passed == ["-q"], f"unexpected pytest flags: {passed}"
+
+
+# ── stops that expire cannot cover a sessionless day ──────────────────────────
+
+def test_day_stops_warn_because_they_expire():
+    from src.watchdog import check_expiring_stops
+    orders = [{"symbol": "HUT", "side": "sell", "type": "stop", "time_in_force": "day"},
+              {"symbol": "MYE", "side": "sell", "type": "stop", "time_in_force": "gtc"}]
+    r = check_expiring_stops(orders)
+    assert r["status"] == "warn" and r["tickers"] == ["HUT"]
+
+
+def test_all_gtc_stops_ok():
+    from src.watchdog import check_expiring_stops
+    orders = [{"symbol": "MYE", "side": "sell", "type": "stop", "time_in_force": "gtc"}]
+    assert check_expiring_stops(orders)["status"] == "ok"
+
+
+def test_no_stops_is_ok_for_expiry_check():
+    from src.watchdog import check_expiring_stops
+    assert check_expiring_stops([])["status"] == "ok"
+
+
+def test_missing_tif_treated_as_day():
+    from src.watchdog import check_expiring_stops
+    orders = [{"symbol": "HUT", "side": "sell", "type": "stop"}]
+    assert check_expiring_stops(orders)["status"] == "warn"

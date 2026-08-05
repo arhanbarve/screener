@@ -186,12 +186,45 @@ def plan_stop(symbol: str, qty: float, stop_price: float) -> dict:
     fires on a wick, which is the flip-flopping the standing-verdict rewrite
     removed. The floor is far enough from noise to be worth resting, and it is
     the level whose whole job is surviving a session that never runs.
+
+    That last clause forces the time-in-force. Alpaca only accepts fractional
+    quantities with time_in_force="day", so a stop on 36.022964697 shares expires
+    at the next close — which defeats the point, since the scenario it exists for
+    is precisely the day no session runs to re-place it. So the stop is placed
+    GTC on the whole-share portion, leaving the fraction uncovered. Covering
+    99.9% of a position indefinitely beats covering 100% of it until tomorrow.
+
+    Positions under one share cannot have a GTC stop at all and fall back to a
+    day order, with coverage reported so the gap is visible rather than assumed.
     """
     if qty <= 0:
         raise OrderPlanError(f"stop needs a positive qty, got {qty}")
-    return {"symbol": symbol.upper(), "side": "sell", "qty": round(qty, 9),
+
+    whole = float(int(qty))
+    if whole >= 1:
+        covered = whole / qty
+        note = "" if whole == qty else (
+            f"; GTC needs whole shares, so {qty - whole:.9f} of {qty:g} "
+            f"({1 - covered:.2%}) is uncovered")
+        return {
+            "symbol": symbol.upper(), "side": "sell", "qty": whole,
             "order_type": "stop", "stop_price": round_tick(stop_price),
-            "_why": f"protective stop at max-loss floor {round_tick(stop_price):g}"}
+            "time_in_force": "gtc",
+            "_coverage": round(covered, 6),
+            "_why": (f"protective stop at max-loss floor "
+                     f"{round_tick(stop_price):g}, GTC so it survives a day with "
+                     f"no session{note}"),
+        }
+
+    return {
+        "symbol": symbol.upper(), "side": "sell", "qty": round(qty, 9),
+        "order_type": "stop", "stop_price": round_tick(stop_price),
+        "time_in_force": "day",
+        "_coverage": 1.0,
+        "_why": (f"protective stop at max-loss floor {round_tick(stop_price):g}; "
+                 f"position is under one share so GTC is impossible — this DAY "
+                 f"order expires at the next close and must be re-placed"),
+    }
 
 
 # ── stop reconciliation ───────────────────────────────────────────────────────
@@ -273,10 +306,16 @@ def reconcile_stops(
             cancel.extend(current)
             continue
 
+        # Match against the order plan_stop would actually produce, not against
+        # the raw free quantity. plan_stop rounds down to whole shares so it can
+        # use GTC, so comparing the fractional figure would never match a resting
+        # stop and every run would cancel and replace it forever.
+        want = plan_stop(sym, target_qty, floor)
         matching = [
             o for o in current
-            if abs(float(o["stop_price"]) - round_tick(floor)) < tolerance
-            and abs(float(o.get("qty") or 0) - target_qty) < 1e-6
+            if abs(float(o["stop_price"]) - want["stop_price"]) < tolerance
+            and abs(float(o.get("qty") or 0) - want["qty"]) < 1e-6
+            and (o.get("time_in_force") or "day") == want["time_in_force"]
         ]
         if matching:
             keep.extend(matching)
@@ -284,7 +323,7 @@ def reconcile_stops(
             continue
 
         cancel.extend(current)
-        place.append(plan_stop(sym, target_qty, floor))
+        place.append(want)
 
     # Stops on symbols no longer held must go — they would sell shares we do not
     # have and be rejected, or worse, sell a position re-entered later.

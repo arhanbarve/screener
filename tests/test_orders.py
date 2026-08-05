@@ -192,9 +192,13 @@ def test_every_plan_explains_itself():
 
 def test_plan_stop_shape():
     s = plan_stop("MYE", 229.357511467, 31.4567)
-    assert s == {"symbol": "MYE", "side": "sell", "qty": 229.357511467,
-                 "order_type": "stop", "stop_price": 31.46,
-                 "_why": "protective stop at max-loss floor 31.46"}
+    assert s["symbol"] == "MYE"
+    assert s["side"] == "sell"
+    assert s["order_type"] == "stop"
+    assert s["stop_price"] == 31.46
+    # Whole shares + GTC, so the stop outlives a day with no session.
+    assert s["qty"] == 229.0
+    assert s["time_in_force"] == "gtc"
 
 
 def test_plan_stop_rejects_empty_position():
@@ -209,9 +213,9 @@ def _pos(sym, qty, available=None):
             "qty_available": str(qty if available is None else available)}
 
 
-def _stop(sym, qty, price, oid="o1"):
+def _stop(sym, qty, price, oid="o1", tif="gtc"):
     return {"id": oid, "symbol": sym, "side": "sell", "type": "stop",
-            "qty": str(qty), "stop_price": str(price)}
+            "qty": str(qty), "stop_price": str(price), "time_in_force": tif}
 
 
 def test_places_stop_when_none_exists():
@@ -329,3 +333,58 @@ def test_protective_stop_ids_selects_only_stops():
 def test_protective_stop_ids_empty():
     from src.orders import protective_stop_ids
     assert protective_stop_ids([]) == []
+
+
+# ── stops must outlive a day with no session ───────────────────────────────────
+# Alpaca allows fractional qty only with time_in_force=day, so a stop on
+# 36.022964697 shares expires at the next close — defeating the whole purpose,
+# since the scenario it covers is the day nobody re-places it.
+
+def test_fractional_position_gets_whole_share_gtc_stop():
+    s = plan_stop("HUT", 36.022964697, 89.7586)
+    assert s["time_in_force"] == "gtc"
+    assert s["qty"] == 36.0
+    assert s["stop_price"] == 89.76
+    assert s["_coverage"] == pytest.approx(36.0 / 36.022964697, abs=1e-6)
+    assert "uncovered" in s["_why"]
+
+
+def test_whole_share_position_is_fully_covered():
+    s = plan_stop("MYE", 229.0, 31.76)
+    assert s["time_in_force"] == "gtc"
+    assert s["qty"] == 229.0
+    assert s["_coverage"] == 1.0
+    assert "uncovered" not in s["_why"]
+
+
+def test_sub_one_share_position_falls_back_to_day_and_says_so():
+    s = plan_stop("FIX", 0.5, 1502.89)
+    assert s["time_in_force"] == "day"
+    assert s["qty"] == 0.5
+    assert "expires at the next close" in s["_why"]
+
+
+def test_reconcile_is_idempotent_with_whole_share_gtc():
+    """The trap: matching on the fractional free qty would replace forever."""
+    floors = {"HUT": 89.7586}
+    pos = [_pos("HUT", 36.022964697)]
+    first = reconcile_stops(pos, floors, [])
+    want = first["place"][0]
+    assert want["qty"] == 36.0 and want["time_in_force"] == "gtc"
+
+    resting = {"id": "s1", "symbol": "HUT", "side": "sell", "type": "stop",
+               "qty": "36", "stop_price": "89.76", "time_in_force": "gtc"}
+    second = reconcile_stops([_pos("HUT", 36.022964697, available=0.022964697)],
+                             floors, [resting])
+    assert second["place"] == [], f"replaced a matching stop: {second['place']}"
+    assert second["cancel"] == []
+    assert len(second["keep"]) == 1
+
+
+def test_existing_day_stop_is_replaced_with_gtc():
+    resting = {"id": "s1", "symbol": "HUT", "side": "sell", "type": "stop",
+               "qty": "36.022964697", "stop_price": "89.76", "time_in_force": "day"}
+    r = reconcile_stops([_pos("HUT", 36.022964697, available=0)], {"HUT": 89.7586},
+                        [resting])
+    assert resting in r["cancel"]
+    assert r["place"][0]["time_in_force"] == "gtc"
