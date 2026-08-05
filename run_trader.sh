@@ -53,10 +53,11 @@ MAX_ATTEMPTS=5
 # 4 of the account's first 7 sessions, silently. Retry is now gated on whether
 # the crashed session actually placed anything (see activity-today), which keeps
 # the safety property while ending the permanent skip.
-if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$TODAY" ]; then
-    echo "=== Trader already ran today, skipping ===" >> "$LOG_FILE"
-    exit 0
-fi
+# NOTE: there is deliberately no stamp check here. The stamp names the trading
+# session already decided, and in the evening that is tomorrow — comparing it to
+# today would have let this morning's stamp block tonight's session for the next
+# open, which is the whole point of the evening window. The only correct check is
+# stamp == target_date, and target_date comes from the gate below.
 
 # Bound the retries. This script is also invoked on a StartInterval poll so it
 # picks up as soon as the Mac is next awake, which without a cap could relaunch
@@ -96,10 +97,13 @@ GATE=$("$PY" -m src.trader_cli gate 2>>"$LOG_FILE") || {
     echo "=== Gate check failed (missing keys / network?) ===" >> "$LOG_FILE"
     exit 0
 }
-echo "=== Gate: $GATE ===" >> "$LOG_FILE"
+# Only log a gate that says yes. Inside a window this script polls every 15
+# minutes, and logging every refusal would bury the real entries in the file the
+# cadence report reads.
 if ! echo "$GATE" | grep -q '"run": true'; then
     exit 0
 fi
+echo "=== Gate: $GATE ===" >> "$LOG_FILE"
 
 # Re-key the stamp to the session being decided for.
 TARGET=$(printf '%s' "$GATE" | sed -n 's/.*"target_date": *"\([0-9-]*\)".*/\1/p')

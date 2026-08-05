@@ -38,7 +38,7 @@ STUB
 #!/bin/bash
 for a in "$@"; do
     case "$a" in
-        gate)           echo "{\"run\": ${GATE_RUN:-true}, \"reason\": \"stub\"}"; exit 0 ;;
+        gate)           echo "{\"run\": ${GATE_RUN:-true}, \"window\": \"${GATE_WINDOW:-evening}\", \"target_date\": \"${GATE_TARGET:-2099-01-01}\", \"reason\": \"stub\"}"; exit 0 ;;
         activity-today) echo "{\"count\": ${ACT_COUNT:-0}, \"safe_to_retry\": ${ACT_SAFE:-true}}"; exit 0 ;;
     esac
 done
@@ -94,6 +94,7 @@ trader() {
 }
 
 TODAY=$(date +%Y-%m-%d)
+TARGET="2099-01-01"   # what the stubbed gate reports as target_date
 STAMP() { cat "$SANDBOX/logs/trader_last_run" 2>/dev/null || echo "<none>"; }
 LOGTXT() { cat "$SANDBOX/logs/trader_$TODAY.log" 2>/dev/null || echo ""; }
 
@@ -102,9 +103,9 @@ echo "run_trader.sh branch tests"
 # ── 1. clean success stamps the day ───────────────────────────────────────────
 setup
 trader CLAUDE_RC=0
-[ "$(STAMP)" = "$TODAY" ] \
-    && ok "successful session stamps the day" \
-    || bad "successful session stamps the day" "stamp=$(STAMP) want=$TODAY"
+[ "$(STAMP)" = "$TARGET" ] \
+    && ok "successful session stamps the target session" \
+    || bad "successful session stamps the target session" "stamp=$(STAMP) want=$TARGET"
 teardown
 
 # ── 2. crash with an untouched book does NOT stamp ────────────────────────────
@@ -120,7 +121,7 @@ teardown
 # ── 3. crash AFTER placing orders stamps and refuses retry ────────────────────
 setup
 trader CLAUDE_RC=1 ACT_SAFE=false ACT_COUNT=3
-if [ "$(STAMP)" = "$TODAY" ] && LOGTXT | grep -q "will NOT retry"; then
+if [ "$(STAMP)" = "$TARGET" ] && LOGTXT | grep -q "will NOT retry"; then
     ok "crash after placing orders stamps the day (no double-trade)"
 else
     bad "crash after placing orders stamps the day" "stamp=$(STAMP)"
@@ -135,7 +136,7 @@ cat > "$SANDBOX/bin/python3" <<'STUB'
 #!/bin/bash
 for a in "$@"; do
     case "$a" in
-        gate)           echo "{\"run\": true, \"reason\": \"stub\"}"; exit 0 ;;
+        gate)           echo "{\"run\": true, \"window\": \"evening\", \"target_date\": \"2099-01-01\", \"reason\": \"stub\"}"; exit 0 ;;
         activity-today) exit 1 ;;   # the check itself fails
     esac
 done
@@ -143,7 +144,7 @@ exit 0
 STUB
 chmod +x "$SANDBOX/bin/python3"
 trader CLAUDE_RC=1
-if [ "$(STAMP)" = "$TODAY" ] && LOGTXT | grep -q "Could not verify order activity"; then
+if [ "$(STAMP)" = "$TARGET" ] && LOGTXT | grep -q "Could not verify order activity"; then
     ok "unverifiable book stamps conservatively and says so"
 else
     bad "unverifiable book stamps conservatively" "stamp=$(STAMP) log: $(LOGTXT | tr '\n' '|' | cut -c1-200)"
@@ -161,32 +162,32 @@ teardown
 # session cannot fix that; the runner must.
 setup
 mkdir -p "$SANDBOX/trading/journal"
-cat > "$SANDBOX/trading/journal/$TODAY.md" <<'J'
+cat > "$SANDBOX/trading/journal/$TARGET.md" <<'J'
 # Trading Journal — today
 **Status:** PLANNED — no orders placed yet
 ## Decisions
 Buy MYE because reasons.
 J
 trader CLAUDE_RC=1 ACT_SAFE=false ACT_COUNT=3
-if grep -q "STATUS CORRECTED BY THE RUNNER" "$SANDBOX/trading/journal/$TODAY.md"; then
+if grep -q "STATUS CORRECTED BY THE RUNNER" "$SANDBOX/trading/journal/$TARGET.md"; then
     ok "PLANNED journal is corrected when fills happened"
 else
     bad "PLANNED journal is corrected when fills happened" \
-        "journal: $(tr '\n' '|' < "$SANDBOX/trading/journal/$TODAY.md" | cut -c1-200)"
+        "journal: $(tr '\n' '|' < "$SANDBOX/trading/journal/$TARGET.md" | cut -c1-200)"
 fi
 # The session's own reasoning must survive untouched.
-if grep -q "Buy MYE because reasons" "$SANDBOX/trading/journal/$TODAY.md"; then
+if grep -q "Buy MYE because reasons" "$SANDBOX/trading/journal/$TARGET.md"; then
     ok "runner correction preserves the session's reasoning"
 else
     bad "runner correction preserves the session's reasoning" "original text gone"
 fi
 # The header must not still claim PLANNED on a day that traded.
-if grep -q 'Status:\*\* EXECUTED' "$SANDBOX/trading/journal/$TODAY.md" \
-   && ! grep -q 'Status:\*\* PLANNED' "$SANDBOX/trading/journal/$TODAY.md"; then
+if grep -q 'Status:\*\* EXECUTED' "$SANDBOX/trading/journal/$TARGET.md" \
+   && ! grep -q 'Status:\*\* PLANNED' "$SANDBOX/trading/journal/$TARGET.md"; then
     ok "status header flipped to EXECUTED"
 else
     bad "status header flipped to EXECUTED" \
-        "header: $(grep -m1 'Status' "$SANDBOX/trading/journal/$TODAY.md")"
+        "header: $(grep -m1 'Status' "$SANDBOX/trading/journal/$TARGET.md")"
 fi
 teardown
 
@@ -194,10 +195,10 @@ teardown
 setup
 mkdir -p "$SANDBOX/trading/journal"
 printf '# Trading Journal\n**Status:** PLANNED — no orders placed yet\n' \
-    > "$SANDBOX/trading/journal/$TODAY.md"
-before=$(cat "$SANDBOX/trading/journal/$TODAY.md")
+    > "$SANDBOX/trading/journal/$TARGET.md"
+before=$(cat "$SANDBOX/trading/journal/$TARGET.md")
 trader CLAUDE_RC=1 ACT_SAFE=true ACT_COUNT=0
-if [ "$(cat "$SANDBOX/trading/journal/$TODAY.md")" = "$before" ]; then
+if [ "$(cat "$SANDBOX/trading/journal/$TARGET.md")" = "$before" ]; then
     ok "PLANNED journal untouched when no orders filled"
 else
     bad "PLANNED journal untouched when no orders filled" "journal was modified"
@@ -208,9 +209,9 @@ teardown
 setup
 mkdir -p "$SANDBOX/trading/journal"
 printf '# Trading Journal\n**Status:** EXECUTED\n## Orders placed\nall filled\n' \
-    > "$SANDBOX/trading/journal/$TODAY.md"
+    > "$SANDBOX/trading/journal/$TARGET.md"
 trader CLAUDE_RC=1 ACT_SAFE=false ACT_COUNT=3
-if grep -q "STATUS CORRECTED" "$SANDBOX/trading/journal/$TODAY.md"; then
+if grep -q "STATUS CORRECTED" "$SANDBOX/trading/journal/$TARGET.md"; then
     bad "EXECUTED journal left alone" "runner appended a correction anyway"
 else
     ok "EXECUTED journal left alone"
@@ -219,12 +220,12 @@ teardown
 
 # ── 4. an already-stamped day is skipped ──────────────────────────────────────
 setup
-echo "$TODAY" > "$SANDBOX/logs/trader_last_run"
+echo "$TARGET" > "$SANDBOX/logs/trader_last_run"
 trader CLAUDE_RC=0
-if LOGTXT | grep -q "already ran today" && ! LOGTXT | grep -q "session started"; then
-    ok "stamped day skips without starting a session"
+if LOGTXT | grep -q "already decided, skipping" && ! LOGTXT | grep -q "session started"; then
+    ok "already-decided target skips without starting a session"
 else
-    bad "stamped day skips" "log: $(LOGTXT | tr '\n' '|' | cut -c1-160)"
+    bad "already-decided target skips" "log: $(LOGTXT | tr '\n' '|' | cut -c1-160)"
 fi
 teardown
 
@@ -338,3 +339,55 @@ fi
 echo
 echo "passed $PASS, failed $FAIL"
 [ "$FAIL" -eq 0 ]
+
+# ── the evening session must not be blocked by today's stamp ───────────────────
+# This is the bug that would have stopped tonight from deciding tomorrow: the
+# stamp names the target session, so comparing it to the calendar date let a
+# crashed morning run block the evening session for the next open.
+
+setup
+echo "$(date +%Y-%m-%d)" > "$SANDBOX/logs/trader_last_run"   # today, not the target
+trader CLAUDE_RC=0 GATE_WINDOW=evening GATE_TARGET=2099-01-01
+if LOGTXT | grep -q "session started"; then
+    ok "today's stamp does not block an evening session for the next open"
+else
+    bad "today's stamp does not block an evening session" \
+        "log: $(LOGTXT | tr '\n' '|' | cut -c1-200)"
+fi
+teardown
+
+setup
+trader CLAUDE_RC=0 GATE_WINDOW=evening GATE_TARGET=2099-01-01
+[ "$(STAMP)" = "2099-01-01" ] \
+    && ok "evening session stamps the next session, not today" \
+    || bad "evening session stamps the next session" "stamp=$(STAMP)"
+teardown
+
+setup
+trader GATE_RUN=false
+if ! LOGTXT | grep -q "=== Gate:"; then
+    ok "a refusing gate is not logged (polls every 15min inside a window)"
+else
+    bad "a refusing gate is not logged" "gate line present"
+fi
+teardown
+
+# A gate response without target_date must fall back to the calendar date rather
+# than stamping an empty string — proved itself when a stub omitted the field.
+setup
+cat > "$SANDBOX/bin/python3" <<'STUB'
+#!/bin/bash
+for a in "$@"; do
+    case "$a" in
+        gate)           echo "{\"run\": true, \"reason\": \"no target_date\"}"; exit 0 ;;
+        activity-today) echo "{\"count\": 0, \"safe_to_retry\": true}"; exit 0 ;;
+    esac
+done
+exit 0
+STUB
+chmod +x "$SANDBOX/bin/python3"
+trader CLAUDE_RC=0
+[ "$(STAMP)" = "$TODAY" ] \
+    && ok "missing target_date falls back to the calendar date" \
+    || bad "missing target_date falls back to the calendar date" "stamp=$(STAMP)"
+teardown
