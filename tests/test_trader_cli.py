@@ -388,3 +388,77 @@ def test_cancel_stops_cli_accepts_a_symbol():
     with patch("src.trader_cli.broker.get_orders", return_value=_stops_and_entry()), \
          patch("src.trader_cli.broker.cancel_order", return_value={"ok": True}):
         assert trader_cli.main(["cancel-stops", "HUT"]) == 0
+
+
+# ── sync-stops ────────────────────────────────────────────────────────────────
+
+def _sync_stops_patches(plan):
+    """Stub everything cmd_sync_stops gathers, leaving only the apply loop live."""
+    return [
+        patch("src.trader_cli.broker.get_positions", return_value=[
+            {"symbol": "SPY", "avg_entry_price": "500", "current_price": "510"},
+            {"symbol": "MYE", "avg_entry_price": "20", "current_price": "22"},
+        ]),
+        patch("src.trader_cli.broker.get_orders", return_value=[]),
+        patch("src.paper.load_snapshot", return_value={}),
+        patch("src.paper_stops.fetch_history", return_value={}),
+        patch("src.paper_stops.build_plans", return_value=[]),
+        patch("src.paper_stops.save_plans"),
+        patch("src.paper_stops.floors_from_plans",
+              return_value={"SPY": 480.0, "MYE": 18.0}),
+        patch("src.paper_stops.sanity_check_floor", return_value=None),
+        patch("src.orders.reconcile_stops", return_value=plan),
+    ]
+
+
+def test_sync_stops_one_rejection_does_not_block_the_other_symbols():
+    """A wash-trade 403 on one symbol must not leave every other one unprotected.
+
+    Alpaca refuses a sell stop while an opposite-side buy limit rests on the same
+    symbol. Before this, the first 403 aborted the apply loop, so a single blocked
+    entry silently denied stops to every position after it.
+    """
+    plan = {"place": [{"symbol": "SPY", "side": "sell", "qty": 10,
+                       "order_type": "stop", "stop_price": 480.0},
+                      {"symbol": "MYE", "side": "sell", "qty": 5,
+                       "order_type": "stop", "stop_price": 18.0}],
+            "cancel": [], "keep": [], "skip": []}
+
+    def submit(**spec):
+        if spec["symbol"] == "SPY":
+            raise trader_cli.broker.BrokerError(
+                'POST /v2/orders -> 403: {"code":40310000,"message":"potential wash trade detected"}')
+        return {"symbol": spec["symbol"], "id": "s-mye"}
+
+    stack = _sync_stops_patches(plan)
+    for p in stack:
+        p.start()
+    try:
+        with patch("src.trader_cli.broker.submit_order", side_effect=submit):
+            out = trader_cli.cmd_sync_stops(apply=True)
+    finally:
+        for p in stack:
+            p.stop()
+
+    assert [o["symbol"] for o in out["placed"]] == ["MYE"]
+    assert len(out["failed"]) == 1
+    assert out["failed"][0]["ticker"] == "SPY"
+    assert out["failed"][0]["action"] == "place"
+    assert "wash trade" in out["failed"][0]["error"]
+
+
+def test_sync_stops_clean_run_reports_no_failures():
+    plan = {"place": [{"symbol": "MYE", "side": "sell", "qty": 5,
+                       "order_type": "stop", "stop_price": 18.0}],
+            "cancel": [], "keep": [], "skip": []}
+    stack = _sync_stops_patches(plan)
+    for p in stack:
+        p.start()
+    try:
+        with patch("src.trader_cli.broker.submit_order",
+                   return_value={"symbol": "MYE", "id": "s-mye"}):
+            out = trader_cli.cmd_sync_stops(apply=True)
+    finally:
+        for p in stack:
+            p.stop()
+    assert out["failed"] == [] and len(out["placed"]) == 1

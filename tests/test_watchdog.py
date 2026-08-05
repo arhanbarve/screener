@@ -104,6 +104,31 @@ def test_cadence_missing_warns():
     assert check_cadence(None, TODAY)["status"] == "warn"
 
 
+def test_cadence_old_break_outside_recent_window_is_ok():
+    """A crash already dealt with must stop alerting once it ages out.
+
+    The 2026-08-05 annoyance: five old broken days kept the watchdog at WARN every
+    30 minutes for the week it took them to roll out of the 9-day window.
+    """
+    days = [_day("2026-07-23", "gate_failed"), _day("2026-07-27", "crashed"),
+            _day("2026-08-03", "ok"), _day("2026-08-04", "ok"),
+            _day("2026-08-05", "ok")]
+    cad = {"days": days, "summary": {"broken": 2, "market_days": 5, "completed": 3}}
+    r = check_cadence(cad, TODAY)
+    assert r["status"] == "ok"
+    assert "2 older break(s)" in r["detail"]
+
+
+def test_cadence_recent_break_still_warns():
+    """Ageing out old breaks must not blind the check to a fresh one."""
+    days = [_day("2026-07-23", "crashed"), _day("2026-08-03", "ok"),
+            _day("2026-08-04", "crashed"), _day("2026-08-05", "ok")]
+    cad = {"days": days, "summary": {"broken": 2, "market_days": 4, "completed": 2}}
+    r = check_cadence(cad, TODAY)
+    assert r["status"] == "warn"
+    assert r["recent_broken"] == ["2026-08-04"]
+
+
 # ── the 2026-08-04 failure, as a standing check ───────────────────────────────
 
 def test_resting_market_order_outside_hours_fails():

@@ -261,13 +261,25 @@ def cmd_sync_stops(apply: bool = False) -> dict:
     result["applied"] = False
 
     if apply:
-        cancelled, placed = [], []
+        # One symbol the broker refuses must not deny every other position its
+        # stop. The common rejection is a resting buy limit on the same symbol,
+        # which Alpaca reads as a wash trade until it fills — that is a reason to
+        # skip the symbol and report it, not to abandon the whole sync.
+        cancelled, placed, failed = [], [], []
         for o in result["cancel"]:
-            cancelled.append(broker.cancel_order(o["id"]))
+            try:
+                cancelled.append(broker.cancel_order(o["id"]))
+            except broker.BrokerError as e:
+                failed.append({"ticker": o.get("symbol"), "action": "cancel",
+                               "error": str(e)})
         for spec in result["place"]:
             spec = {k: v for k, v in spec.items() if not k.startswith("_")}
-            placed.append(broker.submit_order(**spec))
-        result.update(applied=True, cancelled=cancelled, placed=placed)
+            try:
+                placed.append(broker.submit_order(**spec))
+            except broker.BrokerError as e:
+                failed.append({"ticker": spec.get("symbol"), "action": "place",
+                               "error": str(e)})
+        result.update(applied=True, cancelled=cancelled, placed=placed, failed=failed)
     return result
 
 

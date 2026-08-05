@@ -26,6 +26,12 @@ SNAPSHOT_STALE_DAYS = 1
 # An open order older than this has missed at least one session it should have
 # filled in.
 ORDER_STALE_HOURS = 30
+# Cadence only alerts on breakage this recent. Older breaks stay in the report as
+# context but do not raise, so a crash already fixed stops paging for the week it
+# takes to roll out of the window.
+CADENCE_RECENT_DAYS = 3
+# The day statuses that mean the session did not complete.
+BROKEN_STATUSES = ("crashed", "gate_failed", "no_log")
 
 
 def _r(name: str, status: str, detail: str, **extra) -> dict:
@@ -81,14 +87,26 @@ def check_cadence(cadence: dict | None, today: str) -> dict:
     # Today is only judged once the window has had a fair chance.
     if latest["date"] == today and latest["status"] in ("running", "no_log"):
         return _r("cadence", "ok", f"today still in progress ({latest['status']})")
-    if latest["status"] in ("crashed", "gate_failed", "no_log"):
+    if latest["status"] in BROKEN_STATUSES:
         return _r("cadence", "fail",
                   f"most recent session {latest['date']} is {latest['label']}; "
                   f"{broken}/{total} market days broken",
                   latest=latest["date"], latest_status=latest["status"])
-    if broken:
+    # Only breakage inside the recent slice is actionable. An old crash already
+    # dealt with should not keep raising an alert every tick for the days it takes
+    # to roll out of the window — that is how a watchdog trains you to ignore it.
+    recent = sorted(days, key=lambda d: d["date"])[-CADENCE_RECENT_DAYS:]
+    recent_broken = [d for d in recent if d["status"] in BROKEN_STATUSES]
+    if recent_broken:
         return _r("cadence", "warn",
-                  f"latest session ok but {broken}/{total} market days broken")
+                  f"latest session ok but {len(recent_broken)} of the last "
+                  f"{len(recent)} market days broken: "
+                  + ", ".join(f"{d['date']} {d['label']}" for d in recent_broken),
+                  recent_broken=[d["date"] for d in recent_broken])
+    if broken:
+        return _r("cadence", "ok",
+                  f"{summary.get('completed', 0)}/{total} completed; "
+                  f"{broken} older break(s) outside the last {CADENCE_RECENT_DAYS} days")
     return _r("cadence", "ok", f"{summary.get('completed', 0)}/{total} completed")
 
 
@@ -147,7 +165,9 @@ def check_protective_stops(positions: list[dict], open_orders: list[dict],
     if missing:
         return _r("stops", "warn",
                   f"{len(missing)}/{len(held)} position(s) with no resting stop: "
-                  + ", ".join(missing) + " — run `trader_cli sync-stops --apply`",
+                  + ", ".join(missing)
+                  + " — the post-open stop sync places these; a symbol that keeps"
+                    " failing has a resting buy limit against it (see logs/stop_sync.log)",
                   missing=missing)
     return _r("stops", "ok", f"{len(resting)} resting, {len(excused)} excused")
 
@@ -170,7 +190,7 @@ def check_expiring_stops(open_orders: list[dict]) -> dict:
                   f"{len(day)}/{len(stops)} stop(s) are day orders and expire at the "
                   f"next close: " + ", ".join(sorted(
                       (o.get("symbol") or "?") for o in day))
-                  + " — re-run `sync-stops --apply` for whole-share GTC",
+                  + " — the next post-open stop sync re-places these as whole-share GTC",
                   tickers=sorted((o.get("symbol") or "?") for o in day))
     return _r("expiring_stops", "ok", f"all {len(stops)} stop(s) are GTC")
 
