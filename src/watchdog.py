@@ -111,9 +111,15 @@ def check_cadence(cadence: dict | None, today: str) -> dict:
 
 
 def check_stale_orders(open_orders: list[dict], now: datetime) -> dict:
-    """An order open far longer than a session has quietly failed to fill."""
+    """An order open far longer than a session has quietly failed to fill.
+
+    Protective stops are excluded: they are meant to rest indefinitely (that is
+    their whole job — see expiring_stops), not fill within a session.
+    """
     stale = []
     for o in open_orders or []:
+        if o.get("type") == "stop" and o.get("side") == "sell":
+            continue
         submitted = str(o.get("submitted_at") or "")
         if not submitted:
             continue

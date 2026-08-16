@@ -182,6 +182,12 @@ def test_order_without_timestamp_ignored():
     assert check_stale_orders([{"symbol": "SPY"}], _now())["status"] == "ok"
 
 
+def test_protective_stop_not_flagged_as_stale():
+    orders = [{"symbol": "MYE", "id": "a", "type": "stop", "side": "sell",
+               "submitted_at": "2026-08-04T23:03:48Z"}]
+    assert check_stale_orders(orders, _now())["status"] == "ok"
+
+
 # ── protective stops ──────────────────────────────────────────────────────────
 
 def test_missing_stops_warn():
