@@ -75,19 +75,12 @@ DURATION=$(( $(date +%s) - STARTED_EPOCH ))
 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.exit_plan \
     >> "$LOG_FILE" 2>&1 || echo "=== exit-plan eval failed (non-fatal) ===" >> "$LOG_FILE"
 
-# Commit and push today's output so watchdog/remote monitors can see results.
-# run_status.json is committed on failure too — that's how the cloud dashboard
-# reports a dead run instead of just going stale.
-cd "$SCREENER_DIR"
-COMMIT_PATHS="output/ positions.json data/fidelity/positions_data.json run_status.json"
-if git diff --quiet HEAD -- $COMMIT_PATHS && [ -z "$(git ls-files --others --exclude-standard $COMMIT_PATHS)" ]; then
-    echo "=== No new output to commit ===" >> "$LOG_FILE"
-else
-    TODAY=$(date +%Y-%m-%d)
-    git add $COMMIT_PATHS
-    git commit -m "chore(output): screener results $TODAY" >> "$LOG_FILE" 2>&1
-    git push >> "$LOG_FILE" 2>&1 && echo "=== Output committed and pushed ===" >> "$LOG_FILE" || echo "=== git push failed (non-fatal) ===" >> "$LOG_FILE"
-fi
+# Publish today's output so the cloud dashboard can see it. These paths are
+# gitignored here — this repo is public and they hold real holdings — so they
+# go to the private data repo instead. run_status.json is published on failure
+# too: that is how the dashboard reports a dead run rather than just going stale.
+# publish_data.sh is fail-soft and always exits 0, so it cannot mask RUN_RC.
+"$SCREENER_DIR/scripts/publish_data.sh" >> "$LOG_FILE" 2>&1
 
 # Surface the real result to launchd (`launchctl list` last-exit-status).
 exit $RUN_RC

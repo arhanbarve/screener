@@ -202,14 +202,20 @@ fi
 # The snapshot must be committed for Streamlit Cloud to see it; logs/ is
 # gitignored, so the cadence data embedded in the snapshot is the only way the
 # cloud page can report whether the trader actually ran.
-if git diff --quiet HEAD -- trading/ data/alpaca/portfolio.json \
-   && [ -z "$(git ls-files --others --exclude-standard trading/ data/alpaca/)" ]; then
+# The journals stay in this (public) repo deliberately. The Alpaca snapshot no
+# longer does — it lists live positions — so it goes to the private data repo
+# via publish_data.sh below.
+if git diff --quiet HEAD -- trading/ \
+   && [ -z "$(git ls-files --others --exclude-standard trading/)" ]; then
     echo "=== No journal changes to commit ===" >> "$LOG_FILE"
 else
-    git add trading/ data/alpaca/portfolio.json
+    git add trading/
     git commit -m "chore(trading): journal $TODAY" >> "$LOG_FILE" 2>&1
     git push >> "$LOG_FILE" 2>&1 || echo "=== git push failed (non-fatal) ===" >> "$LOG_FILE"
 fi
+
+# Fail-soft; cannot abort the trader run.
+"$SCREENER_DIR/scripts/publish_data.sh" >> "$LOG_FILE" 2>&1
 
 # Email the summary (no-op if GMAIL creds absent). Weekly digest on Fridays.
 "$PY" -m src.notify daily >> "$LOG_FILE" 2>&1 || echo "=== daily email failed (non-fatal) ===" >> "$LOG_FILE"

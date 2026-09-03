@@ -26,6 +26,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from src import datastore
+
 # Alpaca stamps each portfolio-history point at UTC midnight of the day *after*
 # the session it describes, so reading the UTC date shifts every point one day
 # forward — landing Jul 27 on Jul 25 and Aug 3 on Aug 1, both weekends, which
@@ -517,12 +519,26 @@ def save_snapshot(snap: dict, path: Path | None = None) -> Path:
 
 
 def load_snapshot(path: Path | None = None) -> dict | None:
-    p = path or SNAPSHOT_FILE
-    if not p.exists():
+    """The stored snapshot, or None if there is not a usable one.
+
+    An explicit `path` is read straight from disk (tests, one-off tooling).
+    Otherwise the read goes through datastore, so the cloud dashboard — whose
+    repo carries no snapshot — falls back to the private data repo. save_snapshot
+    still writes locally; publish_data.sh is what moves it.
+    """
+    if path is not None:
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+    raw = datastore.read_text("data/alpaca/portfolio.json")
+    if not raw:
         return None
     try:
-        return json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
+        return json.loads(raw)
+    except json.JSONDecodeError:
         return None
 
 

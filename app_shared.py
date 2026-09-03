@@ -1,4 +1,6 @@
+import hmac
 import html as _html
+import io
 import json
 import os
 import re
@@ -22,6 +24,8 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
+from src import datastore
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -1236,8 +1240,8 @@ def render_sidebar(current_page_id: str) -> None:
                     st.switch_page(_PAGE_FILES[_pid])
 
         st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
-        _out_files = sorted(Path("output").glob("screen_*.csv"), reverse=True)
-        _last_run  = _out_files[0].stem.replace("screen_", "") if _out_files else "—"
+        _out_files = sorted(datastore.list_names("output", "screen_*.csv"), reverse=True)
+        _last_run  = Path(_out_files[0]).stem.replace("screen_", "") if _out_files else "—"
         # The build SHA sits next to the data date on purpose: when they disagree
         # with GitHub you are looking at a stale process, not stale data, and the
         # fix is Reboot app rather than a browser refresh.
@@ -1256,6 +1260,13 @@ _SECRET_KEYS = (
     "ALPACA_API_KEY", "ALPACA_SECRET_KEY",
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "FINNHUB_API_KEY",
     "SEC_USER_AGENT",
+    # Read access to the private data repo. The public repo carries no
+    # holdings, so without these the cloud dashboard renders empty rather
+    # than wrong — see src/datastore.py.
+    "DATA_REPO_TOKEN", "DATA_REPO",
+    # Gate for the whole app. Unset means no gate, which is what you want
+    # locally and never what you want on a public URL.
+    "APP_PASSWORD",
 )
 
 
@@ -1315,6 +1326,38 @@ def _hydrate_env_from_secrets() -> None:
             os.environ[key] = str(value)
 
 
+def _password_gate() -> bool:
+    """Block the page until the viewer supplies APP_PASSWORD.
+
+    This dashboard shows real holdings and account value on a public URL, so it
+    is gated whenever a password is configured. No password configured means no
+    gate — that is the local case, where the shell is already the boundary.
+
+    Every page calls setup_page(), so this covers the whole app rather than one
+    entry point. st.stop() is what actually prevents the protected page from
+    rendering; returning False alone would not.
+    """
+    expected = os.environ.get("APP_PASSWORD")
+    if not expected:
+        return True
+    if st.session_state.get("_authed"):
+        return True
+
+    st.markdown("### 🔒 Screener")
+    with st.form("_auth", clear_on_submit=True):
+        supplied = st.text_input("Password", type="password", label_visibility="collapsed",
+                                 placeholder="Password")
+        if st.form_submit_button("Enter", use_container_width=True):
+            # compare_digest keeps the check constant-time, so a wrong guess
+            # cannot be narrowed down by how long the answer took.
+            if hmac.compare_digest(supplied, expected):
+                st.session_state["_authed"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+    return False
+
+
 def setup_page(page_id: str, title: str = "Screener") -> None:
     # Must run before anything touches src/broker.py: on Streamlit Cloud the
     # credentials arrive in st.secrets, and every module here reads os.environ.
@@ -1326,6 +1369,8 @@ def setup_page(page_id: str, title: str = "Screener") -> None:
         initial_sidebar_state="expanded",
     )
     _inject_global_css()
+    if not _password_gate():
+        st.stop()
     _inject_js_animations()
     if st.session_state.pop("_trigger_boot", False):
         st.markdown('<span id="x-boot-trigger" style="display:none"></span>', unsafe_allow_html=True)
@@ -1650,18 +1695,20 @@ def _screener_html_table(df: pd.DataFrame) -> str:
 def _render_screener() -> None:
     _page_title("SCREENER RESULTS")
 
-    output_dir = Path("output")
-    csv_files = sorted(output_dir.glob("screen_*.csv"), reverse=True)
+    csv_names = sorted(datastore.list_names("output", "screen_*.csv"), reverse=True)
 
-    if not csv_files:
+    if not csv_names:
         st.info("No screen output files found in output/")
         return
 
-    dates = [f.stem.replace("screen_", "") for f in csv_files]
+    dates = [Path(n).stem.replace("screen_", "") for n in csv_names]
     selected_date = st.selectbox("Screen date", dates, label_visibility="collapsed")
 
     try:
-        df = pd.read_csv(output_dir / f"screen_{selected_date}.csv")
+        raw = datastore.read_text(f"output/screen_{selected_date}.csv")
+        if not raw:
+            raise FileNotFoundError(f"screen_{selected_date}.csv unavailable")
+        df = pd.read_csv(io.StringIO(raw))
     except Exception as e:
         st.error(f"Could not read {selected_date}: {e}")
         return
@@ -2145,11 +2192,11 @@ def _evidence_html(ev: dict, verdict: str) -> str:
 
 def _load_fidelity_data() -> tuple[list[dict], str]:
     """Load rich Fidelity positions data. Returns (positions, synced_at_str)."""
-    p = Path("data/fidelity/positions_data.json")
-    if not p.exists():
+    text = datastore.read_text("data/fidelity/positions_data.json")
+    if not text:
         return [], ""
     try:
-        raw = json.loads(p.read_text())
+        raw = json.loads(text)
         return raw.get("positions", []), raw.get("synced_at", "")
     except Exception:
         return [], ""
@@ -3242,11 +3289,11 @@ def _current_stage(s: dict) -> int:
 def _load_run_status() -> dict:
     """Last run's outcome as recorded by run_screener.sh. This is the only run
     signal that survives to the cloud deploy, where logs/ is gitignored."""
-    p = Path("run_status.json")
-    if not p.exists():
+    text = datastore.read_text("run_status.json")
+    if not text:
         return {}
     try:
-        return json.loads(p.read_text())
+        return json.loads(text)
     except Exception:
         return {}
 
@@ -3323,11 +3370,11 @@ def _render_fidelity_and_history_status() -> None:
         'letter-spacing:0.12em;color:var(--muted);margin-bottom:0.6rem">FIDELITY SYNC</div>',
         unsafe_allow_html=True,
     )
-    _fid_status_path = Path("logs/fidelity_sync_status.json")
     _fid: dict = {}
-    if _fid_status_path.exists():
+    _fid_raw = datastore.read_text("logs/fidelity_sync_status.json")
+    if _fid_raw:
         try:
-            _fid = json.loads(_fid_status_path.read_text())
+            _fid = json.loads(_fid_raw)
         except Exception:
             _fid = {}
 
@@ -3438,11 +3485,11 @@ def _render_monitor():
             headline = ('<div style="font-family:var(--mono);font-size:1rem;color:var(--muted)">'
                         '— NO RUN TODAY</div>')
         st.markdown(headline, unsafe_allow_html=True)
-        _out = sorted(Path("output").glob("screen_*.csv"), reverse=True)
+        _out = sorted(datastore.list_names("output", "screen_*.csv"), reverse=True)
         if _out:
             st.markdown(
                 f'<div style="font-family:var(--mono);font-size:0.7rem;color:var(--dim);margin-top:0.5rem">'
-                f'Last run: {_out[0].stem.replace("screen_","")}</div>',
+                f'Last run: {Path(_out[0]).stem.replace("screen_","")}</div>',
                 unsafe_allow_html=True,
             )
         return

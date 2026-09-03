@@ -39,4 +39,8 @@ cd "$SCREENER_DIR"
 /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.fidelity_sync >> "$LOG_FILE" 2>&1 \
     || echo "=== Fidelity sync FAILED (exit $?) ===" >> "$LOG_FILE"
 
+# Push the refreshed snapshot to the private data repo so the cloud dashboard
+# sees it. Fail-soft; never aborts the sync.
+"$SCREENER_DIR/scripts/publish_data.sh" >> "$LOG_FILE" 2>&1
+
 echo "=== Fidelity sync finished: $(date) ===" >> "$LOG_FILE"

@@ -4,12 +4,27 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+from src import datastore
 from src.positions import (
     load_positions,
     save_positions,
     add_position,
     remove_position,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_datastore(tmp_path, monkeypatch):
+    """Keep these tests off the real repo's data.
+
+    load_positions() falls back to the private data repo when the local file is
+    absent, so a test that chdirs into an empty directory has to neutralise that
+    second source too — otherwise "missing file" quietly reads the developer's
+    own positions.json from the repo root.
+    """
+    datastore.clear_cache()
+    monkeypatch.setattr(datastore, "SCREENER_DIR", tmp_path)
+    monkeypatch.delenv("DATA_REPO_TOKEN", raising=False)
 
 
 # ── CRUD tests ────────────────────────────────────────────────────────────────

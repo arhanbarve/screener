@@ -19,6 +19,19 @@ None of the following is tracked, and none of it is in the git history:
 
 Test fixtures use synthetic round numbers, never real positions.
 
+## How the hosted dashboard still shows real data
+
+The dashboard renders holdings that are deliberately absent from this repo, so
+it reads them at runtime from a private companion repo (`screener-data`) over
+the GitHub Contents API. `src/datastore.py` is the only seam: local disk always
+wins, so local runs, the cron jobs and the test suite never touch the network.
+`scripts/publish_data.sh` is what moves snapshots there; it is fail-soft and
+can never abort a screener or trader run.
+
+The hosted app is gated by `APP_PASSWORD` (see `_password_gate` in
+`app_shared.py`). With no password configured there is no gate, which is the
+local case. Never deploy this to a public URL without setting one.
+
 ## Defenses
 
 | Layer | Mechanism |

@@ -5,15 +5,31 @@ import yfinance as yf
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from src import datastore
+
 POSITIONS_FILE = Path("positions.json")
 
 
 def load_positions() -> list[dict]:
-    """Load positions from positions.json. Returns [] if file missing."""
-    if not POSITIONS_FILE.exists():
+    """Load positions from positions.json. Returns [] if unavailable.
+
+    Reads through datastore so the cloud dashboard, whose repo carries no
+    holdings, can fall back to the private data repo. Writes stay local.
+    """
+    # POSITIONS_FILE is CWD-relative and save_positions() writes to it, so the
+    # local file must be consulted on its own terms first — anchoring this read
+    # at the repo root instead would make save and load disagree about which
+    # file they mean whenever the process runs from another directory.
+    if POSITIONS_FILE.exists():
+        with open(POSITIONS_FILE, "r") as f:
+            return json.load(f)
+    raw = datastore.read_text("positions.json")
+    if not raw:
         return []
-    with open(POSITIONS_FILE, "r") as f:
-        return json.load(f)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return []
 
 
 def save_positions(positions: list[dict]) -> None:
