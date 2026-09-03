@@ -31,8 +31,11 @@ done
 # 2. Data files that should never have been tracked at all.
 echo
 echo "[2/3] data files ever added to history"
+# .env.template / .env.example are meant to be public; real .env is not.
 DATA_HITS=$(git log --all --pretty=format: --name-only --diff-filter=A \
-    | sort -u | grep -E '(positions_data|positions\.json|\.env|fidelity/)' || true)
+    | sort -u \
+    | grep -E '(positions_data|^positions\.json|^run_status\.json|^data/|^output/|fidelity/|^STRATEGY\.md|^docs/(agent|handoffs)/|^docs/strategy-|(^|/)\.env($|\.))' \
+    | grep -vE '(^|/)\.env\.(template|example)$' || true)
 if [ -n "$DATA_HITS" ]; then
     echo "  ⚠ these paths exist in history and will be public:"
     printf '%s\n' "$DATA_HITS" | sed 's/^/      /'
@@ -52,7 +55,7 @@ echo
 if [ "$FAILED" -ne 0 ]; then
     echo "RESULT: DO NOT PUBLISH — findings above are in history, not just HEAD."
     echo "Publishing this repo exposes every one of them. See SECURITY.md for"
-    echo "the clean-export path that does not require rewriting history."
+    echo "the history-scrub procedure and the list of never-track paths."
     exit 1
 fi
 echo "RESULT: history looks publishable. Re-read SECURITY.md before you flip it."

@@ -8,9 +8,9 @@ it also emails the tail of the log, so a silently-dead cron job surfaces.
 
 import argparse
 import html
+import os
 import json
 import re
-import socket
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,7 +51,9 @@ def build_status(log_text: str, rc: int, started_at: str, duration_secs: int) ->
         "duration_secs": duration_secs,
         "selected": parsed["selected"],
         "error": parsed["error"],
-        "host": socket.gethostname(),
+        # A label, not the real hostname: gethostname() leaks the network
+        # and machine (e.g. a campus DHCP name) into a public repo.
+        "host": os.environ.get("SCREENER_HOST_LABEL", "screener"),
     }
 
 

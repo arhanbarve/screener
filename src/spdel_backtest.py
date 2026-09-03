@@ -24,6 +24,8 @@ import io
 import logging
 import os
 import re
+
+from src.config import get_env
 from datetime import date, timedelta
 
 import pandas as pd
@@ -54,7 +56,7 @@ CATEGORY_DELETION = "sp500_deletion"
 CATEGORY_ADDITION = "sp500_addition"
 
 WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-UA = {"User-Agent": "screener-research/1.0 (arhanbarve@gmail.com)"}
+UA = {"User-Agent": get_env("SEC_USER_AGENT")}
 
 MA_REASON_RE = re.compile(
     r"acquir|merg|taken private|purchas|bought|combin|bankrupt|chapter 11|delist",

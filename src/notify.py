@@ -4,7 +4,7 @@
 Env vars (in .env):
   GMAIL_ADDRESS        sender Gmail address
   GMAIL_APP_PASSWORD   Gmail app password
-  TRADER_EMAIL_TO      recipient (default arhanbarve@gmail.com)
+  TRADER_EMAIL_TO      recipient; required to send
 
 If credentials are absent, send_email() is a no-op that reports why, so the
 trading pipeline never crashes just because email isn't configured.
@@ -27,7 +27,7 @@ import markdown
 from src import broker
 
 ET = ZoneInfo("America/New_York")
-DEFAULT_TO = "arhanbarve@gmail.com"
+DEFAULT_TO = ""  # set TRADER_EMAIL_TO in .env; no address is baked in
 BASELINE = 100000.0  # experiment starting equity
 
 # Index tape: symbol -> short label

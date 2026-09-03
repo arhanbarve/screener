@@ -21,6 +21,10 @@ SECRET_PATTERNS=(
     # Account field with a real value. Values starting with '*' are redaction
     # markers left in rewritten history and are not a leak.
     '"(account|account_number|accountNumber)"[[:space:]]*:[[:space:]]*"[^"*][^"]*"'
+    # Machine/network identity. socket.gethostname() on a campus or home
+    # network yields these, and they disclose where the machine lives.
+    'dhcp-[0-9]{1,3}-[0-9]{1,3}-[0-9]{1,3}-[0-9]{1,3}'
+    '[A-Za-z0-9._-]+\.(myfiosgateway|lan|local|internal)\b'
 )
 
 PATTERN_NAMES=(
@@ -36,6 +40,8 @@ PATTERN_NAMES=(
     "Private key block"
     "Brokerage account number"
     "JSON account field with a value"
+    "Internal DHCP hostname"
+    "Private-network hostname"
 )
 
 scan_text() {

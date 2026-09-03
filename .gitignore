@@ -3,27 +3,41 @@
 # Streamlit reads secrets from here; same credentials as .env, never committed.
 .streamlit/secrets.toml
 
-# Application data
-# positions.json is tracked so the cloud dashboard sees current positions
+# Personal financial data — NEVER commit. This repo is public.
+# Real brokerage holdings, quantities, and cost basis.
+positions.json
+data/
+# Paper-account snapshot: equity curve and live positions.
+# Previously tracked so Streamlit Cloud could render; that is no longer worth
+# publishing what is currently held.
+!data/.gitkeep
+
+# Machine identity — src/run_status.py records socket.gethostname(), which on a
+# campus or home network discloses the network and the host.
+run_status.json
+
+# Strategy: kept private deliberately. The screener code is public, the edge is not.
+STRATEGY.md
+docs/SYSTEM_WRITEUP.md
+docs/strategy-specs.md
+docs/strategy-registry.md
+docs/agent/
+
+# Run artifacts — regenerable, and they disclose which strategies were tested.
+output/
+
+# Handoff docs (local-only; contain personal fit constraints and real holdings)
+docs/handoffs/
+handoff-thesis-pivot-*.md
+
+# Scratch
+trading/_scratch_*.py
+trading/.tmp_*.py
 
 # Development
 .superpowers/
 .worktrees/
-
-# Cache and generated data (too large / regenerated each run)
-data/*
-# except the small fidelity snapshot the cloud dashboard reads
-!data/fidelity/
-data/fidelity/*
-!data/fidelity/positions_data.json
-# and the alpaca paper snapshot the Paper page reads (no account identifiers)
-!data/alpaca/
-data/alpaca/*
-!data/alpaca/portfolio.json
 logs/
-
-# Handoff docs (local-only, read via filesystem not git)
-docs/handoffs/
 
 # Python
 __pycache__/
