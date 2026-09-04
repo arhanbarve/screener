@@ -2,6 +2,14 @@
 
 A quantitative stock screener that ranks US equities using institutional-grade momentum and fundamental factors, then layers short-term technical oscillators on top so every output name comes with a ready-to-use entry signal — no re-screening required.
 
+Around that core sits the rest of a working system: a standing exit engine that
+decides when to sell, an Alpaca paper-trading loop with a written decision
+journal, a Streamlit dashboard, and event-study backtests used to accept or
+reject strategy ideas before they are traded.
+
+~23k lines of Python, 644 tests, running unattended every trading day since
+June 2026.
+
 ---
 
 ## What it does
@@ -77,6 +85,37 @@ All raw factor values and signal scores for spreadsheet analysis.
 
 ---
 
+## Dashboard
+
+A Streamlit app renders the whole system. It is deployed privately — it shows
+real positions — so the pages are described rather than linked.
+
+| Page | What it shows |
+|---|---|
+| **Screener** | Ranked results for any run date; top-3 cards, full factor table, entry signals |
+| **Regime** | Market regime read used to size risk up or down |
+| **Positions** | Open real-money positions with live quotes, and each one's standing exit plan with every trigger and how far it is from firing |
+| **Paper** | Paper account equity curve vs SPY, FIFO-matched open lots, realized/unrealized split, resting orders |
+| **Monitor** | Last run status, run history, sync health — how a failed overnight run is noticed |
+
+Every page degrades to an empty state rather than an error when its data or
+credentials are missing, which is the difference between a dashboard that is
+blank and one that is broken. Access is gated by `APP_PASSWORD`.
+
+---
+
+## Paper trading
+
+`src/broker.py` and `src/trader_cli.py` drive an Alpaca paper account: place
+orders, sync protective stops, reconcile fills. Each session is written up in
+`trading/journal/` — the reasoning before the trade, the fills after it, and a
+weekly review that names what went wrong.
+
+The journals are committed deliberately. A record that only survives when it
+flatters you is not a record.
+
+---
+
 ## Setup
 
 ### 1. Install dependencies
@@ -85,13 +124,21 @@ pip install -r requirements.txt
 ```
 
 ### 2. Configure `.env`
+```bash
+cp .env.template .env    # then fill it in
+```
+
+Only two values are required to screen:
+
 ```
 FINNHUB_API_KEY=your_key_here
 SEC_USER_AGENT=YourName your@email.com
-OPENAI_API_KEY=your_key_here
 ```
 
-Get a free Finnhub key at [finnhub.io](https://finnhub.io). The SEC user agent just needs your name and email.
+Get a free Finnhub key at [finnhub.io](https://finnhub.io). `SEC_USER_AGENT` must be
+your own name and email — the SEC requires a real contact string and rate-limits
+anonymous traffic. Everything else in `.env.template` is optional and documented
+inline.
 
 `OPENAI_API_KEY` powers the Stage 4.5 news overlay (`src/llm.py`). It is optional — without it the overlay is skipped and the run still produces a full ranked list, just with no `entry_signal` column. Models are set in `config.yaml` under `news.model` / `news.prefilter_model`.
 
@@ -106,7 +153,10 @@ First run: ~60–90 min (fetches full universe cold). Subsequent same-day runs: 
 
 ## Automated daily runs
 
-A cron job runs the screener automatically at 4:15 PM ET on weekdays:
+A launchd job (cron works equally well) runs the screener at 4:15 PM ET on
+weekdays. It writes `run_status.json` on failure too — that is how the Monitor
+page reports a dead run instead of just going quiet — and then publishes the
+day's artifacts to the private data repo:
 
 ```
 15 16 * * 1-5 /path/to/screener/run_screener.sh
@@ -134,18 +184,72 @@ Cache lives in `data/cache.db` (SQLite). Delete it to force a full refresh.
 
 ---
 
+## Tests
+
+```bash
+python3 -m pytest tests/ -q      # 644 tests
+```
+
+The suite leans on regression cover for bugs that actually cost money. Two
+examples: Fidelity renamed its CSV headers from Title Case to Sentence case and
+`csv.DictReader`'s exact-key matching silently parsed every money field as `0.0`
+for five days, so a zeroed cost basis made the dashboard report the entire
+position value as gain; and a zero cost basis had to start rendering as "—"
+rather than a confident wrong number. Both are pinned.
+
+---
+
+## Data and privacy
+
+This repo is public. The data it operates on is not, and none of it is in the
+git history.
+
+Real holdings, account values, run artifacts and the strategy specification are
+gitignored and never committed. The hosted dashboard still renders them by
+reading a private companion repo at runtime through `src/datastore.py`, which
+resolves local disk first and only falls back to the network when a file is
+genuinely absent — so local runs, cron jobs and tests never touch it. A
+pre-commit hook blocks staged secrets, account-number patterns and
+private-network hostnames, and `scripts/preflight_public.sh` scans the entire
+history rather than just `HEAD`. See [SECURITY.md](SECURITY.md).
+
+Consequence for anyone cloning this: it runs, but against your own brokerage
+data and API keys, never mine.
+
+---
+
 ## Project structure
 
 ```
 src/
-  factors.py      — all factor and oscillator computations
+  run.py          — screener entrypoint
+  universe.py     — SEC EDGAR universe construction
   prices.py       — OHLCV fetching, liquidity gate, entry signals
   fundamentals.py — Finnhub + EDGAR data fetching
+  factors.py      — factor and oscillator computations
   compose.py      — quality/confirmation gates, composite scoring
-  universe.py     — SEC EDGAR universe construction
+  news.py llm.py  — Stage 4.5 news overlay
   output.py       — CSV and markdown generation
   cache.py        — SQLite cache layer
-  run.py          — main entrypoint
+  datastore.py    — private-data reads (local disk, else private repo)
+
+  exit_plan.py    — standing exit engine: stops, trims, weekly health
+  exit_alerts.py  — emails a SELL/TRIM the day it fires
+  positions.py    — open-position store
+  sizing.py       — position sizing and concentration caps
+
+  broker.py       — Alpaca REST client
+  paper.py        — paper portfolio: FIFO lots, equity curve, vs-SPY
+  paper_stops.py  — protective stop sync
+  trader_cli.py   — trading command line
+  fidelity_sync.py— browser-driven Fidelity positions export
+
+  *_backtest.py   — event-study harnesses (PEAD, insider, splits, ASR, …)
+
+app.py            — Streamlit entrypoint
+app_shared.py     — shared UI, password gate, rendering
+pages/            — Regime, Positions, Paper, Monitor
+tests/            — 644 tests
+scripts/          — hooks, publication preflight, launchd jobs
 config.yaml       — weights, gates, cache TTLs, output settings
-run_screener.sh   — cron wrapper script
 ```
