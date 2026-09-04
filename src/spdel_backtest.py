@@ -56,7 +56,14 @@ CATEGORY_DELETION = "sp500_deletion"
 CATEGORY_ADDITION = "sp500_addition"
 
 WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-UA = {"User-Agent": get_env("SEC_USER_AGENT")}
+def _ua() -> dict:
+    """SEC contact header, resolved at call time.
+
+    Deliberately not a module-level constant: get_env raises when the var is
+    unset, and evaluating that at import made `pytest` fail to *collect* this
+    module on any machine without a .env — including a fresh clone.
+    """
+    return {"User-Agent": get_env("SEC_USER_AGENT")}
 
 MA_REASON_RE = re.compile(
     r"acquir|merg|taken private|purchas|bought|combin|bankrupt|chapter 11|delist",
@@ -73,7 +80,7 @@ def is_ma_reason(reason: str) -> bool:
 def fetch_changes_table() -> pd.DataFrame:
     """The constituent-changes table from Wikipedia (the one whose columns
     include an 'Added'/'Removed' MultiIndex level)."""
-    resp = requests.get(WIKI_URL, headers=UA, timeout=30)
+    resp = requests.get(WIKI_URL, headers=_ua(), timeout=30)
     resp.raise_for_status()
     for t in pd.read_html(io.StringIO(resp.text)):
         if isinstance(t.columns, pd.MultiIndex) and "Added" in t.columns.get_level_values(0):
