@@ -218,6 +218,20 @@ data and API keys, never mine.
 
 ---
 
+## Disclaimer
+
+This is a personal research project, not investment advice and not a
+recommendation to buy or sell any security. Nothing here is produced by a
+registered investment adviser. Backtested and paper-traded results are not
+live-money results and do not predict future returns; they exclude slippage,
+partial fills, borrow costs, and taxes, and they benefit from hindsight in the
+choice of what was tested at all. Anyone running this does so with their own
+capital, their own brokerage credentials, and their own losses.
+
+Licensed under the [MIT License](LICENSE).
+
+---
+
 ## Project structure
 
 ```
