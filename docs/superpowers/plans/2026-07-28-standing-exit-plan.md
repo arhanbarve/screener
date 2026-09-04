@@ -18,12 +18,12 @@ Each entry in `positions.json` gains a `"plan"` key (additive — old readers ig
 
 ```json
 {
-  "ticker": "ANET",
+  "ticker": "AAA",
   "entry_date": "2026-06-18",
   "entry_price": 100.25,
   "plan": {
     "initial_stop": 90.00,          // entry − 2×ATR14(entry date); fixed
-    "risk_R": 11.47,                // entry − initial_stop; fixed
+    "risk_R": 10.25,                // entry − initial_stop; fixed
     "stop_floor": 90.00,            // = initial_stop, ratchets to entry after derisk trim; never lowers
     "peak_close": 110.00,            // highest close since entry; only rises
     "trail_mult": 3.0,              // weekly tightener may step 3.0→2.5→2.0; never rises
@@ -726,35 +726,35 @@ Create `tests/test_exit_alerts.py`:
 from src.exit_alerts import build_action_email, build_digest_email
 
 POSITIONS = [
-    {"ticker": "ANET", "entry_date": "2026-06-18", "entry_price": 100.25,
-     "plan": {"initial_stop": 90.00, "risk_R": 11.47, "stop_floor": 100.25,
-              "peak_close": 110.00, "trail_mult": 3.0, "stop_level": 102.0,
+    {"ticker": "AAA", "entry_date": "2026-06-18", "entry_price": 100.25,
+     "plan": {"initial_stop": 90.00, "risk_R": 10.25, "stop_floor": 100.25,
+              "peak_close": 110.00, "trail_mult": 3.0, "stop_level": 102.00,
               "trims_fired": ["derisk"], "below_50d_streak": 0, "verdict": "SELL",
               "health": {"bearish": 2, "parts": ["macd", "rs"], "asof": "2026-07-24"},
-              "days_to_earnings": 12, "last_eval": "2026-07-28", "last_close": 171.0}},
-    {"ticker": "CRDO", "entry_date": "2026-06-18", "entry_price": 200.00,
-     "plan": {"initial_stop": 250.0, "risk_R": 20.00, "stop_floor": 250.0,
-              "peak_close": 300.0, "trail_mult": 3.0, "stop_level": 280.0,
+              "days_to_earnings": 12, "last_eval": "2026-07-28", "last_close": 101.00}},
+    {"ticker": "BBB", "entry_date": "2026-06-18", "entry_price": 200.00,
+     "plan": {"initial_stop": 180.00, "risk_R": 20.00, "stop_floor": 180.00,
+              "peak_close": 220.00, "trail_mult": 3.0, "stop_level": 205.00,
               "trims_fired": [], "below_50d_streak": 0, "verdict": "HOLD",
               "health": {"bearish": 0, "parts": [], "asof": "2026-07-24"},
-              "days_to_earnings": None, "last_eval": "2026-07-28", "last_close": 295.0}},
+              "days_to_earnings": None, "last_eval": "2026-07-28", "last_close": 215.00}},
 ]
 
-EVENTS = [{"ticker": "ANET", "type": "SELL",
+EVENTS = [{"ticker": "AAA", "type": "SELL",
            "reason": "close 171.00 below stop level 102.00",
            "instruction": "Sell entire remaining position at next open."}]
 
 
 def test_action_email_subject_names_action_and_ticker():
     subject, html = build_action_email(EVENTS, POSITIONS)
-    assert "ACTION" in subject and "SELL" in subject and "ANET" in subject
+    assert "ACTION" in subject and "SELL" in subject and "AAA" in subject
     assert "102.00" in html
     assert "Sell entire remaining position" in html
 
 
 def test_digest_lists_every_position_with_verdict():
     subject, html = build_digest_email(POSITIONS, skipped=[])
-    for t in ("ANET", "CRDO"):
+    for t in ("AAA", "BBB"):
         assert t in html
     assert "SELL" in html and "HOLD" in html
 
@@ -921,7 +921,7 @@ Expected: `OK`
 - [ ] **Step 3: Dry-run the eval end-to-end (real data, no email)**
 
 Run: `/Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -m src.exit_plan --no-email`
-Expected: `[exit-plan] evaluated=5 events=... skipped=[]`, bootstrap lines for all 5 positions (ANET, CRDO, RSI, ENVA, SPY), `positions.json` now contains `"plan"` objects. Inspect: `python3 -c "import json;print(json.dumps(json.load(open('positions.json'))[0]['plan'],indent=1))"`
+Expected: `[exit-plan] evaluated=5 events=... skipped=[]`, bootstrap lines for all 5 positions (AAA, BBB, RSI, ENVA, SPY), `positions.json` now contains `"plan"` objects. Inspect: `python3 -c "import json;print(json.dumps(json.load(open('positions.json'))[0]['plan'],indent=1))"`
 
 - [ ] **Step 4: Preview emails without sending**
 
