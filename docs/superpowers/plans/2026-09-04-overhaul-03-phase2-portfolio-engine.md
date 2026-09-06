@@ -8,7 +8,7 @@
 
 **Tech Stack:** dataclasses, JSON files, Alpaca REST via `src.broker`, Finnhub news.
 
-**Live probe (2026-09-04 12:30 ET, no orders):** against the real paper book (equity $95,297; SPY 56%, VLO, TXG, ETON, dust in EVC/VSXY) the engine produced: two dust sells (RTH-only), one entry (ARCO, rank 4, $9,851 sized at 1.25% risk on a 2×ATR floor, capped by the sector cap because the 09-03 CSV has no sectors), one SPY core top-up ($3,833, `cancel-stop` because a floor rests), and rejected NRIX/GHRS/LILAK/TSM/GEF-B/GE (entry WAIT), NBR (news avoid), BHPLF (not tradable), SENEA/RNR/NVAX (sector-cap sized below $500). Projected cash after: $4,751 (≈5%).
+**Live probe (2026-09-04 12:30 ET, no orders):** against the real paper book (SPY core sleeve plus a few real-money-scale alpha names, dust in two tiny legacy positions) the engine produced: two dust sells (RTH-only), one entry sized at 1.25% risk on a 2×ATR floor and capped by the sector cap because the 09-03 CSV has no sectors, one SPY core top-up (`cancel-stop` because a floor rests), and a run of sensible rejections (entry WAIT, news avoid, not tradable, sector-cap sized below the $500 minimum). Projected cash after: ≈5% of equity.
 
 ---
 
