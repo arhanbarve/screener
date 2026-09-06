@@ -48,7 +48,16 @@ copy positions.json
 copy run_status.json
 copy data/fidelity/positions_data.json
 copy data/alpaca/portfolio.json
+copy data/alpaca/plans.json
+copy trading/engine_state.json
+copy output/screen_latest.json
 copy logs/fidelity_sync_status.json
+
+# Engine plans: one JSON per target session (legs, reviews, executions).
+mkdir -p "$DATA_REPO_DIR/trading/plans"
+for f in "$SCREENER_DIR"/trading/plans/*.json; do
+    [ -f "$f" ] && cp "$f" "$DATA_REPO_DIR/trading/plans/"
+done
 
 # Screener results: the dashboard lists every date, so publish them all. This is
 # ~1.3 MB of CSV/markdown and grows by a few KB per trading day.

@@ -110,6 +110,22 @@ def init_db(db_path: str):
         )
     """)
     c.execute("""
+        CREATE TABLE IF NOT EXISTS edgar_facts (
+            cik TEXT PRIMARY KEY, payload TEXT, fetched_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS fh_metrics (
+            ticker TEXT PRIMARY KEY, payload TEXT, fetched_at TEXT
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS fh_profile (
+            ticker TEXT PRIMARY KEY, industry TEXT, market_cap REAL,
+            shares_out REAL, fetched_at TEXT
+        )
+    """)
+    c.execute("""
         CREATE TABLE IF NOT EXISTS ticker_profile_cache (
             ticker TEXT PRIMARY KEY,
             sector TEXT,
@@ -393,7 +409,10 @@ def put_failed_ticker(db_path: str, ticker: str, reason: str = "no_data"):
     conn.commit()
 
 
-def is_failed_ticker(db_path: str, ticker: str, ttl_days: int = 30) -> bool:
+def is_failed_ticker(db_path: str, ticker: str, ttl_days: int = 7) -> bool:
+    """A ticker quarantined within the last `ttl_days` is skipped by the price
+    fetch. 7 days, not 30: on 2026-08-24 a batch-level yfinance exception
+    quarantined 4,344 real names for a month (see purge_failed_tickers)."""
     cutoff = (datetime.utcnow() - timedelta(days=ttl_days)).isoformat()
     conn = _get_conn(db_path)
     c = conn.cursor()
@@ -402,6 +421,117 @@ def is_failed_ticker(db_path: str, ticker: str, ttl_days: int = 30) -> bool:
         (ticker, cutoff),
     )
     return c.fetchone() is not None
+
+
+def purge_failed_tickers(db_path: str, before: str | None = None) -> int:
+    """Delete quarantine rows. `before` (ISO date/time) limits the purge to rows
+    stamped earlier than that; None purges everything. Returns rows deleted.
+
+    Cheap to be generous: a genuinely dead ticker costs one batch slot to
+    re-discover, while a wrongly quarantined one costs its whole screen."""
+    conn = _get_conn(db_path)
+    if before is None:
+        cur = conn.execute("DELETE FROM failed_tickers")
+    else:
+        cur = conn.execute("DELETE FROM failed_tickers WHERE fetched_at < ?", (before,))
+    conn.commit()
+    return cur.rowcount
+
+
+def count_failed_tickers(db_path: str) -> int:
+    conn = _get_conn(db_path)
+    return int(conn.execute("SELECT COUNT(*) FROM failed_tickers").fetchone()[0])
+
+
+# --- Finnhub fundamentals / profile cache (src/finnhub_data.py) ---
+
+def put_fh_metrics(db_path: str, ticker: str, metrics: dict):
+    """Store the `metric` dict from company_basic_financials. An empty dict is
+    stored too, so a symbol Finnhub does not know is not re-requested daily."""
+    conn = _get_conn(db_path)
+    conn.execute(
+        "INSERT OR REPLACE INTO fh_metrics VALUES (?,?,?)",
+        (ticker.upper(), json.dumps(metrics or {}), _now_iso()),
+    )
+    conn.commit()
+
+
+def get_fh_metrics(db_path: str, ticker: str, ttl_days: int) -> dict | None:
+    """Cached metrics newer than ttl, else None. Returns {} for a cached
+    'Finnhub has nothing' answer — callers treat {} as no data, None as unfetched."""
+    cutoff = (datetime.utcnow() - timedelta(days=ttl_days)).isoformat()
+    row = _get_conn(db_path).execute(
+        "SELECT payload FROM fh_metrics WHERE ticker=? AND fetched_at > ?",
+        (ticker.upper(), cutoff),
+    ).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def get_fh_metrics_bulk(db_path: str, ttl_days: int) -> dict[str, dict]:
+    """Every cached metrics payload newer than ttl, keyed by ticker. One query
+    instead of thousands when a run starts."""
+    cutoff = (datetime.utcnow() - timedelta(days=ttl_days)).isoformat()
+    rows = _get_conn(db_path).execute(
+        "SELECT ticker, payload FROM fh_metrics WHERE fetched_at > ?", (cutoff,)
+    ).fetchall()
+    out = {}
+    for t, payload in rows:
+        try:
+            out[t] = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def put_fh_profile(db_path: str, ticker: str, industry: str | None,
+                   market_cap: float | None, shares_out: float | None):
+    conn = _get_conn(db_path)
+    conn.execute(
+        "INSERT OR REPLACE INTO fh_profile VALUES (?,?,?,?,?)",
+        (ticker.upper(), _str_or_empty(industry), market_cap, shares_out, _now_iso()),
+    )
+    conn.commit()
+
+
+def get_fh_profile(db_path: str, ticker: str) -> dict | None:
+    """Profile row regardless of age (industry is effectively static). None if
+    never fetched. Includes fetched_at so callers can decide cap staleness."""
+    row = _get_conn(db_path).execute(
+        "SELECT industry, market_cap, shares_out, fetched_at FROM fh_profile WHERE ticker=?",
+        (ticker.upper(),),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"industry": row[0], "market_cap": row[1], "shares_out": row[2], "fetched_at": row[3]}
+
+
+def get_fh_profiles_bulk(db_path: str) -> dict[str, dict]:
+    rows = _get_conn(db_path).execute(
+        "SELECT ticker, industry, market_cap, shares_out, fetched_at FROM fh_profile"
+    ).fetchall()
+    return {t: {"industry": i, "market_cap": mc, "shares_out": so, "fetched_at": f}
+            for t, i, mc, so, f in rows}
+
+
+def put_edgar_facts(db_path: str, cik: str, facts: dict):
+    """Extended EDGAR facts (src.fundamentals.parse_edgar_facts). NaN is stored
+    as null so the JSON round-trips; get_edgar_facts restores NaN."""
+    clean = {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in facts.items()}
+    conn = _get_conn(db_path)
+    conn.execute("INSERT OR REPLACE INTO edgar_facts VALUES (?,?,?)",
+                 (cik, json.dumps(clean), _now_iso()))
+    conn.commit()
+
+
+def get_edgar_facts(db_path: str, cik: str, ttl_days: int) -> dict | None:
+    cutoff = (datetime.utcnow() - timedelta(days=ttl_days)).isoformat()
+    row = _get_conn(db_path).execute(
+        "SELECT payload FROM edgar_facts WHERE cik=? AND fetched_at > ?", (cik, cutoff)
+    ).fetchone()
+    if row is None:
+        return None
+    facts = json.loads(row[0])
+    return {k: (float("nan") if v is None and k != "n_resolved" else v) for k, v in facts.items()}
 
 
 def put_edgar(db_path: str, cik: str, gp_assets: float, revenue: float, cogs: float, assets: float):

@@ -36,10 +36,15 @@ STUB
     # (the paper-snapshot refresh is a -c invocation and must be a no-op here).
     cat > "$SANDBOX/bin/python3" <<'STUB'
 #!/bin/bash
+# Records every trader_cli subcommand it is asked for, so tests can assert on
+# what the runner invoked (plan, execute-plan --risk-only, sync-stops).
 for a in "$@"; do
     case "$a" in
         gate)           echo "{\"run\": ${GATE_RUN:-true}, \"window\": \"${GATE_WINDOW:-evening}\", \"target_date\": \"${GATE_TARGET:-2099-01-01}\", \"reason\": \"stub\"}"; exit 0 ;;
         activity-today) echo "{\"count\": ${ACT_COUNT:-0}, \"safe_to_retry\": ${ACT_SAFE:-true}}"; exit 0 ;;
+        plan)           echo "plan $*" >> "${CALLS_FILE:-/dev/null}"; [ -n "${PLAN_FAIL:-}" ] && exit 1; mkdir -p trading/plans; echo '{}' > "trading/plans/${GATE_TARGET:-2099-01-01}.json"; exit 0 ;;
+        execute-plan)   echo "execute-plan $*" >> "${CALLS_FILE:-/dev/null}"; exit 0 ;;
+        sync-stops)     echo "sync-stops $*" >> "${CALLS_FILE:-/dev/null}"; exit 0 ;;
     esac
 done
 exit 0
@@ -89,9 +94,10 @@ teardown() { rm -rf "$SANDBOX"; }
 # env, not a bare "VAR=x" prefix: "$@" expands after parsing, so bash would treat
 # the first expanded word as the command name instead of an assignment.
 trader() {
-    ( cd "$SANDBOX" && env PATH="$SANDBOX/bin:$PATH" "$@" \
+    ( cd "$SANDBOX" && env PATH="$SANDBOX/bin:$PATH" CALLS_FILE="$SANDBOX/calls.txt" "$@" \
       bash "$SANDBOX/run_trader.sh" >/dev/null 2>&1 )
 }
+CALLS() { cat "$SANDBOX/calls.txt" 2>/dev/null || echo ""; }
 
 TODAY=$(date +%Y-%m-%d)
 TARGET="2099-01-01"   # what the stubbed gate reports as target_date
@@ -326,19 +332,37 @@ fi
 teardown
 
 # ── the removed Write() rule stays removed ────────────────────────────────────
-# Grep the allowedTools line only — a comment explains why the rule is absent,
-# and matching that comment would make this test pass for the wrong reason.
-if grep -E '^\s+--allowedTools' "$REPO/run_trader.sh" | grep -q 'Write(trading'; then
+# Grep the TRADER_ALLOWED_TOOLS assignment lines only, not the whole file — a
+# comment explains why the rule is absent, and matching that comment would
+# make this test pass for the wrong reason.
+GRANT_LINES=$(grep -E '^TRADER_ALLOWED_TOOLS' "$REPO/run_trader.sh")
+if echo "$GRANT_LINES" | grep -q 'Write(trading'; then
     bad "Write(trading/**) stays out of allowedTools" "still present in allowedTools"
-elif grep -E '^\s+--allowedTools' "$REPO/run_trader.sh" | grep -q 'Edit(trading'; then
+elif echo "$GRANT_LINES" | grep -q 'Edit(trading'; then
     ok "allowedTools has Edit(trading/**) and not Write(trading/**)"
 else
     bad "allowedTools has Edit(trading/**)" "Edit rule missing — journal writes would be denied"
 fi
 
-echo
-echo "passed $PASS, failed $FAIL"
-[ "$FAIL" -eq 0 ]
+# ── the reviewer's Bash grant cannot place a bare order ───────────────────────
+# A wildcard "trader_cli:*" grant let the reviewer session run buy/sell/close/
+# cancel-all directly, bypassing every risk check the engine enforces on the
+# plan → review → execute-plan path. The grant must name each safe subcommand.
+if echo "$GRANT_LINES" | grep -Eq 'trader_cli:\*|trader_cli buy|trader_cli sell|trader_cli close|trader_cli cancel-all'; then
+    bad "allowedTools excludes direct buy/sell/close/cancel-all" "wildcard or unsafe subcommand present"
+else
+    ok "allowedTools excludes direct buy/sell/close/cancel-all"
+fi
+MISSING_SUB=""
+for sub in status screen news plan review execute-plan journal-draft sync-stops cancel-stops; do
+    echo "$GRANT_LINES" | grep -q "trader_cli $sub:" || MISSING_SUB="$MISSING_SUB $sub"
+done
+if [ -z "$MISSING_SUB" ]; then
+    ok "allowedTools grants every subcommand PROMPT.md's procedure uses"
+else
+    bad "allowedTools grants every subcommand PROMPT.md's procedure uses" "missing:$MISSING_SUB"
+fi
+
 
 # ── the evening session must not be blocked by today's stamp ───────────────────
 # This is the bug that would have stopped tonight from deciding tomorrow: the
@@ -391,3 +415,76 @@ trader CLAUDE_RC=0
     && ok "missing target_date falls back to the calendar date" \
     || bad "missing target_date falls back to the calendar date" "stamp=$(STAMP)"
 teardown
+
+# ── 14. the plan is built before the session, and a plan failure does not block it ──
+setup
+trader CLAUDE_RC=0
+if CALLS | grep -q "^plan" && LOGTXT | grep -q "Plan built for $TARGET" && LOGTXT | grep -q "stub claude ran"; then
+    ok "plan is built before the reviewer session"
+else
+    bad "plan is built before the reviewer session" "calls=$(CALLS)"
+fi
+teardown
+setup
+trader CLAUDE_RC=0 PLAN_FAIL=1
+if LOGTXT | grep -q "Plan build FAILED" && LOGTXT | grep -q "stub claude ran" && [ "$(STAMP)" = "$TARGET" ]; then
+    ok "a plan failure is logged and the session still runs"
+else
+    bad "a plan failure is logged and the session still runs" "$(LOGTXT | tail -5)"
+fi
+teardown
+
+# ── 15. crash + untouched book on the FINAL attempt runs the risk-only fallback ──
+setup
+echo "$TODAY $((5 - 1))" > "$SANDBOX/logs/trader_attempts"     # this is attempt 5 of 5
+trader CLAUDE_RC=1 ACT_SAFE=true ACT_COUNT=0
+if CALLS | grep -q "execute-plan.*--risk-only" && CALLS | grep -q "sync-stops.*--apply" && [ "$(STAMP)" = "$TARGET" ]; then
+    ok "final failed attempt executes risk-only legs and stamps"
+else
+    bad "final failed attempt executes risk-only legs and stamps" "calls=$(CALLS) stamp=$(STAMP)"
+fi
+teardown
+
+# ── 16. crash + untouched book late in the evening (>= 21:30 ET) also falls back ──
+setup
+trader CLAUDE_RC=1 ACT_SAFE=true ACT_COUNT=0 TEST_NOW_ET=2140
+if CALLS | grep -q "execute-plan.*--risk-only" && [ "$(STAMP)" = "$TARGET" ]; then
+    ok "late-evening crash falls back to risk-only execution"
+else
+    bad "late-evening crash falls back to risk-only execution" "calls=$(CALLS) stamp=$(STAMP)"
+fi
+teardown
+
+# ── 17. an early crash with retries left does NOT fall back (a retry will review properly) ──
+setup
+trader CLAUDE_RC=1 ACT_SAFE=true ACT_COUNT=0
+if ! CALLS | grep -q "execute-plan" && [ "$(STAMP)" = "<none>" ]; then
+    ok "early crash with retries left leaves execution to the retry"
+else
+    bad "early crash with retries left leaves execution to the retry" "calls=$(CALLS) stamp=$(STAMP)"
+fi
+teardown
+
+# ── 18. crash AFTER orders were placed never runs the fallback (book already touched) ──
+setup
+echo "$TODAY $((5 - 1))" > "$SANDBOX/logs/trader_attempts"
+trader CLAUDE_RC=1 ACT_SAFE=false ACT_COUNT=2
+if ! CALLS | grep -q "execute-plan" && [ "$(STAMP)" = "$TARGET" ]; then
+    ok "crash after fills never double-executes via the fallback"
+else
+    bad "crash after fills never double-executes via the fallback" "calls=$(CALLS)"
+fi
+teardown
+
+# ── 19. WebSearch/WebFetch are no longer granted; turn cap is 40 ──
+setup
+if grep -q -- '--max-turns 40' "$SANDBOX/run_trader.sh" && ! grep 'allowedTools' "$SANDBOX/run_trader.sh" | grep -q 'WebSearch'; then
+    ok "reviewer session has no web tools and a 40-turn cap"
+else
+    bad "reviewer session has no web tools and a 40-turn cap" ""
+fi
+teardown
+
+echo
+echo "passed $PASS, failed $FAIL"
+[ "$FAIL" -eq 0 ]

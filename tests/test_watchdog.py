@@ -325,3 +325,36 @@ def test_missing_tif_treated_as_day():
     from src.watchdog import check_expiring_stops
     orders = [{"symbol": "HUT", "side": "sell", "type": "stop"}]
     assert check_expiring_stops(orders)["status"] == "warn"
+
+
+# ── screen health ─────────────────────────────────────────────────────────────
+from src.watchdog import check_screen_health
+from datetime import datetime as _dt
+from zoneinfo import ZoneInfo as _ZI
+_ET = _ZI("America/New_York")
+
+
+def test_screen_health_fail_on_failed_run():
+    rs = {"date": "2026-09-04", "result": "failed", "error": "src.run.PipelineHealthError: adv_survivors=53 below floor 800"}
+    out = check_screen_health(rs, _dt(2026, 9, 4, 18, 0, tzinfo=_ET))
+    assert out["status"] == "fail" and "PipelineHealthError" in out["detail"]
+
+
+def test_screen_health_fail_on_breached_floor_even_if_rc_zero():
+    rs = {"date": "2026-09-04", "result": "success", "stats": {"ok": False, "reasons": ["ranked=38 below floor 150"]}}
+    out = check_screen_health(rs, _dt(2026, 9, 4, 18, 0, tzinfo=_ET))
+    assert out["status"] == "fail" and "ranked=38" in out["detail"]
+
+
+def test_screen_health_warns_when_no_screen_after_1730_on_weekday():
+    rs = {"date": "2026-09-03", "result": "success", "stats": {"ok": True}}
+    assert check_screen_health(rs, _dt(2026, 9, 4, 17, 45, tzinfo=_ET))["status"] == "warn"
+    assert check_screen_health(rs, _dt(2026, 9, 4, 12, 0, tzinfo=_ET))["status"] == "ok"
+    assert check_screen_health(rs, _dt(2026, 9, 5, 18, 0, tzinfo=_ET))["status"] == "ok"   # Saturday
+
+
+def test_screen_health_ok_and_missing():
+    rs = {"date": "2026-09-04", "result": "success", "stats": {"ok": True, "cap_survivors": 1900}}
+    out = check_screen_health(rs, _dt(2026, 9, 4, 18, 0, tzinfo=_ET))
+    assert out["status"] == "ok" and "1900" in out["detail"]
+    assert check_screen_health(None, _dt(2026, 9, 4, 18, 0, tzinfo=_ET))["status"] == "warn"

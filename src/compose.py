@@ -11,22 +11,28 @@ logger = logging.getLogger(__name__)
 # depended on streak_z), st_reversal was a minor penalty included in the price block.
 # Both remain as diagnostic CSV columns and feed conviction.
 # residual_mom and pct_from_high are new additions.
+# Four blocks (weights in config.yaml): price momentum, earnings momentum,
+# fundamentals (src.fundamentals_block: five percentile sub-scores + insider
+# buying), technical confirmation. gp_assets is no longer a standalone factor —
+# it is an input to fund_quality.
 COMPOSITE_FACTORS = [
     "mom_12_1", "residual_mom", "rs_6m", "rs_accel", "rs_slope", "pct_from_high",
     "sue", "rev_breadth", "rev_magnitude",
-    "gp_assets", "insider_z",
+    "fund_quality", "fund_growth", "fund_value", "fund_invest", "fund_strength", "insider_z",
     "trend_score", "momo_osc_score", "volume_score",
 ]
+FUND_FACTORS = ["fund_quality", "fund_growth", "fund_value", "fund_invest", "fund_strength"]
 
-# Factors that are bounded integers / zero-inflated — use rank normalization
+# Factors that are bounded / percentile / zero-inflated — use rank normalization
 # instead of winsorize+z-score to avoid distributional distortion.
-RANK_NORMALIZE_FACTORS = {"insider_z", "trend_score", "momo_osc_score", "volume_score"}
+RANK_NORMALIZE_FACTORS = {"insider_z", "trend_score", "momo_osc_score", "volume_score",
+                          *FUND_FACTORS}
 
 # Sectors where gp_assets = (revenue-COGS)/assets is meaningless or misleading.
 # These stocks pass the quality gate unconditionally and get NaN for gp_assets factor.
 FINANCIAL_SECTORS = {
     "Financial Services", "Financial", "Financials",
-    "Real Estate", "Banks", "Insurance",
+    "Real Estate", "Banks", "Banking", "Insurance",
     "Asset Management", "Mortgage Finance",
 }
 
@@ -212,7 +218,8 @@ def _compute_factor_agreement(row: pd.Series) -> int:
         score += 1
     if max(row.get("z_sue", 0) or 0, row.get("z_rev_breadth", 0) or 0) > 0.5:
         score += 1
-    if (row.get("z_gp_assets", 0) or 0) > 0.3:
+    fs = row.get("fund_score")
+    if fs is not None and not pd.isna(fs) and float(fs) > 0.5:
         score += 1
     if (row.get("trend_score", 0) or 0) >= 3:
         score += 1
@@ -220,7 +227,7 @@ def _compute_factor_agreement(row: pd.Series) -> int:
 
 
 def compute_conviction(df: pd.DataFrame) -> pd.DataFrame:
-    rank_comp, streak_comp, tech_comp, agreement_comp = [], [], [], []
+    rank_comp, streak_comp, tech_comp, agreement_comp, fund_comp = [], [], [], [], []
 
     for pos, (_, row) in enumerate(df.iterrows()):
         # Rank (0-3)
@@ -256,11 +263,22 @@ def compute_conviction(df: pd.DataFrame) -> pd.DataFrame:
         # Factor agreement (0-4): cross-block consensus — new, non-composite signal
         agreement_comp.append(_compute_factor_agreement(row))
 
+        # Fundamentals (0-2): a business in the top 30% / top half of the
+        # universe on the fundamentals block earns conviction on its own.
+        fs = row.get("fund_score")
+        if fs is not None and not pd.isna(fs) and float(fs) >= 0.70:
+            fund_comp.append(2)
+        elif fs is not None and not pd.isna(fs) and float(fs) >= 0.50:
+            fund_comp.append(1)
+        else:
+            fund_comp.append(0)
+
     raw = (
         pd.Series(rank_comp, dtype=float)
         + pd.Series(streak_comp, dtype=float)
         + pd.Series(tech_comp, dtype=float)
         + pd.Series(agreement_comp, dtype=float)
+        + pd.Series(fund_comp, dtype=float)
     )
     df = df.copy()
     df["conviction"] = raw.clip(1, 10).round().astype(int).values
@@ -271,7 +289,14 @@ def build_composite(
     factors_df: pd.DataFrame,
     cfg: dict,
     streak_data: dict | None = None,
+    top_n: int | None = None,
+    with_conviction: bool = True,
 ) -> pd.DataFrame:
+    """Gate, z-score, weight, rank. Returns the top `top_n` (default
+    cfg.output.top_n) with `attrs["ranked_total"]`, `attrs["ranking_tail"]`
+    and `attrs["fund_gate"]`. run.py asks for the finalist pool (top 60),
+    enriches it, re-ranks on composite_final and only then computes
+    conviction on the final top 20 — so `with_conviction=False` there."""
     df = factors_df.copy()
     weights        = cfg["factors"]["weights"]
     winsorize_pct  = cfg["factors"]["winsorize_pct"]
@@ -280,7 +305,15 @@ def build_composite(
     min_coverage   = cfg["factors"].get("min_factor_coverage", 0.40)
     rank_norm_set  = set(cfg["factors"].get("rank_normalize_factors", list(RANK_NORMALIZE_FACTORS)))
 
-    df = apply_quality_gate(df, cfg)
+    # The fundamentals floor gate (src.fundamentals_block) replaces the old
+    # gp_assets-only quality gate when fund_score is present. The old gate is
+    # kept for frames without the block (tests, backtests).
+    if "fund_score" in df.columns:
+        from src.fundamentals_block import apply_fundamental_gate
+        df, fund_gate_info = apply_fundamental_gate(df, cfg)
+    else:
+        df = apply_quality_gate(df, cfg)
+        fund_gate_info = {"skipped": "no fund_score column"}
     df = apply_confirmation_gate(df, cfg)
 
     # Attach derived and technical columns
@@ -328,8 +361,17 @@ def build_composite(
     df["composite"] = composite
     df = df.sort_values("composite", ascending=False).reset_index(drop=True)
 
-    top_n = cfg["output"]["top_n"]
+    top_n = int(top_n or cfg["output"]["top_n"])
     result = df.head(top_n).reset_index(drop=True)
-    result = compute_conviction(result)
+    if with_conviction:
+        result = compute_conviction(result)
+    result.attrs["fund_gate"] = fund_gate_info
+    # Carry the size of the ranked pool and the top-100 order so run.py's
+    # health gate and screen_latest.json can see past the top_n cut.
+    result.attrs["ranked_total"] = int(len(df))
+    result.attrs["ranking_tail"] = [
+        {"rank": i + 1, "ticker": str(t), "composite": round(float(c), 6)}
+        for i, (t, c) in enumerate(zip(df["ticker"].head(100), df["composite"].head(100)))
+    ]
     print(f"[compose] {len(df)} ranked → top {len(result)} selected")
     return result

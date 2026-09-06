@@ -1718,6 +1718,7 @@ def _render_screener() -> None:
     avg        = float(df["composite"].mean()) if "composite" in df.columns else 0.0
     confirms   = int((df["entry_signal"] == "confirm_entry").sum()) if "entry_signal" in df.columns else 0
     avoids     = int((df["entry_signal"] == "avoid").sum()) if "entry_signal" in df.columns else 0
+    fund_avg   = float(df["fund_score"].mean()) if "fund_score" in df.columns and df["fund_score"].notna().any() else None
 
     # ── Summary strip ─────────────────────────────────────────────────────────
     st.markdown(f"""
@@ -1748,8 +1749,20 @@ def _render_screener() -> None:
     <div class="summary-label">AVOIDS</div>
     <div class="summary-value bear">{avoids}</div>
   </div>
+  <div class="summary-cell">
+    <div class="summary-label">AVG FUND</div>
+    <div class="summary-value">{f"{fund_avg:.2f}" if fund_avg is not None else "—"}</div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
+
+    # ── Fundamentals table (block sub-scores) ────────────────────────────────
+    _fund_cols = [c for c in ["ticker", "fund_score", "fund_quality", "fund_growth", "fund_value",
+                              "fund_invest", "fund_strength", "peTTM", "roeTTM", "revenueGrowthTTMYoy",
+                              "eps_rev_30d", "days_to_earnings"] if c in df.columns]
+    if len(_fund_cols) > 2:
+        with st.expander("Fundamentals — block sub-scores (percentile 0–1) and key ratios"):
+            st.dataframe(df[_fund_cols].round(3), hide_index=True, use_container_width=True)
 
     # ── Top 3 cards ───────────────────────────────────────────────────────────
     cols = st.columns(3)
@@ -1776,7 +1789,9 @@ def _render_screener() -> None:
     # ── Glossary ──────────────────────────────────────────────────────────────
     with st.expander("📖 What do these indicators mean?"):
         st.markdown("""
-**Composite Score** — Weighted z-score across 7 factors: 28% 12-month momentum, 20% analyst revision breadth, 17% earnings surprise, 15% 6-month RS vs SPY, 10% technical alignment, 5% RS slope, 5% streak bonus. Higher = stronger setup.
+**Composite Score** — Weighted z-score across four blocks: price momentum 40% (12-1 momentum, residual momentum, RS vs SPY, RS acceleration/slope, distance from 52-week high), earnings momentum 20% (SUE, analyst rating breadth and shift), **fundamentals 32%** (quality, growth, value, investment, balance-sheet strength as percentile sub-scores, plus insider buying), technical confirmation 8%. Names below the 30th percentile on fundamentals are not ranked at all. Finalists are re-ranked by 30-day EPS estimate revisions. Higher = stronger setup.
+
+**Fund (0–1)** — the fundamentals block score: the mean of up to five percentile sub-scores (quality, growth, value, investment, strength). 0.70+ is the top 30% of the investable universe on fundamentals; below 0.30 is excluded from the ranking.
 
 **Conviction (1–10)** — Synthesis of four layers: rank position (top 3 = 3pts), streak consistency (≥7 days = 3pts), technical alignment across 8 indicators (≥6 green = 2pts), and fundamental quality (gross profitability, insider buying, short float). Use this to decide position sizing — high conviction = larger starter position.
 
@@ -2982,6 +2997,54 @@ def _cached_paper_view() -> tuple[dict, str, str | None]:
     return paper.live_view()
 
 
+def _render_engine_plan() -> None:
+    """The portfolio engine's most recent plan: legs, reviewer decisions,
+    executions. Read through datastore so the cloud deploy sees the copy
+    publish_data.sh pushed to the private repo."""
+    names = sorted(datastore.list_names("trading/plans", "*.json"), reverse=True)
+    if not names:
+        return
+    raw = datastore.read_text(f"trading/plans/{names[0]}")
+    try:
+        plan = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        plan = None
+    if not plan:
+        return
+    _page_title(f"ENGINE PLAN · {plan.get('target_date', '—')}")
+    reg = (plan.get("regime") or {}).get("regime", "—")
+    tgt = (plan.get("targets") or {})
+    brk = plan.get("breaker") or {}
+    st.markdown(
+        f'<div style="font-family:var(--mono);font-size:0.7rem;color:var(--muted);margin-bottom:0.5rem">'
+        f'regime <b>{_html.escape(str(reg))}</b> · alpha target {tgt.get("alpha_pct", 0):.0%} · '
+        f'screen {"usable" if plan.get("screen_usable") else "NOT usable — " + _html.escape(str(plan.get("screen_note", "")))}'
+        f'{" · <span style=color:var(--bear)>BREAKER ACTIVE</span>" if brk.get("active") else ""}</div>',
+        unsafe_allow_html=True,
+    )
+    rows = []
+    reviews = plan.get("reviews") or {}
+    executed = plan.get("executed") or {}
+    failures = plan.get("failures") or {}
+    for l in plan.get("legs") or []:
+        lid = l["id"]
+        rv = reviews.get(lid, {}).get("decision", "")
+        ex = executed.get(lid) or failures.get(lid) or {}
+        status = ex.get("status") or ("skipped" if rv in ("SKIP", "DEFER") else "pending")
+        rows.append({"leg": lid, "kind": l["kind"], "symbol": l["symbol"], "side": l["side"],
+                     "size": f"${l['notional']:,.0f}" if l.get("notional") else f"{l['qty']:g} sh",
+                     "fixed": "" if l["overridable"] else "✓", "review": rv, "status": status,
+                     "reason": l["reason"][:110]})
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    else:
+        st.markdown('<div style="font-family:var(--mono);font-size:0.65rem;color:var(--muted)">no legs — hold</div>',
+                    unsafe_allow_html=True)
+    for w in plan.get("warnings") or []:
+        st.markdown(f'<div style="font-family:var(--mono);font-size:0.62rem;color:var(--accent)">! {_html.escape(str(w))}</div>',
+                    unsafe_allow_html=True)
+
+
 def _render_paper() -> None:
     from src import paper
 
@@ -3210,6 +3273,7 @@ def _render_paper() -> None:
 
     # ── run cadence ──────────────────────────────────────────────────────────
     st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+    _render_engine_plan()
     _render_paper_cadence(snap.get("cadence") or {})
 
 
@@ -3447,6 +3511,45 @@ def _render_fidelity_and_history_status() -> None:
 
 
 @st.fragment(run_every="5s")
+def _render_pipeline_health(rs: dict) -> None:
+    """Stage counts and the health verdict from run_status.json.stats.
+
+    This is the strip that would have shown "ADV 53" in red from 2026-08-31 to
+    09-03 instead of a green "LAST RUN OK". Renders nothing when the run wrote
+    no stats (older runs, or a run that died before stage 2).
+    """
+    stats = (rs or {}).get("stats") or {}
+    if not stats:
+        return
+    ok = stats.get("ok")
+    color = "var(--bull)" if ok else "var(--bear)"
+    verdict = "HEALTH OK" if ok else "HEALTH FAILED"
+    if stats.get("degraded"):
+        verdict, color = "DEGRADED (forced)", "var(--accent)"
+    cells = ""
+    for label, key in [("UNIVERSE", "universe"), ("TRADABLE", "tradable"), ("PRICED", "priced"),
+                       ("ADV GATE", "adv_survivors"), ("CAP GATE", "cap_survivors"),
+                       ("FUND GATE", None), ("RANKED", "ranked"), ("SELECTED", "selected")]:
+        if key is None:
+            fg = (stats.get("fund_gate") or {})
+            val = fg.get("after") if fg.get("after") is not None else "—"
+            if fg.get("skipped"):
+                val = f"skip"
+        else:
+            v = stats.get(key)
+            val = f"{int(v):,}" if isinstance(v, (int, float)) else "—"
+        cells += (f'<div class="summary-cell"><div class="summary-label">{label}</div>'
+                  f'<div class="summary-value">{_html.escape(str(val))}</div></div>')
+    reasons = "; ".join(str(r) for r in (stats.get("reasons") or []) + (stats.get("warnings") or []))
+    st.markdown(
+        f'<div style="font-family:var(--mono);font-size:0.7rem;font-weight:700;color:{color};'
+        f'margin:0.6rem 0 0.3rem">{verdict}'
+        f'{" · " + _html.escape(reasons[:220]) if reasons else ""}</div>'
+        f'<div class="summary-strip">{cells}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_monitor():
     log_path = _find_todays_log()
     lock_active = Path("/tmp/screener_run.lock").exists()
@@ -3485,6 +3588,7 @@ def _render_monitor():
             headline = ('<div style="font-family:var(--mono);font-size:1rem;color:var(--muted)">'
                         '— NO RUN TODAY</div>')
         st.markdown(headline, unsafe_allow_html=True)
+        _render_pipeline_health(_rs)
         _out = sorted(datastore.list_names("output", "screen_*.csv"), reverse=True)
         if _out:
             st.markdown(
@@ -3602,6 +3706,9 @@ def _render_monitor():
                 f'margin-top:-0.4rem;margin-bottom:0.8rem">{prog_label}</div>',
                 unsafe_allow_html=True,
             )
+
+    # ── Health strip (from run_status.json, once the run has written it) ────────
+    _render_pipeline_health(_load_run_status())
 
     # ── Funnel panel ─────────────────────────────────────────────────────────
     def _fv(v): return f"{v:,}" if v is not None else "—"

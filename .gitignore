@@ -30,6 +30,11 @@ output/
 docs/handoffs/
 handoff-thesis-pivot-*.md
 
+# Engine plans and state carry live position sizes — published to the private
+# data repo by scripts/publish_data.sh, never committed here.
+trading/plans/
+trading/engine_state.json
+
 # Scratch
 trading/_scratch_*.py
 trading/.tmp_*.py

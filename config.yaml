@@ -2,31 +2,42 @@ universe:
   source: sec
   exclude_etfs: true
   min_price: 5.0
+  # Intersect the SEC list with Alpaca's tradable, exchange-listed equities.
+  # Skipped automatically when no Alpaca credentials are present.
+  alpaca_filter: true
+  max_age_days: 7
 
 liquidity_gate:
   min_market_cap: 300000000
   min_avg_dollar_vol_20d: 5000000
 
+# Legacy gate, used only when the fundamentals block is absent (backtests).
 quality_gate:
   gross_profitability_min: q25
 
 factors:
   weights:
-    # Price momentum block (0.50)
-    # residual_mom replaces raw mom_12_1 as primary signal; mom_12_1 kept as secondary
-    mom_12_1: 0.12
-    residual_mom: 0.14
-    rs_6m: 0.10
-    rs_accel: 0.06
-    rs_slope: 0.04
-    pct_from_high: 0.04
-    # Earnings/revision block (0.33)
-    sue: 0.14
-    rev_breadth: 0.10
-    rev_magnitude: 0.09
-    # Quality + insider block (0.09)
-    gp_assets: 0.06
-    insider_z: 0.03
+    # Price momentum block (0.40)
+    mom_12_1: 0.10
+    residual_mom: 0.11
+    rs_6m: 0.08
+    rs_accel: 0.05
+    rs_slope: 0.03
+    pct_from_high: 0.03
+    # Earnings momentum block (0.20). rev_breadth/rev_magnitude are analyst
+    # RATING breadth and its 90-day shift (Finnhub recommendation trends),
+    # not estimate revisions — true revisions enter via eps_rev_30d on the
+    # finalists (see fundamentals.finalist_rev_weight).
+    sue: 0.10
+    rev_breadth: 0.06
+    rev_magnitude: 0.04
+    # Fundamentals block (0.32) — percentile sub-scores from src/fundamentals_block.py
+    fund_quality: 0.09
+    fund_growth: 0.08
+    fund_value: 0.06
+    fund_invest: 0.04
+    fund_strength: 0.03
+    insider_z: 0.02
     # Technical confirmation block (0.08) — rank-normalized, not z-scored
     trend_score: 0.05
     momo_osc_score: 0.02
@@ -39,11 +50,30 @@ factors:
     - trend_score
     - momo_osc_score
     - volume_score
+    - fund_quality
+    - fund_growth
+    - fund_value
+    - fund_invest
+    - fund_strength
   # Minimum fraction of factor weight a stock must have data for to be scored
   min_factor_coverage: 0.40
 
 streak:
   lookback_days: 14
+
+fundamentals:
+  # Names below this fund_score percentile are not ranked at all. NaN (no
+  # Finnhub and no EDGAR data) is excluded too.
+  floor_enabled: true
+  floor_percentile: 0.30
+  # If fewer than this share of names have a fund_score the gate is skipped
+  # (cold cache) and the skip is reported in health.reasons.
+  min_coverage: 0.60
+  # Finalists (top N by composite) get yfinance estimate revisions, short
+  # interest and analyst targets; eps_rev_30d re-ranks them at this weight.
+  finalists_n: 60
+  finalist_rev_weight: 0.05
+  enrich_budget_secs: 240
 
 confirmation:
   require_above_sma200: true
@@ -70,6 +100,19 @@ cache:
 
 finnhub:
   calls_per_minute: 60
+  # Basic-financials (market cap + ~130 ratios) and profile (industry) cache.
+  metrics_ttl_days: 7
+  # Cap on Finnhub lookups per run so a cold cache degrades the run instead
+  # of stalling it. Warm the cache with: python -m src.cache_maint warm-finnhub
+  max_fetch_per_run: 600
+
+# Pipeline health floors. Breaching one fails the run (exit 1, alert email,
+# run_status.json result=failed) instead of publishing a list ranked from a
+# collapsed universe — which is what happened from 2026-08-31 to 09-03.
+health:
+  min_adv_survivors: 800
+  min_cap_survivors: 500
+  min_ranked: 150
 
 news:
   enabled: true
@@ -83,3 +126,26 @@ lazy_prices:
   min_market_cap: 50000000      # $50M floor (exitable)
   max_market_cap: 2000000000    # $2B ceiling (below institutional capacity threshold)
   min_avg_dollar_vol_20d: 200000 # $200K tradeable floor (risk control)
+
+# Portfolio engine risk policy (src/portfolio_engine.py). "Aggressive" posture
+# chosen 2026-09-04. Keys mirror DEFAULT_POLICY; omitted keys keep defaults.
+trader:
+  risk_per_trade: 0.0125
+  name_cap: 0.12
+  sector_cap: 0.35
+  max_positions: 8
+  alpha_target:
+    NORMAL: 0.70
+    CAUTION: 0.40
+    STRESS: 0.15
+    UNKNOWN: 0.40
+  core_symbol: SPY
+  cash_buffer: 0.05
+  breaker_drawdown: 0.15
+  breaker_recover: 0.07
+  earnings_no_entry_days: 5
+  earnings_trim_days: 2
+  earnings_max_weight: 0.06
+  entry_band: 20
+  exit_band: 35
+  rotate_out_runs: 3

@@ -134,10 +134,17 @@ def get_live_quote(ticker: str) -> tuple[float | None, float | None]:
 def days_to_next_earnings(ticker: str) -> int | None:
     """Calendar days until the next scheduled earnings date. None on failure.
 
-    Reuses the yfinance earnings-dates endpoint (same source as
-    src/pead_backtest.py). Best-effort: returns None if the call fails or no
-    future date is listed.
+    Finnhub's earnings calendar (one cached call for the whole market) first;
+    the yfinance per-ticker endpoint is the fallback, because Yahoo
+    rate-limits it and it logs "No earnings dates found" for SPY every run.
     """
+    try:
+        from src.finnhub_data import fetch_earnings_calendar, days_to_earnings
+        d = days_to_earnings(ticker, fetch_earnings_calendar())
+        if d is not None:
+            return d
+    except Exception:
+        pass
     try:
         df = yf.Ticker(ticker).get_earnings_dates(limit=8)
         if df is None or df.empty:

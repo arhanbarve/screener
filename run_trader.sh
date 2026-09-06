@@ -130,14 +130,61 @@ echo "=== Trader session started: $(date) (attempt $((ATTEMPTS + 1))/$MAX_ATTEMP
 # Write(trading/**) is intentionally absent: Claude Code reports it as unmatched
 # by file permission checks, and Edit(trading/**) already covers every
 # file-editing tool. Listing both only produced a warning on every run.
+# Build the engine's plan BEFORE the reviewer session. If the session then dies
+# the plan file still exists, and the fallback below can execute its
+# risk-reducing legs unattended. A plan failure is logged, not fatal: the
+# session reads the error and journals it (PROMPT.md: no plan → no trades).
+if "$PY" -m src.trader_cli plan --target "$TARGET" >> "$LOG_FILE" 2>&1; then
+    echo "=== Plan built for $TARGET ===" >> "$LOG_FILE"
+else
+    echo "=== Plan build FAILED for $TARGET (session will journal it) ===" >> "$LOG_FILE"
+fi
+
+# WebSearch/WebFetch are deliberately absent: they are permission-denied under
+# `claude -p` anyway, and the session now has `trader_cli news` for headlines.
 SESSION_RC=0
+# The reviewer's Bash grant is scoped to the specific trader_cli subcommands
+# PROMPT.md's procedure actually calls. It is deliberately NOT
+# "$PY -m src.trader_cli:*" — that wildcard covers buy/sell/close/cancel/
+# cancel-all too, which would let a compromised or confused session (or a
+# prompt-injection payload riding in via `news`'s external headlines) place a
+# live order with none of the engine's risk checks, just by running the CLI
+# directly instead of through execute-plan. Every order must go through the
+# plan/review/execute-plan path, which is the only thing enforcing the risk
+# rules; the CLI itself does not gate buy/sell on a plan leg.
+TRADER_ALLOWED_TOOLS="Bash($PY -m src.trader_cli status:*)"
+TRADER_ALLOWED_TOOLS+=",Bash($PY -m src.trader_cli screen:*)"
+TRADER_ALLOWED_TOOLS+=",Bash($PY -m src.trader_cli news:*)"
+TRADER_ALLOWED_TOOLS+=",Bash($PY -m src.trader_cli plan:*)"
+TRADER_ALLOWED_TOOLS+=",Bash($PY -m src.trader_cli review:*)"
+TRADER_ALLOWED_TOOLS+=",Bash($PY -m src.trader_cli execute-plan:*)"
+TRADER_ALLOWED_TOOLS+=",Bash($PY -m src.trader_cli journal-draft:*)"
+TRADER_ALLOWED_TOOLS+=",Bash($PY -m src.trader_cli sync-stops:*)"
+TRADER_ALLOWED_TOOLS+=",Bash($PY -m src.trader_cli cancel-stops:*)"
+TRADER_ALLOWED_TOOLS+=",Read,Glob,Grep,Edit(trading/**)"
 caffeinate -imsu "$CLAUDE" -p "$(cat trading/PROMPT.md)" \
     --model opus \
-    --allowedTools "Bash($PY -m src.trader_cli:*),Read,Glob,Grep,WebSearch,WebFetch,Edit(trading/**)" \
-    --max-turns 120 \
+    --allowedTools "$TRADER_ALLOWED_TOOLS" \
+    --max-turns 40 \
     >> "$LOG_FILE" 2>&1 || SESSION_RC=$?
 
 echo "=== Trader session finished: $(date) ===" >> "$LOG_FILE"
+
+# Final-attempt fallback: the reviewer never traded and no retry is coming
+# (attempt cap reached, or it is past 21:30 ET). Exits, trims and earnings
+# trims must not be skipped because an LLM session crashed, so the engine's
+# risk-reducing legs are executed unattended. Entries are never placed this way.
+run_risk_only_fallback() {
+    if [ -f "trading/plans/$TARGET.json" ]; then
+        echo "=== Fallback: executing risk-reducing legs of plan $TARGET ===" >> "$LOG_FILE"
+        "$PY" -m src.trader_cli execute-plan --target "$TARGET" --risk-only >> "$LOG_FILE" 2>&1 \
+            || echo "=== Fallback execute-plan failed ===" >> "$LOG_FILE"
+        "$PY" -m src.trader_cli sync-stops --apply >> "$LOG_FILE" 2>&1 \
+            || echo "=== Fallback sync-stops failed ===" >> "$LOG_FILE"
+    else
+        echo "=== Fallback: no plan file for $TARGET, nothing to execute ===" >> "$LOG_FILE"
+    fi
+}
 
 if [ "$SESSION_RC" -eq 0 ]; then
     echo "$TARGET" > "$STAMP_FILE"
@@ -153,7 +200,13 @@ else
         echo "$TARGET" > "$STAMP_FILE"
         echo "=== Could not verify order activity — stamping conservatively, will NOT retry ===" >> "$LOG_FILE"
     elif echo "$ACTIVITY" | grep -q '"safe_to_retry": true'; then
-        echo "=== No orders placed today — leaving unstamped, will retry ===" >> "$LOG_FILE"
+        if [ "$((ATTEMPTS + 1))" -ge "$MAX_ATTEMPTS" ] || [ "$NOW_ET" -ge 2130 ]; then
+            echo "=== No orders placed and no retry left — running risk-only fallback ===" >> "$LOG_FILE"
+            run_risk_only_fallback
+            echo "$TARGET" > "$STAMP_FILE"
+        else
+            echo "=== No orders placed today — leaving unstamped, will retry ===" >> "$LOG_FILE"
+        fi
     else
         echo "$TARGET" > "$STAMP_FILE"
         echo "=== Orders already placed today — stamping, will NOT retry ===" >> "$LOG_FILE"

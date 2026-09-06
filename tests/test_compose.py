@@ -172,10 +172,73 @@ def test_gp_assets_nulled_for_financials():
     df.loc[0:9, "sector"] = "Financial Services"
     result = build_composite(df, _BASE_CFG)
     fin_rows = result[result["sector"] == "Financial Services"]
+    # gp_assets is an input to fund_quality now, not a standalone factor, but
+    # it is still nulled for financials so the block cannot penalise a bank
+    # for having no COGS.
+    assert "z_gp_assets" not in result.columns
     if len(fin_rows) > 0:
-        # gp_assets should be NaN for financial stocks (set in _derive_new_factors)
-        # After z-scoring NaN is filled to mean=0, so z_gp_assets should be near 0
-        assert "z_gp_assets" in result.columns
+        assert fin_rows["gp_assets"].isna().all()
+
+
+def test_gp_assets_not_a_composite_factor_but_fund_block_is():
+    assert "gp_assets" not in COMPOSITE_FACTORS
+    for f in ["fund_quality", "fund_growth", "fund_value", "fund_invest", "fund_strength"]:
+        assert f in COMPOSITE_FACTORS
+
+
+def test_config_weights_sum_to_one_and_cover_every_factor():
+    import yaml
+    cfg = yaml.safe_load(open("config.yaml"))
+    w = cfg["factors"]["weights"]
+    assert abs(sum(w.values()) - 1.0) < 1e-9
+    assert set(w) == set(COMPOSITE_FACTORS)
+    blocks = {
+        "momentum": ["mom_12_1", "residual_mom", "rs_6m", "rs_accel", "rs_slope", "pct_from_high"],
+        "earnings": ["sue", "rev_breadth", "rev_magnitude"],
+        "fundamentals": ["fund_quality", "fund_growth", "fund_value", "fund_invest", "fund_strength", "insider_z"],
+        "technical": ["trend_score", "momo_osc_score", "volume_score"],
+    }
+    sums = {b: round(sum(w[f] for f in fs), 6) for b, fs in blocks.items()}
+    assert sums == {"momentum": 0.40, "earnings": 0.20, "fundamentals": 0.32, "technical": 0.08}
+
+
+def test_build_composite_uses_fund_gate_when_block_present():
+    df = make_factors_df(50)
+    df["fund_score"] = np.linspace(0.0, 1.0, 50)          # 15 names below 0.30
+    cfg = dict(_BASE_CFG); cfg["fundamentals"] = {"floor_percentile": 0.30, "min_coverage": 0.6}
+    cfg["output"] = {"top_n": 60}
+    result = build_composite(df, cfg)
+    assert result.attrs["fund_gate"]["after"] == 35
+    assert (result["fund_score"] >= 0.30).all()
+    assert result.attrs["ranked_total"] == 35
+
+
+def test_build_composite_fund_gate_skipped_on_low_coverage():
+    df = make_factors_df(50)
+    df["fund_score"] = np.nan
+    df.loc[0:9, "fund_score"] = 0.9                         # 20% coverage
+    cfg = dict(_BASE_CFG); cfg["fundamentals"] = {"floor_percentile": 0.30, "min_coverage": 0.6}
+    result = build_composite(df, cfg)
+    assert "coverage" in result.attrs["fund_gate"]["skipped"]
+    assert result.attrs["ranked_total"] == 50
+
+
+def test_build_composite_top_n_override_and_no_conviction():
+    df = make_factors_df(50)
+    result = build_composite(df, _BASE_CFG, top_n=30, with_conviction=False)
+    assert len(result) == 30 and "conviction" not in result.columns
+    assert len(result.attrs["ranking_tail"]) == 50
+
+
+def test_conviction_fund_component():
+    df = make_factors_df(50)
+    df["fund_score"] = 0.0
+    df.loc[0, "fund_score"] = 0.95
+    ranked = build_composite(df, _BASE_CFG, with_conviction=False)
+    ranked["fund_score"] = 0.0
+    base = compute_conviction(ranked)["conviction"].iloc[0]
+    ranked["fund_score"] = 0.95
+    assert compute_conviction(ranked)["conviction"].iloc[0] >= base
 
 
 def test_conviction_range():

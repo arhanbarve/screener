@@ -135,3 +135,55 @@ def test_ticker_profile_stores_empty_strings():
     put_ticker_profile(db, "BBB", None, None)  # failed lookups cache as empty
     assert get_ticker_profile(db, "BBB") == {"sector": "", "industry": ""}
     os.unlink(db)
+
+
+def test_fh_metrics_roundtrip_and_bulk():
+    from src.cache import put_fh_metrics, get_fh_metrics, get_fh_metrics_bulk
+    db = make_tmp_db()
+    init_db(db)
+    assert get_fh_metrics(db, "AAPL", ttl_days=7) is None
+    put_fh_metrics(db, "aapl", {"peTTM": 30.0})
+    put_fh_metrics(db, "NONE", {})
+    assert get_fh_metrics(db, "AAPL", ttl_days=7) == {"peTTM": 30.0}
+    assert get_fh_metrics(db, "NONE", ttl_days=7) == {}          # cached "nothing", not None
+    assert get_fh_metrics(db, "AAPL", ttl_days=0) is None        # expired
+    bulk = get_fh_metrics_bulk(db, ttl_days=7)
+    assert set(bulk) == {"AAPL", "NONE"}
+    os.unlink(db)
+
+
+def test_fh_profile_roundtrip_and_bulk():
+    from src.cache import put_fh_profile, get_fh_profile, get_fh_profiles_bulk
+    db = make_tmp_db()
+    init_db(db)
+    assert get_fh_profile(db, "AAPL") is None
+    put_fh_profile(db, "AAPL", "Technology", 3.0e12, 1.5e10)
+    put_fh_profile(db, "X", None, None, None)
+    p = get_fh_profile(db, "AAPL")
+    assert p["industry"] == "Technology" and p["market_cap"] == 3.0e12 and p["fetched_at"]
+    assert get_fh_profile(db, "X")["industry"] == ""
+    assert set(get_fh_profiles_bulk(db)) == {"AAPL", "X"}
+    os.unlink(db)
+
+
+def test_failed_ticker_default_ttl_is_seven_days_and_purge():
+    from src.cache import put_failed_ticker, is_failed_ticker, purge_failed_tickers, count_failed_tickers
+    import sqlite3
+    db = make_tmp_db()
+    init_db(db)
+    put_failed_ticker(db, "AAPL", "no_data")
+    assert is_failed_ticker(db, "AAPL")
+    # Backdate the row 8 days: outside the default 7-day quarantine.
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE failed_tickers SET fetched_at=? WHERE ticker='AAPL'",
+                 ((datetime.utcnow() - timedelta(days=8)).isoformat(),))
+    conn.commit(); conn.close()
+    assert not is_failed_ticker(db, "AAPL")
+    assert is_failed_ticker(db, "AAPL", ttl_days=30)
+    put_failed_ticker(db, "MSFT", "no_data")
+    assert count_failed_tickers(db) == 2
+    assert purge_failed_tickers(db, before=(datetime.utcnow() - timedelta(days=1)).isoformat()) == 1
+    assert count_failed_tickers(db) == 1
+    assert purge_failed_tickers(db) == 1
+    assert count_failed_tickers(db) == 0
+    os.unlink(db)

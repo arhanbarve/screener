@@ -13,6 +13,12 @@ Commands:
   cancel-all          cancel every open order
   cancel-stops [SYM]  cancel resting protective stops (one symbol, or all)
   sync-stops          rest protective stops at each position's max-loss floor
+  screen              health + top rows of output/screen_latest.json
+  news SYM            recent company news (Finnhub) — works headless
+  plan                build tonight's plan (src.portfolio_engine) → trading/plans/<target>.json
+  review LEG DECISION --reason  APPROVE | SKIP | DOWNSIZE --notional N | DEFER
+  execute-plan        place the plan's legs in order (--risk-only, --legs L1,L2, --dry-run)
+  journal-draft       pre-fill trading/journal/<target>.md from the plan
 
 Order types. buy/sell default to --auto, which picks the order that fits the
 current session: market inside regular hours, otherwise a marketable limit that
@@ -154,14 +160,20 @@ def cmd_order(
     stop_price: float | None = None,
     buffer_bps: float | None = None,
     allow_extended: bool = False,
+    replace_stop: bool = False,
 ) -> dict:
     """Place an order, choosing the type from the session unless told otherwise.
 
     "auto" is the default because the failure this guards against is not a bad
     limit price, it is an unpriced market order resting overnight.
+
+    replace_stop: cancel this symbol's resting protective stop first. Alpaca
+    rejects a buy while a sell stop rests on the same symbol as a wash trade,
+    and a sell needs the shares the stop holds. sync-stops re-arms the floor.
     """
     from src import orders as orders_mod
 
+    cancelled = cmd_cancel_stops(apply=True, symbol=symbol)["stops"] if replace_stop else []
     session = orders_mod.market_session(broker.get_clock())
 
     if order_type == "auto":
@@ -188,7 +200,11 @@ def cmd_order(
     why = plan.pop("_why", "")
     plan = {k: v for k, v in plan.items() if v is not None}
     result = broker.submit_order(**plan)
-    return {"session": session, "reason": why, "submitted": plan, "order": result}
+    out = {"session": session, "reason": why, "submitted": plan, "order": result}
+    if replace_stop:
+        out["cancelled_stops"] = cancelled
+        out["note"] = "protective stop cancelled; run sync-stops --apply after the fill"
+    return out
 
 
 def cmd_cancel_stops(apply: bool = True, symbol: str | None = None) -> dict:
@@ -283,6 +299,50 @@ def cmd_sync_stops(apply: bool = False) -> dict:
     return result
 
 
+def cmd_screen(path=None, top: int = 20) -> dict:
+    """Compact view of screen_latest.json: health first, then the rows the
+    engine can act on. The LLM reads this instead of parsing the CSV."""
+    from src.trader_plan import load_screen
+    from pathlib import Path
+
+    screen = load_screen(Path(path) if path else None)
+    if not screen:
+        return {"available": False, "health": {"ok": False, "reasons": ["screen_latest.json missing"]}}
+    keep = ["rank", "ticker", "alpaca_symbol", "name", "sector", "composite_final", "composite",
+            "conviction", "fund_score", "entry", "entry_signal", "price", "atr_14",
+            "days_to_earnings", "eps_rev_30d", "rsi_14", "macd", "adx", "pct_from_high", "news_reasoning"]
+    rows = [{k: r.get(k) for k in keep if k in r} for r in (screen.get("rows") or [])[:top]]
+    return {"available": True, "date": screen.get("date"), "generated_at": screen.get("generated_at"),
+            "health": screen.get("health"), "regime": screen.get("regime"), "rows": rows,
+            "ranking_tail": screen.get("ranking_tail", [])[:40]}
+
+
+def cmd_news(symbol: str, days: int = 7, limit: int = 10) -> dict:
+    """Recent company news from Finnhub. Exists because WebSearch/WebFetch are
+    denied to the headless session; without this the reviewer flies blind."""
+    import os
+    from datetime import datetime, timedelta
+
+    import finnhub
+
+    fh = finnhub.Client(api_key=os.environ.get("FINNHUB_API_KEY", ""))
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        items = fh.company_news(symbol.upper().replace("-", "."), _from=start, to=end) or []
+    except Exception as e:  # noqa: BLE001
+        return {"symbol": symbol.upper(), "error": f"{type(e).__name__}: {e}", "articles": []}
+    out = []
+    for a in items[:limit]:
+        try:
+            when = datetime.fromtimestamp(int(a.get("datetime") or 0)).strftime("%Y-%m-%d %H:%M")
+        except (TypeError, ValueError, OSError):
+            when = ""
+        out.append({"when": when, "source": a.get("source"), "headline": a.get("headline"),
+                    "summary": (a.get("summary") or "")[:400], "url": a.get("url")})
+    return {"symbol": symbol.upper(), "days": days, "count": len(items), "articles": out}
+
+
 def _with_held_since(positions: list[dict]) -> list[dict]:
     """Attach FIFO held_since from the paper snapshot when available.
 
@@ -326,6 +386,8 @@ def main(argv=None) -> int:
                         help="max slippage for an auto limit (default 50bp buy / 200bp sell)")
         sp.add_argument("--extended", dest="allow_extended", action="store_true",
                         help="allow filling in pre/post-market (thin books)")
+        sp.add_argument("--replace-stop", dest="replace_stop", action="store_true",
+                        help="cancel this symbol's protective stop first (adds/sells on a stopped position)")
     sp = sub.add_parser("close")
     sp.add_argument("symbol")
     sp = sub.add_parser("orders")
@@ -342,7 +404,34 @@ def main(argv=None) -> int:
     sp = sub.add_parser("sync-stops")
     sp.add_argument("--apply", action="store_true",
                     help="actually place/cancel stops (default reports only)")
+    sp = sub.add_parser("screen")
+    sp.add_argument("--path", default=None)
+    sp.add_argument("--top", type=int, default=20)
+    sp = sub.add_parser("news")
+    sp.add_argument("symbol")
+    sp.add_argument("--days", type=int, default=7)
+    sp.add_argument("--limit", type=int, default=10)
+    sp = sub.add_parser("plan")
+    sp.add_argument("--target", default=None, help="session being decided for (default: gate's target_date)")
+    sp.add_argument("--no-write", action="store_true")
+    sp = sub.add_parser("review")
+    sp.add_argument("leg")
+    sp.add_argument("decision", choices=["APPROVE", "SKIP", "DOWNSIZE", "DEFER"])
+    sp.add_argument("--reason", required=True)
+    sp.add_argument("--notional", type=float, default=None)
+    sp.add_argument("--target", default=None)
+    sp = sub.add_parser("execute-plan")
+    sp.add_argument("--target", default=None)
+    sp.add_argument("--legs", default=None, help="comma-separated leg ids; default all")
+    sp.add_argument("--risk-only", action="store_true")
+    sp.add_argument("--dry-run", action="store_true")
+    sp = sub.add_parser("journal-draft")
+    sp.add_argument("--target", default=None)
+    sp.add_argument("--force", action="store_true")
     args = p.parse_args(argv)
+
+    def _target():
+        return args.target or cmd_gate()["target_date"]
 
     try:
         if args.cmd == "status":
@@ -356,7 +445,8 @@ def main(argv=None) -> int:
                             limit_price=args.limit_price,
                             stop_price=args.stop_price,
                             buffer_bps=args.buffer_bps,
-                            allow_extended=args.allow_extended)
+                            allow_extended=args.allow_extended,
+                            replace_stop=args.replace_stop)
         elif args.cmd == "close":
             out = broker.close_position(args.symbol.upper())
         elif args.cmd == "activity-today":
@@ -371,11 +461,36 @@ def main(argv=None) -> int:
             out = cmd_cancel_stops(apply=not args.report_only, symbol=args.symbol)
         elif args.cmd == "sync-stops":
             out = cmd_sync_stops(apply=args.apply)
+        elif args.cmd == "screen":
+            out = cmd_screen(args.path, args.top)
+        elif args.cmd == "news":
+            out = cmd_news(args.symbol, args.days, args.limit)
+        elif args.cmd == "plan":
+            from src import trader_plan
+            out = trader_plan.cmd_plan(_target(), write=not args.no_write)
+            print(out["summary"], file=sys.stderr)
+        elif args.cmd == "review":
+            from src import trader_plan
+            out = trader_plan.cmd_review(_target(), args.leg, args.decision, args.reason, args.notional)
+        elif args.cmd == "execute-plan":
+            from src import trader_plan
+            legs = [l.strip() for l in args.legs.split(",")] if args.legs else None
+            out = trader_plan.cmd_execute(_target(), legs=legs, risk_only=args.risk_only, dry_run=args.dry_run)
+        elif args.cmd == "journal-draft":
+            from src import trader_plan
+            out = trader_plan.cmd_journal_draft(_target(), force=args.force)
         else:  # orders
             out = broker.get_orders(args.status)
     except broker.BrokerError as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         return 1
+    except Exception as e:  # noqa: BLE001 — PlanError, EngineError: same contract, JSON on stderr
+        from src.portfolio_engine import EngineError
+        from src.trader_plan import PlanError
+        if isinstance(e, (EngineError, PlanError)):
+            print(json.dumps({"error": f"{type(e).__name__}: {e}"}), file=sys.stderr)
+            return 1
+        raise
     print(json.dumps(out, indent=2))
     return 0
 

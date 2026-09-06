@@ -201,6 +201,30 @@ def check_expiring_stops(open_orders: list[dict]) -> dict:
     return _r("expiring_stops", "ok", f"all {len(stops)} stop(s) are GTC")
 
 
+def check_screen_health(run_status: dict | None, now_et: datetime) -> dict:
+    """Did the screener publish a trustworthy list for the latest session?
+
+    FAIL when the last run failed outright or its stats say a health floor was
+    breached. WARN when, after 17:30 ET on a weekday, there is no run dated
+    today — the trader session at 17:15+ would then read yesterday's screen.
+    """
+    if not run_status:
+        return _r("screen", "warn", "no run_status.json")
+    date_ = str(run_status.get("date") or "")
+    if run_status.get("result") == "failed":
+        return _r("screen", "fail",
+                  f"screener run {date_} failed: {str(run_status.get('error') or '?')[:120]}")
+    stats = run_status.get("stats") or {}
+    if stats.get("ok") is False:
+        return _r("screen", "fail",
+                  f"screener {date_} breached a health floor: {'; '.join(stats.get('reasons') or [])[:160]}")
+    today = now_et.date().isoformat()
+    if date_ != today and now_et.weekday() < 5 and (now_et.hour, now_et.minute) >= (17, 30):
+        return _r("screen", "warn", f"no screen for {today} yet (last {date_})")
+    n = stats.get("cap_survivors")
+    return _r("screen", "ok", f"{date_} ok" + (f", {n} names past the cap gate" if n else ""))
+
+
 def check_tests(returncode: int | None, tail: str = "") -> dict:
     if returncode is None:
         return _r("tests", "warn", "test suite not run")
@@ -253,6 +277,12 @@ def run(run_tests: bool = True) -> dict:
 
     snapshot = paper.load_snapshot()
     checks.append(check_snapshot_freshness(snapshot, today))
+    try:
+        rs_path = SCREENER_DIR / "run_status.json"
+        run_status = json.loads(rs_path.read_text()) if rs_path.exists() else None
+    except (OSError, json.JSONDecodeError):
+        run_status = None
+    checks.append(check_screen_health(run_status, now_et))
     checks.append(check_reconciliation(snapshot))
     checks.append(check_cadence((snapshot or {}).get("cadence"), today))
 

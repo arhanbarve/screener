@@ -7,7 +7,7 @@ decides when to sell, an Alpaca paper-trading loop with a written decision
 journal, a Streamlit dashboard, and event-study backtests used to accept or
 reject strategy ideas before they are traded.
 
-~23k lines of Python, 644 tests, running unattended every trading day since
+~23k lines of Python, 795 tests, running unattended every trading day since
 June 2026.
 
 ---
@@ -28,17 +28,21 @@ Output is a `.md` file and `.csv` file written to `output/`, plus a summary prin
 
 ### Composite (medium-term, 1–3 month horizon)
 
-| Factor | Weight | What it captures |
+Four economic blocks, weighted and combined into one composite score:
+
+| Block | Weight | What it captures |
 |--------|--------|-----------------|
-| 12-1 Momentum | 35% | 12-month return skipping last month (Jegadeesh & Titman) |
-| Revision Breadth | 25% | Net analyst upgrades vs downgrades over 90 days |
-| SUE | 20% | Standardized unexpected earnings — post-earnings drift |
-| RS vs SPY (6m) | 20% | Stock's 6-month return minus SPY's return |
+| Momentum | 40% | 12-1 momentum, risk-adjusted (residual) momentum, relative strength vs SPY and its acceleration/slope, distance from 52-week high |
+| Earnings & analyst | 20% | Standardized unexpected earnings (SUE), analyst rating breadth and its 90-day shift |
+| Fundamentals | 32% | Five percentile sub-scores — quality, growth, value, investment, balance-sheet strength — from Finnhub metrics + SEC EDGAR facts, plus insider cluster buying |
+| Technical confirmation | 8% | Trend, oscillator, and volume sub-scores from the daily indicator set |
+
+The fundamentals block also gates eligibility: a stock whose blended fundamentals score falls below the 30th percentile (or has no fundamentals data at all) is excluded before ranking, with a coverage guard so a cold data cache degrades gracefully instead of emptying the list.
 
 ### Gates (applied before ranking)
 
-- **Liquidity** — min $300M market cap, min $5M avg daily dollar volume
-- **Quality** — gross profit / assets above universe median
+- **Liquidity** — Alpaca-tradable, ≥ $5M ADV, ≥ $300M cap (Finnhub)
+- **Quality** — fundamentals block ≥ 30th percentile
 - **Confirmation** — price above SMA200 and within 10% of 52-week high
 
 ### Short-term entry oscillators (computed from existing OHLCV, no extra API calls)
@@ -106,13 +110,22 @@ blank and one that is broken. Access is gated by `APP_PASSWORD`.
 
 ## Paper trading
 
-`src/broker.py` and `src/trader_cli.py` drive an Alpaca paper account: place
-orders, sync protective stops, reconcile fills. Each session is written up in
-`trading/journal/` — the reasoning before the trade, the fills after it, and a
-weekly review that names what went wrong.
+`src/broker.py` and `src/trader_cli.py` drive an Alpaca paper account. A
+deterministic portfolio engine (`src/portfolio_engine.py`) builds each day's
+plan and owns every sizing and risk rule — position sizing, name/sector caps,
+the drawdown breaker, earnings-proximity trims. An LLM reviewer reads the
+day's news and can only APPROVE, SKIP, DOWNSIZE, or DEFER the legs the engine
+marks as reviewable. Risk-reducing legs — exits, trims, and earnings
+trims — are never subject to override and execute even if the reviewer
+session never runs.
 
+Each session is written up in `trading/journal/` — the reasoning before the
+trade, the fills after it, and a weekly review that names what went wrong.
 The journals are committed deliberately. A record that only survives when it
 flatters you is not a record.
+
+`trader_cli` subcommands: `screen`, `news`, `plan`, `review`, `execute-plan`,
+`journal-draft`, `sync-stops`, `cancel-stops`, `status`, `gate`.
 
 ---
 
@@ -169,6 +182,18 @@ chmod +x run_screener.sh
 (crontab -l 2>/dev/null; echo "15 16 * * 1-5 $(pwd)/run_screener.sh") | crontab -
 ```
 
+### Pipeline health
+
+Every run checks its own stage counts — surviving ADV filter, surviving cap
+filter, final ranked count — against floors in `config.yaml` (`min_adv_survivors`,
+`min_cap_survivors`, `min_ranked`). Breaching a floor raises `PipelineHealthError`:
+the run exits non-zero, sends an alert email, and writes `output/screen_latest.json`
+with `health.ok=false` and no rows instead of publishing a list ranked from a
+collapsed universe. `screen_latest.json` carries the health verdict alongside the
+day's ranked rows, so downstream consumers (dashboard, trader) can refuse to act
+on a degraded screen. A watchdog separately flags a run that produced no screen
+at all by early evening.
+
 ---
 
 ## Cache
@@ -179,6 +204,10 @@ chmod +x run_screener.sh
 | Market cap | 18 hours |
 | Fundamentals | 7 days |
 | EDGAR filings | 30 days |
+| Finnhub metrics/profiles | 7 days |
+| Alpaca assets | 24 h |
+| EDGAR facts | 30 days |
+| Earnings calendar | 20 h |
 
 Cache lives in `data/cache.db` (SQLite). Delete it to force a full refresh.
 
@@ -187,7 +216,7 @@ Cache lives in `data/cache.db` (SQLite). Delete it to force a full refresh.
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q      # 644 tests
+python3 -m pytest tests/ -q      # 795 tests
 ```
 
 The suite leans on regression cover for bugs that actually cost money. Two
@@ -236,34 +265,41 @@ Licensed under the [MIT License](LICENSE).
 
 ```
 src/
-  run.py          — screener entrypoint
-  universe.py     — SEC EDGAR universe construction
-  prices.py       — OHLCV fetching, liquidity gate, entry signals
-  fundamentals.py — Finnhub + EDGAR data fetching
-  factors.py      — factor and oscillator computations
-  compose.py      — quality/confirmation gates, composite scoring
-  news.py llm.py  — Stage 4.5 news overlay
-  output.py       — CSV and markdown generation
-  cache.py        — SQLite cache layer
-  datastore.py    — private-data reads (local disk, else private repo)
+  run.py               — screener entrypoint
+  universe.py          — SEC EDGAR ∩ Alpaca-tradable universe construction
+  prices.py            — OHLCV fetching, liquidity gate, entry signals
+  fundamentals.py       — EDGAR XBRL data fetching
+  finnhub_data.py       — Finnhub metrics/profile/earnings-calendar fetching
+  fundamentals_block.py — five fundamentals sub-scores + floor gate
+  enrich.py             — finalist-stage EPS revisions, short interest, targets
+  factors.py            — factor and oscillator computations
+  compose.py            — quality/confirmation gates, composite scoring
+  news.py llm.py        — Stage 4.5 news overlay
+  output.py             — CSV, markdown, and screen_latest.json generation
+  cache.py              — SQLite cache layer
+  cache_maint.py        — cache warm-up and purge CLI
+  replay.py             — replay harness over historical screen_*.csv
+  datastore.py          — private-data reads (local disk, else private repo)
 
   exit_plan.py    — standing exit engine: stops, trims, weekly health
   exit_alerts.py  — emails a SELL/TRIM the day it fires
   positions.py    — open-position store
   sizing.py       — position sizing and concentration caps
 
-  broker.py       — Alpaca REST client
-  paper.py        — paper portfolio: FIFO lots, equity curve, vs-SPY
-  paper_stops.py  — protective stop sync
-  trader_cli.py   — trading command line
-  fidelity_sync.py— browser-driven Fidelity positions export
+  broker.py           — Alpaca REST client
+  paper.py            — paper portfolio: FIFO lots, equity curve, vs-SPY
+  paper_stops.py      — protective stop sync
+  portfolio_engine.py — deterministic paper-account plan builder
+  trader_plan.py       — plan/state IO for the portfolio engine
+  trader_cli.py       — trading command line
+  fidelity_sync.py    — browser-driven Fidelity positions export
 
   *_backtest.py   — event-study harnesses (PEAD, insider, splits, ASR, …)
 
 app.py            — Streamlit entrypoint
 app_shared.py     — shared UI, password gate, rendering
 pages/            — Regime, Positions, Paper, Monitor
-tests/            — 644 tests
+tests/            — 795 tests
 scripts/          — hooks, publication preflight, launchd jobs
 config.yaml       — weights, gates, cache TTLs, output settings
 ```

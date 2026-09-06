@@ -76,6 +76,12 @@ def get_orders(status: str = "open") -> list:
     return _get("/v2/orders", params={"status": status, "limit": 100})
 
 
+def get_assets() -> list:
+    """Every active US equity Alpaca knows about (~14k rows). Used to drop
+    untradeable SEC tickers from the screener universe."""
+    return _get("/v2/assets", params={"status": "active", "asset_class": "us_equity"})
+
+
 def submit_order(
     symbol: str,
     side: str,

@@ -39,7 +39,23 @@ def parse_log(text: str) -> dict:
     }
 
 
-def build_status(log_text: str, rc: int, started_at: str, duration_secs: int) -> dict:
+STATS_PATH = Path("data") / "last_run_stats.json"
+
+
+def load_stats(today: str, path: Path = STATS_PATH) -> dict | None:
+    """Stage counts written by src.run for THIS date, else None. A stats file
+    from an earlier day must not be reported as today's."""
+    if not path.exists():
+        return None
+    try:
+        blob = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return blob if blob.get("date") == today else None
+
+
+def build_status(log_text: str, rc: int, started_at: str, duration_secs: int,
+                 stats: dict | None = None) -> dict:
     parsed = parse_log(log_text)
     return {
         "date": datetime.now().date().isoformat(),
@@ -54,6 +70,9 @@ def build_status(log_text: str, rc: int, started_at: str, duration_secs: int) ->
         # A label, not the real hostname: gethostname() leaks the network
         # and machine (e.g. a campus DHCP name) into a public repo.
         "host": os.environ.get("SCREENER_HOST_LABEL", "screener"),
+        # Stage counts + health verdict from src.run (None when the run died
+        # before writing them). The dashboard and the trader read stats.ok.
+        "stats": stats,
     }
 
 
@@ -92,7 +111,9 @@ def main(argv=None):
     log_path = Path(args.log)
     log_text = _last_run_slice(log_path.read_text(errors="replace")) if log_path.exists() else ""
 
-    status = build_status(log_text, args.rc, args.started, args.duration)
+    today = datetime.now().date().isoformat()
+    status = build_status(log_text, args.rc, args.started, args.duration,
+                          stats=load_stats(today))
     STATUS_PATH.write_text(json.dumps(status, indent=2) + "\n")
     print(f"[run_status] {status['result']} → {STATUS_PATH}")
 

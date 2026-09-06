@@ -109,7 +109,13 @@ def build_plans(positions: list[dict], history: dict, today: str | None = None) 
             "risk_R": plan.get("risk_R"),
             "peak_close": plan.get("peak_close"),
             "verdict": plan.get("verdict"),
+            # The portfolio engine turns these into orders, so it needs the
+            # reason and the rung list, not just the verdict word.
+            "verdict_reason": plan.get("verdict_reason"),
+            "trims_fired": list(plan.get("trims_fired") or []),
+            "below_50d_streak": plan.get("below_50d_streak"),
             "last_close": plan.get("last_close"),
+            "last_eval": plan.get("last_eval"),
         }
     return plans
 

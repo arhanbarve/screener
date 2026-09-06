@@ -1,13 +1,27 @@
+import json
+import math
 import os
 import pandas as pd
 
 CSV_COLUMNS = [
-    "ticker", "name", "sector", "composite", "weight_pct", "conviction", "factor_coverage",
+    "ticker", "alpaca_symbol", "name", "sector", "industry", "composite", "weight_pct", "conviction", "factor_coverage",
     # z-scores for all composite factors
     "z_mom_12_1", "z_residual_mom", "z_rs_6m", "z_rs_accel", "z_rs_slope", "z_pct_from_high",
     "z_sue", "z_rev_breadth", "z_rev_magnitude",
-    "z_gp_assets", "z_insider_z",
+    "z_fund_quality", "z_fund_growth", "z_fund_value", "z_fund_invest", "z_fund_strength",
+    "z_insider_z",
     "z_trend_score", "z_momo_osc_score", "z_volume_score",
+    # finalist re-rank
+    "composite_final", "z_eps_rev_30d",
+    # fundamentals block
+    "fund_score", "fund_quality", "fund_growth", "fund_value", "fund_invest", "fund_strength",
+    "fund_n_subscores",
+    "peTTM", "pfcfShareTTM", "evEbitdaTTM", "psTTM", "roeTTM", "roaTTM", "grossMarginTTM",
+    "revenueGrowthTTMYoy", "epsGrowthTTMYoy", "revenueGrowth3Y",
+    "totalDebt/totalEquityQuarterly", "netInterestCoverageTTM", "currentRatioQuarterly",
+    "accruals", "asset_growth", "net_issuance", "roa", "leverage",
+    # finalist enrichment
+    "eps_rev_30d", "eps_rev_90d", "analyst_target_pct", "days_to_earnings", "days_to_cover",
     # diagnostic z-scores (not in composite)
     "z_streak_z",
     # raw factors
@@ -15,8 +29,9 @@ CSV_COLUMNS = [
     "rev_breadth", "sue", "rev_magnitude",
     "gp_assets", "pct_from_high", "short_float", "insider_buys_90d",
     "exec_buys_90d", "insider_buy_value",
-    "price", "market_cap",
+    "price", "market_cap", "cap_source", "avg_dollar_vol_20d", "fractionable",
     # technicals
+    "atr_14", "sma_50", "sma_200",
     "rsi_14", "macd", "vol_surge", "above_sma20", "above_sma50",
     "stoch_k", "stoch_d", "stoch_cross", "bb_pct_b", "bb_width", "adx", "mfi",
     "tech_score", "trend_score", "momo_osc_score", "volume_score",
@@ -51,10 +66,68 @@ def _rationale(row: pd.Series) -> str:
         parts.append(f"{int(row['insider_buys_90d'])} insider cluster buy")
     if row.get("z_trend_score", 0) > 1.0:
         parts.append("Strong trend (ADX + MACD)")
+    fs = row.get("fund_score")
+    if fs is not None and fs == fs and float(fs) >= 0.70:
+        parts.append(f"Top-30% fundamentals ({float(fs):.2f})")
+    er = row.get("eps_rev_30d")
+    if er is not None and er == er and float(er) > 0.02:
+        parts.append(f"EPS estimates up {float(er):.1%} in 30d")
     conviction = int(row.get("conviction", 0) or 0)
     if conviction >= 7:
         parts.append(f"High conviction ({conviction}/10)")
     return "; ".join(parts) if parts else "Composite score"
+
+
+def _jsonable(v):
+    """JSON-safe scalar: NaN/NaT -> None, numpy scalars -> Python."""
+    if v is None:
+        return None
+    if isinstance(v, float) and math.isnan(v):
+        return None
+    if hasattr(v, "item"):          # numpy scalar
+        v = v.item()
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        return v
+    if isinstance(v, pd.Timestamp):
+        return v.isoformat()
+    return v
+
+
+def write_latest_json(df: pd.DataFrame, out_dir: str, date_str: str, health: dict,
+                      regime: dict, ranking_tail: list[dict]) -> str:
+    """Machine-readable screen for the trader: output/screen_latest.json.
+
+    Written on EVERY run, including a failed one — then with health.ok False
+    and no rows — so a consumer sees "today's screen failed" rather than
+    yesterday's file with today's date on nothing. `ranking_tail` carries the
+    top ~100 (ticker, rank, composite) so a consumer can tell "fell to #34"
+    from "fell out of the top 100" without the full CSV.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "screen_latest.json")
+    cols = [c for c in CSV_COLUMNS if c in df.columns]
+    rows = []
+    for i, (_, r) in enumerate(df.iterrows(), 1):
+        row = {c: _jsonable(r[c]) for c in cols}
+        row["rank"] = i
+        rows.append(row)
+    payload = {
+        "date": date_str,
+        "generated_at": pd.Timestamp.now().isoformat(timespec="seconds"),
+        "health": {k: _jsonable(v) if not isinstance(v, (dict, list)) else v
+                   for k, v in (health or {}).items()},
+        "regime": {"regime": regime.get("regime"), "scale_factor": regime.get("scale_factor"),
+                   "reason": regime.get("reason", "")},
+        "columns": cols + ["rank"],
+        "rows": rows,
+        "ranking_tail": ranking_tail or [],
+    }
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=1, default=str)
+    os.replace(tmp, path)
+    return path
 
 
 def write_csv(df: pd.DataFrame, out_dir: str, date_str: str) -> str:
@@ -79,8 +152,8 @@ def write_markdown(
     if has_weight:
         header += " Weight |"
         sep    += "--------|"
-    header += " Conv | Streak | Signal | Entry | Rationale |"
-    sep    += "------|--------|--------|-------|-----------|"
+    header += " Fund | Conv | Streak | Signal | Entry | Rationale |"
+    sep    += "------|------|--------|--------|-------|-----------|"
     lines = [
         f"# Stock Screen — {date_str}",
         "",
@@ -113,7 +186,9 @@ def write_markdown(
             wt = row.get("weight_pct")
             wt_str = f"{float(wt):.1f}%" if wt is not None and pd.notna(wt) else "—"
             wt_cell = f" {wt_str} |"
-        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} |{wt_cell} {conv}/10 | {streak_str} | {es_str} | {entry} | {rationale} |")
+        fs = row.get("fund_score")
+        fund_str = f"{float(fs):.2f}" if fs is not None and pd.notna(fs) else "—"
+        lines.append(f"| {i} | {row['ticker']} | {name} | {sector} | {comp} |{wt_cell} {fund_str} | {conv}/10 | {streak_str} | {es_str} | {entry} | {rationale} |")
 
     lines += [
         "",
