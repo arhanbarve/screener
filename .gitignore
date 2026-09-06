@@ -21,6 +21,7 @@ STRATEGY.md
 docs/SYSTEM_WRITEUP.md
 docs/strategy-specs.md
 docs/strategy-registry.md
+docs/strategy-vetting-*.md
 docs/agent/
 
 # Run artifacts — regenerable, and they disclose which strategies were tested.
